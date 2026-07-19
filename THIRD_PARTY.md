@@ -15,7 +15,7 @@ Maßgeblich sind die Lizenztexte der tatsächlich installierten Versionen.
 
 ## Entwicklung
 
-Pytest, pytest-cov, Ruff, Mypy, Build, Twine, pip-audit, Pre-commit und httpx werden ausschließlich für Entwicklung, Tests und Veröffentlichung eingesetzt.
+Pytest, pytest-cov, Ruff, Mypy, Build, Twine, pip-audit, Pre-commit, HTTPX und HTTPX2 werden ausschließlich für Entwicklung, Tests und Veröffentlichung eingesetzt.
 
 ## Optionale KoSIT-Komponenten
 

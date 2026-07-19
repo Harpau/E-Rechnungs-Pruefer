@@ -8,6 +8,10 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 - Der Browser fordert bei nicht eingerichteter KoSIT-Anbindung keine offizielle Prüfung mehr an; der deaktivierte Schalter ist nicht ausgewählt und verursacht keine irreführende Konfigurationswarnung im Prüfergebnis
 
+### Qualität
+
+- HTTPX2 als bevorzugtes TestClient-Backend ergänzt und die veraltete HTTPX-Kompatibilität durch eine gezielte Pytest-Warnungsprüfung abgesichert
+
 ## 1.1.0 – 2026-07-18
 
 ### Darstellung und Prüfung
