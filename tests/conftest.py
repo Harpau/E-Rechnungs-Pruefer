@@ -49,6 +49,11 @@ def ubl_path() -> Path:
 
 
 @pytest.fixture()
+def ubl_credit_note_path() -> Path:
+    return PROJECT_ROOT / "tests" / "fixtures" / "ubl-credit-note.xml"
+
+
+@pytest.fixture()
 def cii_category_o_path() -> Path:
     return PROJECT_ROOT / "tests" / "fixtures" / "cii-category-o.xml"
 
