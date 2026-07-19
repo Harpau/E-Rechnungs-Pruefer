@@ -549,6 +549,11 @@ async function parseError(response) {
   return `Die Rechnung konnte nicht verarbeitet werden (${response.status} ${response.statusText}).`;
 }
 
+function officialValidationRequested() {
+  const checkbox = $('#official-checkbox');
+  return checkbox.checked && !checkbox.disabled;
+}
+
 async function analyzeFile(file) {
   if (!file) return;
   state.file = file;
@@ -556,7 +561,7 @@ async function analyzeFile(file) {
   setLoading(true);
   const form = new FormData();
   form.append('file', file, file.name);
-  form.append('official', $('#official-checkbox').checked ? 'true' : 'false');
+  form.append('official', officialValidationRequested() ? 'true' : 'false');
   try {
     const response = await fetch('/api/analyze', { method: 'POST', body: form });
     if (!response.ok) throw new Error(await parseError(response));
@@ -617,7 +622,7 @@ async function fetchHtmlReport() {
   if (!state.file) throw new Error('Keine Rechnung geladen.');
   const form = new FormData();
   form.append('file', state.file, state.file.name);
-  form.append('official', $('#official-checkbox').checked ? 'true' : 'false');
+  form.append('official', officialValidationRequested() ? 'true' : 'false');
   const response = await fetch('/api/report', { method: 'POST', body: form });
   if (!response.ok) throw new Error(await parseError(response));
   return response.blob();

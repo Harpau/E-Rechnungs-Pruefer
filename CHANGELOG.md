@@ -2,6 +2,12 @@
 
 Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projekt verwendet Semantic Versioning.
 
+## Unveröffentlicht
+
+### Darstellung und Prüfung
+
+- Der Browser fordert bei nicht eingerichteter KoSIT-Anbindung keine offizielle Prüfung mehr an; der deaktivierte Schalter ist nicht ausgewählt und verursacht keine irreführende Konfigurationswarnung im Prüfergebnis
+
 ## 1.1.0 – 2026-07-18
 
 ### Darstellung und Prüfung

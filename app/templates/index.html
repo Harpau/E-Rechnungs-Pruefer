@@ -42,7 +42,7 @@
         </div>
 
         <label class="check-row">
-          <input id="official-checkbox" type="checkbox" checked {{ 'disabled' if not kosit_configured else '' }}>
+          <input id="official-checkbox" type="checkbox" {{ 'checked' if kosit_configured else 'disabled' }}>
           <span>
             <strong>Offizielle KoSIT-Prüfung ausführen</strong>
             <small>{{ 'KoSIT ist eingerichtet.' if kosit_configured else (kosit_problem or 'Nicht eingerichtet – die interne Prüfung bleibt verfügbar.') }}</small>
