@@ -1,0 +1,45 @@
+# Änderungsprotokoll
+
+Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projekt verwendet Semantic Versioning.
+
+## 1.1.0 – 2026-07-18
+
+### Darstellung und Prüfung
+
+- Steuergruppen zeigen Code, Bezeichnung, Steuersatz, Kategorienettobetrag beziehungsweise Bemessungsgrundlage, Begründung und Begründungscode gleichzeitig an
+- Kategorie `O` wird als „Nicht der Umsatzsteuer unterliegend“ dargestellt und ohne künstliche `0 %`-Anzeige behandelt
+- interne Regeln für unzulässige Steuersätze bei `O`, erforderliche Nullsätze bei `Z`, `E`, `AE`, `G` und `K` sowie Null-Steuerbeträge ergänzt
+- Warnung bei semantisch widersprüchlichen Kombinationen, insbesondere `G` zusammen mit „nicht im Inland steuerbar“ oder Reverse-Charge-Hinweisen
+- Konsistenzregeln für die exklusive Verwendung der Kategorie `O` ergänzt
+
+### Codex und GitHub
+
+- repository-weite Codex-Anweisungen in `AGENTS.md`
+- vollständige Entwicklungs-, Architektur-, Validierungs-, Steuer-, Sicherheits-, GitHub- und Release-Dokumentation
+- GitHub Actions für Linux-/Windows-CI, CodeQL, Dependency Audit und tagbasierte Releases
+- Dependabot, Issue Forms und Pull-Request-Vorlage
+- Bootstrap-, Check-, Git-Initialisierungs-, Versions- und Release-Skripte für Windows und Unix
+- bereinigtes Release-ZIP mit Schutz vor versehentlich aufgenommenen Rechnungen, Schlüsseln, lokalen Konfigurationen und KoSIT-Dateien
+
+### Qualität
+
+- Ruff, Mypy, Pytest Coverage, Pre-commit, Build, Twine und pip-audit als Entwicklungswerkzeuge integriert
+- Versionskonsistenz zwischen `VERSION`, Paketmetadaten, Anwendung und KoSIT-Installer wird automatisiert geprüft
+- zusätzliche Regressionstests für Steuerdarstellung und Steuerkategorien
+
+## 1.0.2 – 2026-07-15
+
+- KoSIT-Berichte werden primär aus der erzeugten XML-Berichtsdatei gelesen; `-p/--print` wird nicht mehr verwendet
+- KoSIT-Ausgaben der Form `[Format error!] <<?xml ...` werden als Konsolen-Darstellungsfehler erkannt
+- gültige VARL-Berichte werden ersatzweise aus `stdout` oder `stderr` extrahiert
+- `<rep:accept/>` beziehungsweise `<rep:reject/>` hat Vorrang vor dem Prozessrückgabecode
+
+## 1.0.1 – 2026-07-15
+
+- KoSIT-Installer lädt ausschließlich das ausführbare `validator-<Version>-standalone.jar`
+- JAR-Manifestprüfung auf `Main-Class` und optionale SHA-256-Prüfung ergänzt
+- technische Startfehler werden nicht mehr als Rechnungsablehnung dargestellt
+
+## 1.0.0 – 2026-07-15
+
+- erste vollständige Version mit CII-/UBL-Parsern, Hybrid-PDF-Extraktion, Webansicht, technischem XML-Anhang, interner Prüfung, optionaler KoSIT-Anbindung und Exporten

@@ -1,0 +1,61 @@
+name: Fehlerbericht
+about: Reproduzierbaren Parser-, Anzeige-, API- oder Validierungsfehler melden
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Bitte ausschließlich synthetische oder vollständig anonymisierte Daten verwenden.
+  - type: input
+    id: version
+    attributes:
+      label: Anwendungsversion
+      placeholder: 1.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Bereich
+      options:
+        - CII-Parser
+        - UBL-Parser
+        - Hybrid-PDF
+        - Browseransicht
+        - HTML-Bericht
+        - interne Prüfung
+        - KoSIT-Anbindung
+        - API
+        - Installation oder Build
+        - Sonstiges
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Beobachtetes Verhalten
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Erwartetes Verhalten
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Anonymisierte Reproduktion
+      description: Minimale XML oder genaue Schritte; keine echten Rechnungen anhängen.
+      render: xml
+  - type: textarea
+    id: environment
+    attributes:
+      label: Umgebung
+      description: Betriebssystem, Python, Java, Browser und gegebenenfalls KoSIT-Version.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Datenschutz
+      options:
+        - label: Die Meldung enthält keine echten Personen-, Konto-, Steuer- oder Rechnungsdaten.
+          required: true

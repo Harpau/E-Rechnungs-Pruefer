@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Verify versions
+        run: python scripts/verify_version.py
+      - name: Ruff lint
+        run: python -m ruff check app tests scripts
+      - name: Ruff format
+        run: python -m ruff format --check app tests scripts
+      - name: Mypy
+        run: python -m mypy
+      - name: Tests with coverage
+        run: python -m pytest --cov=app --cov-report=term-missing --cov-report=xml
+      - name: Package metadata
+        run: python -m pip check
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e . pytest httpx
+      - name: Run tests
+        run: python -m pytest
+
+  windows-smoke:
+    name: Windows smoke test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e . pytest httpx
+      - name: API and KoSIT integration tests
+        run: python -m pytest tests/test_api.py tests/test_kosit.py
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build image
+        run: docker build --tag e-rechnung-pruefer:test .

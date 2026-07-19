@@ -1,0 +1,45 @@
+E-RECHNUNGS-VIEWER & PRUEFER 1.1.0
+====================================
+
+NUTZUNG UNTER WINDOWS
+---------------------
+1. ZIP-Datei vollstaendig entpacken.
+2. scripts\start.bat ausfuehren.
+3. Beim ersten Start wird eine lokale Python-Umgebung erstellt.
+4. Die Anwendung oeffnet sich unter http://127.0.0.1:8080.
+
+ENTWICKLUNG MIT CODEX
+---------------------
+1. Repository in Codex oeffnen.
+2. AGENTS.md wird als Projektanweisung verwendet.
+3. Entwicklungsumgebung einrichten:
+
+   .\scripts\bootstrap_dev.ps1
+
+4. Vor jedem Commit pruefen:
+
+   .\scripts\check.ps1
+
+GITHUB VORBEREITEN
+------------------
+
+   .\scripts\init_git.ps1 -RemoteUrl https://github.com/OWNER/REPOSITORY.git
+   git status
+   git push -u origin main
+
+OFFIZIELLE KOSIT-PRUEFUNG
+-------------------------
+Die interne Pruefung funktioniert sofort. Fuer XSD-/Schematron-Pruefungen:
+
+   python scripts\install_kosit.py
+
+Der Installer verwendet nur das ausfuehrbare Standalone-JAR. KoSIT-Dateien,
+lokale Konfigurationen und Rechnungen werden nicht in Git aufgenommen.
+
+WEITERE INFORMATIONEN
+---------------------
+README.md             Nutzung und Entwicklung
+docs\CODEX.md         Codex-Arbeitsweise
+docs\GITHUB_SETUP.md  GitHub-Einrichtung
+docs\VALIDATION.md    Umfang der Pruefungen
+SECURITY.md            Sicherheitshinweise

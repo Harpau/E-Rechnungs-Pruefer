@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+    volumes:
+      - ./vendor:/app/vendor
+    restart: unless-stopped

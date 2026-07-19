@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ analysis.document.kind }} {{ analysis.document.id or '' }} – E-Rechnungsbericht</title>
+<style>
+  :root { --ink:#18272e; --muted:#5f7078; --line:#d5dfe3; --soft:#f4f7f8; --primary:#0b6477; --ok:#16724a; --warn:#9a5c00; --error:#a92f3b; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:var(--ink); background:#eef2f4; font-family:Arial,Helvetica,sans-serif; font-size:10pt; line-height:1.45; }
+  .report { width:min(1120px,100%); margin:0 auto; background:#fff; box-shadow:0 16px 50px rgba(20,35,42,.12); }
+  .page { padding:18mm 17mm; }
+  .hero { padding:18mm 17mm 15mm; color:#fff; background:#153842; }
+  .hero-top { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }
+  .brand { font-size:9pt; letter-spacing:.09em; text-transform:uppercase; color:#a8d6dd; font-weight:700; }
+  .hero h1 { margin:14mm 0 2mm; font-size:27pt; line-height:1.05; letter-spacing:-.04em; }
+  .hero p { margin:0; color:#d2e0e4; }
+  .status { padding:6px 10px; border-radius:7px; font-size:8pt; font-weight:700; text-transform:uppercase; letter-spacing:.05em; background:rgba(255,255,255,.14); }
+  .status.ok { background:var(--ok); } .status.warning { background:#b67912; } .status.invalid { background:#c34752; }
+  .hero-grid { display:grid; grid-template-columns:1fr auto; gap:20px; align-items:end; margin-top:13mm; padding-top:7mm; border-top:1px solid rgba(255,255,255,.18); }
+  .hero-amount { text-align:right; } .hero-amount span,.hero-amount small { display:block; color:#c9dade; } .hero-amount strong { display:block; font-size:25pt; letter-spacing:-.04em; }
+  h2 { margin:0 0 5mm; font-size:16pt; letter-spacing:-.025em; }
+  h3 { margin:5mm 0 2mm; font-size:11pt; }
+  .eyebrow { margin:0 0 1mm; color:var(--primary); font-size:7pt; font-weight:700; letter-spacing:.1em; text-transform:uppercase; }
+  .muted { color:var(--muted); }
+  .section { margin-top:9mm; }
+  .section:first-child { margin-top:0; }
+  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:7mm; }
+  .grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:4mm; }
+  .card { padding:5mm; border:1px solid var(--line); border-radius:4mm; background:#fff; break-inside:avoid; }
+  .fact { min-height:22mm; padding:4mm; border:1px solid var(--line); border-radius:3mm; background:var(--soft); }
+  .fact span,.fact strong { display:block; } .fact span { margin-bottom:2mm; color:var(--muted); font-size:7pt; text-transform:uppercase; letter-spacing:.05em; } .fact strong { overflow-wrap:anywhere; }
+  dl { margin:0; } .row { display:grid; grid-template-columns:37% 63%; gap:3mm; padding:2mm 0; border-top:1px solid #e8edef; } .row:first-child { border-top:0; } dt { color:var(--muted); } dd { margin:0; font-weight:600; overflow-wrap:anywhere; }
+  .party-name { margin-bottom:2mm; font-size:13pt; font-weight:700; } .address { margin:3mm 0; }
+  table { width:100%; border-collapse:collapse; table-layout:fixed; }
+  th { padding:2.5mm 2mm; border-bottom:1.5px solid #aebdc3; color:var(--muted); font-size:7pt; text-align:left; text-transform:uppercase; letter-spacing:.04em; }
+  td { padding:3mm 2mm; border-bottom:1px solid #e2e8eb; vertical-align:top; overflow-wrap:anywhere; }
+  tr:last-child td { border-bottom:0; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .small { color:var(--muted); font-size:8pt; }
+  .sum-row { display:grid; grid-template-columns:1fr auto; gap:5mm; padding:2.3mm 0; border-top:1px solid #e3e9eb; } .sum-row:first-child { border-top:0; } .sum-row strong { text-align:right; }
+  .sum-row.grand { margin-top:2mm; padding-top:3mm; border-top:1.5px solid #9aabb2; font-size:11pt; }
+  .sum-row.payable { margin:3mm -2mm -2mm; padding:4mm 2mm; border:0; border-radius:2mm; background:#e5f3f5; color:#074958; font-size:12pt; }
+  .note { margin:0 0 3mm; padding:3mm; border-left:3px solid var(--primary); background:var(--soft); }
+  .finding { margin-bottom:3mm; padding:4mm; border:1px solid var(--line); border-left:4px solid #527ba1; border-radius:2.5mm; break-inside:avoid; } .finding.error { border-left-color:var(--error); } .finding.warning { border-left-color:var(--warn); } .finding.info { border-left-color:#527ba1; }
+  .finding-head { display:flex; justify-content:space-between; gap:5mm; } .finding h3 { margin:0 0 1mm; } .code { white-space:nowrap; color:var(--muted); font-family:monospace; font-size:8pt; } .finding p { margin:0 0 2mm; } .finding-meta { color:var(--muted); font-size:8pt; }
+  .counts { display:flex; gap:3mm; margin-top:5mm; } .count { min-width:28mm; padding:3mm; border-radius:2mm; background:rgba(255,255,255,.11); text-align:center; } .count strong,.count span { display:block; } .count strong { font-size:15pt; } .count span { color:#d2e0e4; font-size:7pt; text-transform:uppercase; }
+  .technical { font-size:7.5pt; table-layout:auto; } .technical th:nth-child(1){width:21mm}.technical th:nth-child(2){width:52%}.technical td:nth-child(2){font-family:monospace;font-size:7pt}.technical thead{display:table-header-group}.technical tr{break-inside:avoid}
+  pre { margin:0; padding:5mm; border-radius:3mm; background:#10282f; color:#ecf6f7; font-family:Consolas,"Courier New",monospace; font-size:7pt; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .page-break { break-before:page; page-break-before:always; }
+  .footer { padding:5mm 17mm; border-top:1px solid var(--line); display:flex; justify-content:space-between; gap:10mm; color:var(--muted); font-size:7.5pt; }
+  @page { size:A4; margin:12mm; }
+  @media print { body{background:#fff}.report{width:100%;box-shadow:none}.hero,.page,.footer{padding-left:0;padding-right:0}.hero{padding-top:0}.page{padding-top:9mm;padding-bottom:9mm}.footer{padding-bottom:0}.card{break-inside:avoid} }
+  @media (max-width:700px){.grid-2,.grid-3,.hero-grid{grid-template-columns:1fr}.hero-amount{text-align:left}.page,.hero{padding:24px}.footer{padding:14px 24px;flex-direction:column}.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+{% set doc = analysis.document %}
+{% set totals = analysis.totals %}
+{% set currency = doc.currency or totals.currency or 'EUR' %}
+<div class="report">
+  <header class="hero">
+    <div class="hero-top"><div class="brand">E‑Rechnungs‑Viewer &amp; Prüfer</div>
+      <span class="status {{ analysis.validation.status }}">{% if analysis.validation.status == 'ok' %}Unauffällig{% elif analysis.validation.status == 'warning' %}Auffällig{% else %}Fehlerhaft{% endif %}</span>
+    </div>
+    <h1>{{ doc.kind }} {{ doc.id or '' }}</h1>
+    <p>{{ doc.format }} · {{ doc.profile_name }} · erstellt am {{ doc.issue_date|de_date }}</p>
+    <div class="hero-grid">
+      <div>
+        <div class="counts">
+          <div class="count"><strong>{{ analysis.validation.counts.error }}</strong><span>Fehler</span></div>
+          <div class="count"><strong>{{ analysis.validation.counts.warning }}</strong><span>Warnungen</span></div>
+          <div class="count"><strong>{{ analysis.validation.counts.info }}</strong><span>Hinweise</span></div>
+        </div>
+      </div>
+      <div class="hero-amount"><span>Zahlbetrag</span><strong>{{ totals.due_payable_amount|money(currency) }}</strong><small>Fällig: {{ doc.due_date|de_date }}</small></div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="section">
+      <p class="eyebrow">Rechnungsdaten</p><h2>Übersicht</h2>
+      <div class="grid-3">
+        {% for label, value in [
+          ('Rechnungsnummer', doc.id), ('Rechnungsdatum', doc.issue_date|de_date), ('Liefer-/Leistungsdatum', doc.delivery_date|de_date),
+          ('Fälligkeit', doc.due_date|de_date), ('Rechnungsart', doc.type_label or doc.type_code), ('Währung', doc.currency_label or doc.currency),
+          ('Profil', doc.profile_name), ('Profilkennung', doc.profile_id), ('Käuferreferenz', doc.buyer_reference),
+          ('Syntax', doc.syntax), ('Geschäftsprozess', analysis.profile.business_process_id), ('Steuerdatum', doc.tax_point_date|de_date)
+        ] %}
+          <div class="fact"><span>{{ label }}</span><strong>{{ value or '–' }}</strong></div>
+        {% endfor %}
+      </div>
+    </section>
+
+    {% macro party_card(title, p) -%}
+      <article class="card">
+        <p class="eyebrow">{{ title }}</p><div class="party-name">{{ p.name or 'Nicht angegeben' }}</div>
+        {% if p.description %}<p class="small">{{ p.description }}</p>{% endif %}
+        <div class="address">
+          {% for line in [p.address.line1, p.address.line2, p.address.line3] %}{% if line %}<div>{{ line }}</div>{% endif %}{% endfor %}
+          {% if p.address.postcode or p.address.city %}<div>{{ p.address.postcode or '' }} {{ p.address.city or '' }}</div>{% endif %}
+          {% if p.address.subdivision %}<div>{{ p.address.subdivision }}</div>{% endif %}
+          {% if p.address.country %}<div>{{ p.address.country }}</div>{% endif %}
+        </div>
+        <dl>
+          {% set ids = p.ids|map(attribute='value')|list %}{% if ids %}<div class="row"><dt>Kennungen</dt><dd>{{ ids|join(', ') }}</dd></div>{% endif %}
+          {% set taxids = p.tax_ids|map(attribute='value')|list %}{% if taxids %}<div class="row"><dt>Steuerkennungen</dt><dd>{{ taxids|join(', ') }}</dd></div>{% endif %}
+          {% if p.endpoint and p.endpoint.value %}<div class="row"><dt>Elektronische Adresse</dt><dd>{{ p.endpoint.value }}{% if p.endpoint.scheme %} ({{ p.endpoint.scheme }}){% endif %}</dd></div>{% endif %}
+          {% if p.contact.name %}<div class="row"><dt>Kontakt</dt><dd>{{ p.contact.name }}</dd></div>{% endif %}
+          {% if p.contact.department %}<div class="row"><dt>Abteilung</dt><dd>{{ p.contact.department }}</dd></div>{% endif %}
+          {% if p.contact.phone %}<div class="row"><dt>Telefon</dt><dd>{{ p.contact.phone }}</dd></div>{% endif %}
+          {% if p.contact.email %}<div class="row"><dt>E-Mail</dt><dd>{{ p.contact.email }}</dd></div>{% endif %}
+        </dl>
+      </article>
+    {%- endmacro %}
+
+    <section class="section grid-2">{{ party_card('Verkäufer', analysis.seller) }}{{ party_card('Käufer', analysis.buyer) }}</section>
+
+    {% if analysis.payee|party_has_data or analysis.invoicee|party_has_data or analysis.ship_to|party_has_data %}
+    <section class="section grid-2">
+      {% if analysis.payee|party_has_data %}{{ party_card('Zahlungsempfänger', analysis.payee) }}{% endif %}
+      {% if analysis.invoicee|party_has_data %}{{ party_card('Rechnungsempfänger', analysis.invoicee) }}{% endif %}
+      {% if analysis.ship_to|party_has_data %}{{ party_card('Lieferempfänger', analysis.ship_to) }}{% endif %}
+    </section>
+    {% endif %}
+
+    {% if analysis.header_allowances_charges %}
+    <section class="section card">
+      <p class="eyebrow">Rechnungsebene</p><h2>Nachlässe und Zuschläge</h2>
+      {% for ac in analysis.header_allowances_charges %}
+      <div class="sum-row"><span>{{ ac.type_label or 'Anpassung' }}<span class="small">{% if ac.percent %}{{ ac.percent|de_number }} % · {% endif %}{% if ac.basis_amount %}Basis {{ ac.basis_amount|money(ac.basis_currency or currency) }} · {% endif %}{{ ac.reason or ac.reason_code or '' }}</span></span><strong>{{ ac.amount|money(ac.currency or currency) }}</strong></div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <section class="section">
+      <p class="eyebrow">Leistungen und Waren</p><h2>Rechnungspositionen</h2>
+      <table>
+        <thead><tr><th style="width:8%">Pos.</th><th style="width:38%">Artikel / Leistung</th><th class="num" style="width:13%">Menge</th><th class="num" style="width:17%">Preis / Basis</th><th class="num" style="width:9%">USt.</th><th class="num" style="width:15%">Netto</th></tr></thead>
+        <tbody>
+        {% for line in analysis.lines %}
+          <tr>
+            <td>{{ line.id or loop.index }}</td>
+            <td><strong>{{ line.name or line.description or 'Ohne Bezeichnung' }}</strong>
+              {% if line.description and line.description != line.name %}<div class="small">{{ line.description }}</div>{% endif %}
+              {% if line.seller_item_id %}<div class="small">Art.-Nr. {{ line.seller_item_id }}</div>{% endif %}
+              {% if line.buyer_item_id %}<div class="small">Käufer-ID {{ line.buyer_item_id }}</div>{% endif %}
+              {% if line.standard_item_id %}<div class="small">Standard-ID {{ line.standard_item_id }}{% if line.standard_item_scheme %} ({{ line.standard_item_scheme }}){% endif %}</div>{% endif %}
+              {% for note in line.notes %}<div class="small">{{ note }}</div>{% endfor %}
+              {% if line.period %}<div class="small">Abrechnungszeitraum: {% if line.period.start %}von {{ line.period.start|de_date }} {% endif %}{% if line.period.end %}bis {{ line.period.end|de_date }} {% endif %}{{ line.period.description or '' }}</div>{% endif %}
+              {% if line.order_line_reference %}<div class="small">Bestellposition: {{ line.order_line_reference }}</div>{% endif %}
+              {% if line.accounting_cost %}<div class="small">Kontierung: {{ line.accounting_cost }}</div>{% endif %}
+              {% if line.origin_country_label or line.origin_country %}<div class="small">Ursprungsland: {{ line.origin_country_label or line.origin_country }}</div>{% endif %}
+              {% for class in line.classifications %}<div class="small">Klassifikation: {{ class.code or '' }}{% if class.name %} · {{ class.name }}{% endif %}{% if class.scheme %} · Schema {{ class.scheme }}{% endif %}{% if class.version %} · Version {{ class.version }}{% endif %}</div>{% endfor %}
+              {% for prop in line.additional_properties %}<div class="small">{{ prop.name or 'Eigenschaft' }}: {{ prop.value or '–' }}</div>{% endfor %}
+              {% for ac in line.allowances_charges %}<div class="small">{{ ac.type_label }}: {{ ac.amount|money(ac.currency or currency) }}{% if ac.percent %} · {{ ac.percent|de_number }} %{% endif %}{% if ac.basis_amount %} · Basis {{ ac.basis_amount|money(ac.basis_currency or currency) }}{% endif %}{% if ac.reason or ac.reason_code %} · {{ ac.reason or ac.reason_code }}{% endif %}</div>{% endfor %}
+            </td>
+            <td class="num">{{ line.quantity|de_number }}<div class="small">{{ line.unit_label or line.unit_code or '' }}</div></td>
+            <td class="num">{{ line.price|money(line.price_currency or currency) }}<div class="small">je {{ line.base_quantity|de_number }} {{ line.base_unit_label or line.base_unit_code or '' }}</div></td>
+            <td class="num">
+              {{ line.tax_category_display or line.tax_category_label or line.tax_category or '–' }}
+              {% if line.tax_rate is not none and line.tax_rate != '' %}<div class="small">{{ line.tax_rate|de_number }} %</div>{% endif %}
+            </td>
+            <td class="num"><strong>{{ line.line_total|money(line.line_currency or currency) }}</strong></td>
+          </tr>
+        {% else %}<tr><td colspan="6">Keine Positionen erkannt.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section grid-2">
+      <article class="card"><p class="eyebrow">Steuern</p><h2>Umsatzsteuer</h2>
+        {% for tax in analysis.taxes %}
+          <div class="sum-row">
+            <span>
+              {{ tax.category_display or tax.category_label or tax.category_code or 'Steuer' }}{% if tax.rate is not none and tax.rate != '' %} · {{ tax.rate|de_number }} %{% endif %}
+              <span class="small">
+                {% if tax.basis_amount is not none and tax.basis_amount != '' %}{{ tax.basis_label or 'Bemessungsgrundlage' }} {{ tax.basis_amount|money(tax.basis_currency or currency) }}{% endif %}
+                {% if tax.exemption_reason %}<br>Begründung: {{ tax.exemption_reason }}{% endif %}
+                {% if tax.exemption_reason_code %}<br>Begründungscode: {{ tax.exemption_reason_code }}{% endif %}
+              </span>
+            </span>
+            <strong>{{ tax.tax_amount|money(tax.tax_currency or currency) }}</strong>
+          </div>
+        {% else %}<p class="muted">Keine Steueraufschlüsselung erkannt.</p>{% endfor %}
+      </article>
+      <article class="card"><p class="eyebrow">Beträge</p><h2>Summen</h2>
+        {% for label, value, cls in [
+          ('Summe Positionen', totals.line_total, ''), ('Nachlässe', totals.allowance_total, ''), ('Zuschläge', totals.charge_total, ''),
+          ('Nettobetrag / Steuerbasis', totals.tax_basis_total, ''), ('Umsatzsteuer', totals.tax_total, ''), ('Bruttobetrag', totals.grand_total, 'grand'),
+          ('Vorauszahlungen', totals.prepaid_amount, ''), ('Rundung', totals.rounding_amount, ''), ('Zahlbetrag', totals.due_payable_amount, 'payable')
+        ] %}{% if value is not none %}<div class="sum-row {{ cls }}"><span>{{ label }}</span><strong>{{ value|money(currency) }}</strong></div>{% endif %}{% endfor %}
+      </article>
+    </section>
+
+    <section class="section grid-2">
+      <article class="card"><p class="eyebrow">Zahlungsinformationen</p><h2>Zahlung</h2>
+        {% if analysis.payment.reference %}<dl><div class="row"><dt>Zahlungsreferenz</dt><dd>{{ analysis.payment.reference }}</dd></div></dl>{% endif %}
+        {% for means in analysis.payment.means %}<h3>Zahlungsweg {{ loop.index }}</h3><dl>
+          {% for label, value in [('Art', means.type_label or means.type_code), ('Information', means.information), ('IBAN / Konto', means.iban), ('Kontoinhaber', means.account_name), ('BIC', means.bic), ('IBAN des Zahlers', means.payer_iban), ('Mandatsreferenz', means.mandate_reference), ('Gläubiger-ID', means.creditor_id), ('Kartennummer/Konto', means.card_account), ('Zahlungs-ID', means.payment_id)] %}{% if value %}<div class="row"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endif %}{% endfor %}
+        </dl>{% endfor %}
+        {% for term in analysis.payment.terms %}<h3>Zahlungsbedingung {{ loop.index }}</h3><dl>
+          {% if term.description %}<div class="row"><dt>Beschreibung</dt><dd>{{ term.description }}</dd></div>{% endif %}
+          {% if term.due_date %}<div class="row"><dt>Fälligkeit</dt><dd>{{ term.due_date|de_date }}</dd></div>{% endif %}
+          {% if term.direct_debit_mandate_id %}<div class="row"><dt>Lastschriftmandat</dt><dd>{{ term.direct_debit_mandate_id }}</dd></div>{% endif %}
+          {% if term.partial_payment_amount %}<div class="row"><dt>Teilzahlungsbetrag</dt><dd>{{ term.partial_payment_amount|money(currency) }}</dd></div>{% endif %}
+        </dl>{% endfor %}
+        {% if not analysis.payment.means and not analysis.payment.terms and not analysis.payment.reference %}<p class="muted">Keine Zahlungsangaben erkannt.</p>{% endif %}
+      </article>
+      <article class="card"><p class="eyebrow">Zuordnung</p><h2>Referenzen und Lieferung</h2><dl>
+        {% for label, value in [('Bestellreferenz Käufer', analysis.references.buyer_order), ('Bestellreferenz Verkäufer', analysis.references.seller_order), ('Vertrag', analysis.references.contract), ('Projekt', analysis.references.project), ('Vorgängerrechnungen', analysis.references.preceding_invoices|join(', ')), ('Lieferdatum', analysis.delivery.date|de_date), ('Versandavis', analysis.delivery.despatch_advice_reference), ('Wareneingangsavis', analysis.delivery.receiving_advice_reference)] %}{% if value and value != '–' %}<div class="row"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endif %}{% endfor %}
+      </dl>
+      {% for ref in analysis.references.additional_documents %}<h3>Weiteres Dokument {{ loop.index }}</h3><dl>{% for label, value in [('ID',ref.id),('Typ',ref.name or ref.type_code),('Beschreibung',ref.description),('Datei',ref.attachment_filename),('MIME',ref.attachment_mime),('URI',ref.external_uri)] %}{% if value %}<div class="row"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endif %}{% endfor %}</dl>{% endfor %}
+      </article>
+    </section>
+
+    <section class="section grid-2">
+      <article class="card"><p class="eyebrow">Rechnungstext</p><h2>Hinweise</h2>{% for note in doc.notes %}<p class="note">{{ note }}</p>{% else %}<p class="muted">Keine Hinweise enthalten.</p>{% endfor %}</article>
+      <article class="card"><p class="eyebrow">Datei und Verarbeitung</p><h2>Quelle</h2><dl>
+        {% for label, value in [('Datei',analysis.source.filename),('Dateityp',analysis.source.media_type),('Größe',analysis.source.size|bytes),('Container',analysis.source.container.type),('XML-Datei',analysis.source.xml_filename),('XML-Größe',analysis.source.xml_size|bytes),('Seiten',analysis.source.container.page_count),('SHA-256 Quelldatei',analysis.source.sha256),('SHA-256 XML',analysis.source.xml_sha256),('Verarbeitungsdauer',analysis.processing.duration_ms|string ~ ' ms')] %}{% if value %}<div class="row"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endif %}{% endfor %}
+      </dl>{% for a in analysis.source.attachments %}<h3>Eingebettete Datei {{ loop.index }}</h3><dl><div class="row"><dt>Name</dt><dd>{{ a.name }}</dd></div><div class="row"><dt>Größe</dt><dd>{{ a.size|bytes }}</dd></div><div class="row"><dt>XML</dt><dd>{{ 'Ja' if a.is_xml else 'Nein' }}</dd></div><div class="row"><dt>SHA-256</dt><dd>{{ a.sha256 }}</dd></div></dl>{% endfor %}</article>
+    </section>
+  </main>
+
+  <section class="page page-break">
+    <p class="eyebrow">Prüfung</p><h2>Prüfbericht</h2>
+    <p><strong>{{ analysis.validation.assessment }}</strong></p><p class="muted">{{ analysis.validation.builtin.scope }}</p>
+    <div class="card" style="margin-bottom:6mm"><strong>{% if analysis.validation.official.executed %}KoSIT: {{ 'akzeptiert' if analysis.validation.official.accepted else 'abgelehnt' }}{% else %}KoSIT nicht ausgeführt{% endif %}</strong><p class="muted" style="margin:1mm 0 0">{{ analysis.validation.official.summary }}</p></div>
+    {% for f in analysis.validation.findings %}<article class="finding {{ f.severity }}"><div class="finding-head"><h3>{{ f.title }}</h3><span class="code">{{ f.id }}</span></div><p>{{ f.message }}</p><div class="finding-meta">{% if f.location %}Ort: {{ f.location }} · {% endif %}{% if f.actual is not none %}Ist: {{ f.actual }} · {% endif %}{% if f.expected is not none %}Erwartet: {{ f.expected }} · {% endif %}Quelle: {{ f.source }}</div></article>{% endfor %}
+    {% if analysis.validation.official.raw_report %}<h3>Technischer KoSIT-Bericht</h3><pre>{{ analysis.validation.official.raw_report }}</pre>{% endif %}
+  </section>
+
+  <section class="page page-break">
+    <p class="eyebrow">Vollständiger technischer Anhang</p><h2>Alle XML-Elemente, Attribute und Namespaces</h2>
+    <p class="muted">{{ analysis.technical.field_count }} Einträge. {% if analysis.technical.truncated %}Die tabellarische Darstellung wurde an der konfigurierten Grenze beendet; das Roh-XML darunter ist vollständig.{% endif %}</p>
+    <table class="technical"><thead><tr><th>Typ</th><th>XML-Pfad</th><th>Wert</th></tr></thead><tbody>{% for row in analysis.technical.rows %}<tr><td>{{ row.kind }}</td><td>{{ row.path }}</td><td>{{ row.value }}</td></tr>{% endfor %}</tbody></table>
+  </section>
+
+  <section class="page page-break">
+    <p class="eyebrow">Originalstruktur</p><h2>Roh-XML</h2><pre>{{ analysis.technical.original_xml }}</pre>
+  </section>
+
+  <footer class="footer"><span>Erzeugt am {{ generated_at }} mit E‑Rechnungs‑Viewer &amp; Prüfer {{ version }}</span><span>Interne Prüfungen ersetzen ohne KoSIT-Ausführung keine vollständige XSD-/Schematron-Konformitätsprüfung.</span></footer>
+</div>
+</body>
+</html>

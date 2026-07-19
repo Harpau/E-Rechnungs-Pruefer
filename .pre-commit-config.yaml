@@ -1,0 +1,24 @@
+repos:
+  - repo: local
+    hooks:
+      - id: verify-version
+        name: Versionsangaben abgleichen
+        entry: python scripts/verify_version.py
+        language: python
+        pass_filenames: false
+
+      - id: ruff-check
+        name: Ruff Linter
+        entry: python -m ruff check --fix
+        language: python
+        additional_dependencies:
+          - "ruff>=0.12,<1"
+        types_or: [python, pyi]
+
+      - id: ruff-format
+        name: Ruff Formatter
+        entry: python -m ruff format
+        language: python
+        additional_dependencies:
+          - "ruff>=0.12,<1"
+        types_or: [python, pyi]

@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="E-Rechnungen im CII-, XRechnung-, ZUGFeRD-, Factur-X- und UBL-Format lokal darstellen und prüfen.">
+  <title>E-Rechnungs-Viewer &amp; Prüfer</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body data-kosit-configured="{{ 'true' if kosit_configured else 'false' }}">
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Startseite">
+      <span class="brand-mark" aria-hidden="true">E</span>
+      <span><strong>E‑Rechnungs‑Viewer</strong><small>Darstellen · Rechnen · Prüfen</small></span>
+    </a>
+    <div class="header-meta">
+      <span class="privacy-pill">Lokale Verarbeitung</span>
+      <span>Version {{ version }}</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="upload-view" class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Strukturierte Rechnungsdaten verständlich machen</p>
+        <h1>E‑Rechnungen lesen, vollständig darstellen und prüfen</h1>
+        <p class="lead">Unterstützt CII/XRechnung/ZUGFeRD/Factur‑X sowie UBL Invoice und CreditNote. XML-Dateien und PDFs mit eingebetteter Rechnungs-XML werden direkt im Browser aufbereitet.</p>
+        <div class="feature-row" aria-label="Funktionen">
+          <span>Alle XML-Felder</span><span>Rechenprüfung</span><span>HTML-/PDF-Ausgabe</span><span>KoSIT-Anbindung</span>
+        </div>
+      </div>
+
+      <section class="upload-card" aria-labelledby="upload-heading">
+        <h2 id="upload-heading">Rechnung öffnen</h2>
+        <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-describedby="upload-help">
+          <input id="file-input" type="file" accept=".xml,.pdf,application/xml,text/xml,application/pdf" hidden>
+          <span class="upload-icon" aria-hidden="true">↥</span>
+          <strong>Datei hier ablegen</strong>
+          <span>oder zum Auswählen klicken</span>
+          <small id="upload-help">XML oder PDF mit eingebettetem XML, maximal {{ max_upload_mb }} MB</small>
+        </div>
+
+        <label class="check-row">
+          <input id="official-checkbox" type="checkbox" checked {{ 'disabled' if not kosit_configured else '' }}>
+          <span>
+            <strong>Offizielle KoSIT-Prüfung ausführen</strong>
+            <small>{{ 'KoSIT ist eingerichtet.' if kosit_configured else (kosit_problem or 'Nicht eingerichtet – die interne Prüfung bleibt verfügbar.') }}</small>
+          </span>
+        </label>
+
+        <div class="example-row">
+          <span>Ohne eigene Datei testen:</span>
+          <button class="text-button example-button" type="button" data-example="cii">CII-Beispiel</button>
+          <button class="text-button example-button" type="button" data-example="ubl">UBL-Beispiel</button>
+        </div>
+
+        <div id="progress" class="progress-box" hidden aria-live="polite">
+          <span class="spinner" aria-hidden="true"></span>
+          <div><strong>Rechnung wird ausgewertet</strong><small>XML-Struktur, Beträge und Prüfregeln werden verarbeitet.</small></div>
+        </div>
+        <div id="error-box" class="error-box" hidden role="alert"></div>
+      </section>
+    </section>
+
+    <section id="result-view" class="result-view" hidden>
+      <div class="result-toolbar no-print">
+        <button id="new-file-button" class="secondary-button" type="button">← Andere Rechnung</button>
+        <div class="toolbar-actions">
+          <button id="download-json-button" class="secondary-button" type="button">Prüfbericht JSON</button>
+          <button id="download-xml-button" class="secondary-button" type="button">XML speichern</button>
+          <button id="download-html-button" class="secondary-button" type="button">HTML-Bericht</button>
+          <button id="print-button" class="primary-button" type="button">Drucken / PDF</button>
+        </div>
+      </div>
+
+      <section class="summary-card">
+        <div class="summary-main">
+          <span id="status-badge" class="status-badge">–</span>
+          <div>
+            <p id="document-kind" class="eyebrow">E‑Rechnung</p>
+            <h1 id="document-title">–</h1>
+            <p id="document-subtitle" class="muted">–</p>
+          </div>
+        </div>
+        <div class="summary-amount">
+          <span>Zahlbetrag</span>
+          <strong id="payable-total">–</strong>
+          <small id="due-date-summary">–</small>
+        </div>
+        <div id="summary-counts" class="summary-counts" aria-label="Prüfergebnis"></div>
+      </section>
+
+      <nav class="tabs no-print" aria-label="Ergebnisbereiche">
+        <button class="tab-button active" type="button" data-tab="invoice-panel">Rechnung</button>
+        <button class="tab-button" type="button" data-tab="validation-panel">Prüfbericht <span id="validation-tab-count" class="tab-count"></span></button>
+        <button class="tab-button" type="button" data-tab="technical-panel">Alle XML-Daten</button>
+        <button class="tab-button" type="button" data-tab="raw-panel">Roh-XML</button>
+      </nav>
+
+      <section id="invoice-panel" class="tab-panel active">
+        <div id="document-facts" class="facts-grid"></div>
+
+        <div class="two-column">
+          <article class="content-card">
+            <h2>Verkäufer</h2>
+            <div id="seller-card"></div>
+          </article>
+          <article class="content-card">
+            <h2>Käufer</h2>
+            <div id="buyer-card"></div>
+          </article>
+        </div>
+
+        <div id="additional-parties-section" class="two-column" hidden></div>
+
+        <article id="header-adjustments-card" class="content-card wide-card" hidden>
+          <div class="section-heading"><div><p class="eyebrow">Rechnungsebene</p><h2>Nachlässe und Zuschläge</h2></div></div>
+          <div id="header-adjustments-section"></div>
+        </article>
+
+        <article class="content-card wide-card">
+          <div class="section-heading"><div><p class="eyebrow">Leistungen und Waren</p><h2>Rechnungspositionen</h2></div><span id="line-count" class="count-pill"></span></div>
+          <div class="table-scroll">
+            <table class="data-table line-table">
+              <thead><tr><th>Pos.</th><th>Artikel / Leistung</th><th class="num">Menge</th><th class="num">Preis / Basis</th><th class="num">USt.</th><th class="num">Netto</th></tr></thead>
+              <tbody id="line-items-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <div class="two-column totals-layout">
+          <article class="content-card">
+            <h2>Umsatzsteuer</h2>
+            <div id="tax-section"></div>
+          </article>
+          <article class="content-card total-card">
+            <h2>Summen</h2>
+            <div id="totals-section"></div>
+          </article>
+        </div>
+
+        <div class="two-column">
+          <article class="content-card">
+            <h2>Zahlung</h2>
+            <div id="payment-section"></div>
+          </article>
+          <article class="content-card">
+            <h2>Referenzen und Lieferung</h2>
+            <div id="references-section"></div>
+          </article>
+        </div>
+
+        <div class="two-column">
+          <article class="content-card">
+            <h2>Hinweise</h2>
+            <div id="notes-section"></div>
+          </article>
+          <article class="content-card">
+            <h2>Quelldatei</h2>
+            <div id="source-section"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="validation-panel" class="tab-panel">
+        <article class="content-card wide-card validation-intro">
+          <div>
+            <p class="eyebrow">Prüfumfang</p>
+            <h2 id="validation-assessment">–</h2>
+            <p id="builtin-scope" class="muted"></p>
+          </div>
+          <div id="official-state" class="official-state"></div>
+        </article>
+        <div id="findings-list" class="findings-list"></div>
+        <details id="official-report-details" class="content-card raw-details" hidden>
+          <summary>Technischen KoSIT-Bericht anzeigen</summary>
+          <pre id="official-report-raw"></pre>
+        </details>
+      </section>
+
+      <section id="technical-panel" class="tab-panel">
+        <article class="content-card wide-card">
+          <div class="section-heading technical-heading">
+            <div><p class="eyebrow">Vollständiger technischer Anhang</p><h2>Elemente, Attribute und Namespaces</h2><p id="technical-summary" class="muted"></p></div>
+            <label class="search-field"><span class="visually-hidden">XML-Daten durchsuchen</span><input id="technical-search" type="search" placeholder="Pfad oder Wert suchen …"></label>
+          </div>
+          <div class="table-scroll technical-table-scroll">
+            <table class="data-table technical-table">
+              <thead><tr><th>Typ</th><th>XML-Pfad</th><th>Wert</th></tr></thead>
+              <tbody id="technical-body"></tbody>
+            </table>
+          </div>
+          <div class="pagination no-print">
+            <button id="technical-prev" class="secondary-button" type="button">← Zurück</button>
+            <span id="technical-page-info"></span>
+            <button id="technical-next" class="secondary-button" type="button">Weiter →</button>
+          </div>
+        </article>
+      </section>
+
+      <section id="raw-panel" class="tab-panel">
+        <article class="content-card wide-card raw-card">
+          <div class="section-heading"><div><p class="eyebrow">Unveränderte Informationsstruktur</p><h2>Roh-XML</h2></div><button id="copy-xml-button" class="secondary-button no-print" type="button">XML kopieren</button></div>
+          <pre id="raw-xml"></pre>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <footer class="site-footer no-print">
+    <span>E‑Rechnungs‑Viewer &amp; Prüfer {{ version }}</span>
+    <span>Dateien werden nur für die aktuelle Anfrage verarbeitet und nicht dauerhaft gespeichert.</span>
+  </footer>
+</body>
+</html>

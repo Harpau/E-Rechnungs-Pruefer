@@ -1,0 +1,8 @@
+include README.md LICENSE THIRD_PARTY.md SECURITY.md CHANGELOG.md CONTRIBUTING.md CODE_OF_CONDUCT.md SUPPORT.md AGENTS.md START_HERE.txt VERSION
+include Makefile Dockerfile compose.yaml requirements.txt requirements-dev.txt .env.example .editorconfig .gitattributes .gitignore .python-version .pre-commit-config.yaml
+recursive-include docs *.md
+recursive-include scripts *.py *.sh *.ps1 *.bat
+recursive-include tests *.py *.xml
+recursive-include app/templates *.html
+recursive-include app/static *.css *.js
+recursive-include app/examples *.xml

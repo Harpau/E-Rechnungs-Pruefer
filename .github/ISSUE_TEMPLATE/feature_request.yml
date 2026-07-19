@@ -1,0 +1,33 @@
+name: Funktionswunsch
+about: Erweiterung von Parser, Prüfung, API oder Darstellung vorschlagen
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Anwendungsfall
+      description: Welches konkrete Problem soll gelöst werden?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Gewünschtes Verhalten
+    validations:
+      required: true
+  - type: textarea
+    id: standards
+    attributes:
+      label: Relevante Syntax, Profilkennung oder Geschäftsbegriffe
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Akzeptanzkriterien
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Grenzen
+      options:
+        - label: Der Vorschlag verlangt keine Speicherung echter Rechnungen im Repository.
+          required: true
+        - label: Eine steuerrechtliche Aussage ist als technische Hilfe und nicht als Rechtsberatung formuliert.
