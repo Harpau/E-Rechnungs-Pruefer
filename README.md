@@ -1,6 +1,6 @@
 # E‑Rechnungs‑Viewer & Prüfer
 
-Lokale Webanwendung zum Öffnen, verständlichen Darstellen und Prüfen strukturierter E‑Rechnungen. Sie liest XML-Rechnungen direkt oder extrahiert die Rechnungs-XML aus einer Hybrid-PDF. Neben einer lesbaren Rechnungsansicht entstehen ein gemeinsamer Prüfbericht und ein technischer Anhang mit allen XML-Werten, Attributen, Namespaces und Pfaden.
+Lokale Webanwendung zum Öffnen, verständlichen Darstellen und Prüfen strukturierter E‑Rechnungen. Sie liest XML-Rechnungen direkt oder extrahiert die Rechnungs-XML aus einer Hybrid-PDF. Neben einer lesbaren Rechnungsansicht entstehen ein gemeinsamer Prüfbericht, XML-Textansichten und ein navigierbarer technischer Tabellenanhang mit erfassten Elementwerten, Attributen, Namespace-URIs und Pfaden.
 
 Die Anwendung ist als nachvollziehbares Prüf- und Analysewerkzeug konzipiert. Die eingebaute Prüfung ersetzt weder eine fachliche Steuerberatung noch eine vollständige Profilvalidierung. Für XSD-/Schematron-Prüfungen kann der offizielle KoSIT-Validator angebunden werden.
 
@@ -16,7 +16,7 @@ Reine Sicht- oder Scan-PDFs ohne eingebettete strukturierte XML werden bewusst n
 ## Wichtige Funktionen
 
 - lesbare Darstellung von Kopf, Parteien, Positionen, Einheiten, Preisbasismengen, Steuern, Summen, Zahlung, Referenzen, Lieferung und Hinweisen
-- vollständiger technischer Anhang und bytegetreuer Export der ursprünglichen XML
+- XML-Text- und Tabellenansichten sowie bytegetreuer Export der ursprünglichen XML-Bytes
 - interne Pflichtfeld-, Datums-, Format-, Rechen- und Plausibilitätsprüfungen
 - optionale KoSIT-Prüfung mit zuverlässiger Auswertung des VARL-Berichts
 - JSON-, XML- und eigenständiger HTML-Bericht; PDF-Ausgabe über den Browserdruck
