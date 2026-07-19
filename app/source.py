@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +17,7 @@ PREFERRED_EMBEDDED_XML_NAMES = (
     "invoice.xml",
     "creditnote.xml",
 )
+MAX_PDF_ATTACHMENTS = 100
 
 
 @dataclass(slots=True)
@@ -49,18 +51,29 @@ def _looks_like_xml(data: bytes) -> bool:
     return stripped.startswith(b"<")
 
 
-def _normalise_attachment_values(value: Any) -> list[bytes]:
-    if isinstance(value, (bytes, bytearray)):
-        return [bytes(value)]
-    if isinstance(value, list):
-        return [bytes(item) for item in value if isinstance(item, (bytes, bytearray))]
+def _attachment_priority(name: str, is_xml: bool) -> int | None:
+    lower_name = name.casefold()
     try:
-        return [bytes(value)]
-    except Exception:
-        return []
+        return PREFERRED_EMBEDDED_XML_NAMES.index(lower_name)
+    except ValueError:
+        if lower_name.endswith(".xml"):
+            return len(PREFERRED_EMBEDDED_XML_NAMES)
+        if is_xml:
+            return len(PREFERRED_EMBEDDED_XML_NAMES) + 10
+        return None
 
 
-def _extract_pdf_xml(data: bytes, filename: str, media_type: str) -> ExtractedSource:
+def _embedded_file_kind(name: str) -> str:
+    return "XML-Datei" if name.casefold().endswith(".xml") else "PDF-Datei"
+
+
+def _extract_pdf_xml(
+    data: bytes,
+    filename: str,
+    media_type: str,
+    *,
+    max_embedded_bytes: int | None = None,
+) -> ExtractedSource:
     try:
         reader = PdfReader(BytesIO(data), strict=False)
     except Exception as exc:
@@ -69,50 +82,90 @@ def _extract_pdf_xml(data: bytes, filename: str, media_type: str) -> ExtractedSo
     if reader.is_encrypted:
         try:
             if reader.decrypt("") == 0:
-                raise InvoiceInputError("Verschlüsselte PDF-Dateien werden nicht unterstützt.")
+                raise InvoiceInputError("Kennwortgeschützte PDF-Dateien werden nicht unterstützt.")
         except InvoiceInputError:
             raise
         except Exception as exc:
-            raise InvoiceInputError("Verschlüsselte PDF-Dateien werden nicht unterstützt.") from exc
+            raise InvoiceInputError("Kennwortgeschützte PDF-Dateien werden nicht unterstützt.") from exc
 
     attachment_rows: list[dict[str, Any]] = []
-    xml_candidates: list[tuple[int, str, bytes]] = []
+    invoice_candidates: list[tuple[int, str, bytes, bool]] = []
+    total_embedded_bytes = 0
 
     try:
-        attachments = reader.attachments
-        items = attachments.items() if hasattr(attachments, "items") else []
-        for attachment_name, value in items:
-            values = _normalise_attachment_values(value)
-            for index, payload in enumerate(values, start=1):
-                shown_name = str(attachment_name)
-                if len(values) > 1:
-                    shown_name = f"{shown_name} ({index})"
-                attachment_rows.append(
-                    {
-                        "name": shown_name,
-                        "size": len(payload),
-                        "sha256": sha256_hex(payload),
-                        "is_xml": _looks_like_xml(payload),
-                    }
+        embedded_files = []
+        for embedded_file in reader.attachment_list:
+            embedded_files.append(embedded_file)
+            if len(embedded_files) > MAX_PDF_ATTACHMENTS:
+                raise InvoiceInputError(f"Die PDF enthält mehr als {MAX_PDF_ATTACHMENTS} eingebettete Dateien.")
+        attachment_names = [str(item.alternative_name or item.name) for item in embedded_files]
+        attachment_name_counts = Counter(attachment_names)
+        attachment_name_indexes: Counter[str] = Counter()
+
+        for embedded_file, attachment_name in zip(embedded_files, attachment_names, strict=True):
+            attachment_name_indexes[attachment_name] += 1
+            shown_name = attachment_name
+            if attachment_name_counts[attachment_name] > 1:
+                shown_name = f"{attachment_name} ({attachment_name_indexes[attachment_name]})"
+
+            declared_size = embedded_file.size
+            if max_embedded_bytes is not None and declared_size is not None and declared_size > max_embedded_bytes:
+                raise InvoiceInputError(
+                    f"Eine eingebettete {_embedded_file_kind(attachment_name)} "
+                    "überschreitet die zulässige Größenbegrenzung."
                 )
-                if _looks_like_xml(payload):
-                    lower_name = str(attachment_name).lower()
-                    try:
-                        priority = PREFERRED_EMBEDDED_XML_NAMES.index(lower_name)
-                    except ValueError:
-                        priority = len(PREFERRED_EMBEDDED_XML_NAMES) + (0 if lower_name.endswith(".xml") else 10)
-                    xml_candidates.append((priority, str(attachment_name), payload))
+
+            payload = embedded_file.content
+            if max_embedded_bytes is not None and len(payload) > max_embedded_bytes:
+                raise InvoiceInputError(
+                    f"Eine eingebettete {_embedded_file_kind(attachment_name)} "
+                    "überschreitet die zulässige Größenbegrenzung."
+                )
+            total_embedded_bytes += len(payload)
+            if max_embedded_bytes is not None and total_embedded_bytes > max_embedded_bytes:
+                raise InvoiceInputError(
+                    "Die eingebetteten PDF-Dateien überschreiten zusammen die zulässige Größenbegrenzung."
+                )
+
+            is_xml = _looks_like_xml(payload)
+            attachment_rows.append(
+                {
+                    "name": shown_name,
+                    "size": len(payload),
+                    "sha256": sha256_hex(payload),
+                    "is_xml": is_xml,
+                }
+            )
+            priority = _attachment_priority(attachment_name, is_xml)
+            if priority is not None:
+                invoice_candidates.append((priority, attachment_name, payload, is_xml))
+        page_count = len(reader.pages)
+    except InvoiceInputError:
+        raise
     except Exception as exc:
         raise InvoiceInputError(f"Eingebettete PDF-Dateien konnten nicht ausgelesen werden: {exc}") from exc
 
-    if not xml_candidates:
+    if not invoice_candidates:
         raise InvoiceInputError(
             "Die PDF enthält keine erkennbare eingebettete XML-Rechnung. "
             "Eine reine Sicht-PDF ist keine auswertbare strukturierte E-Rechnung."
         )
 
-    xml_candidates.sort(key=lambda item: (item[0], item[1].lower()))
-    _, xml_name, xml_bytes = xml_candidates[0]
+    invoice_candidates.sort(key=lambda item: (item[0], item[1].casefold()))
+    selected_priority, xml_name, xml_bytes, selected_is_xml = invoice_candidates[0]
+    same_name_candidates = [
+        payload
+        for priority, candidate_name, payload, _is_xml in invoice_candidates
+        if priority == selected_priority and candidate_name.casefold() == xml_name.casefold()
+    ]
+    if any(payload != xml_bytes for payload in same_name_candidates):
+        raise InvoiceInputError(
+            "Die PDF enthält mehrere gleichnamige XML-Rechnungskandidaten mit unterschiedlichen Inhalten."
+        )
+    if not selected_is_xml:
+        raise InvoiceInputError(
+            f"Der bevorzugte eingebettete Rechnungskandidat {xml_name!r} enthält keine erkennbare XML-Datei."
+        )
     return ExtractedSource(
         xml_bytes=xml_bytes,
         xml_filename=xml_name,
@@ -122,7 +175,7 @@ def _extract_pdf_xml(data: bytes, filename: str, media_type: str) -> ExtractedSo
         original_sha256=sha256_hex(data),
         container={
             "type": "PDF mit eingebetteter XML",
-            "page_count": len(reader.pages),
+            "page_count": page_count,
             "selected_attachment": xml_name,
             "attachment_count": len(attachment_rows),
         },
@@ -130,12 +183,23 @@ def _extract_pdf_xml(data: bytes, filename: str, media_type: str) -> ExtractedSo
     )
 
 
-def extract_source(data: bytes, filename: str, media_type: str | None = None) -> ExtractedSource:
+def extract_source(
+    data: bytes,
+    filename: str,
+    media_type: str | None = None,
+    *,
+    max_embedded_bytes: int | None = None,
+) -> ExtractedSource:
     safe_name = Path(filename or "rechnung.xml").name
     detected_type = media_type or "application/octet-stream"
 
     if _looks_like_pdf(data):
-        return _extract_pdf_xml(data, safe_name, detected_type)
+        return _extract_pdf_xml(
+            data,
+            safe_name,
+            detected_type,
+            max_embedded_bytes=max_embedded_bytes,
+        )
 
     if _looks_like_xml(data):
         return ExtractedSource(

@@ -7,10 +7,13 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 ### Darstellung und Prüfung
 
 - Der Browser fordert bei nicht eingerichteter KoSIT-Anbindung keine offizielle Prüfung mehr an; der deaktivierte Schalter ist nicht ausgewählt und verursacht keine irreführende Konfigurationswarnung im Prüfergebnis
+- Hybrid-PDFs mit Kennwortschutz, mehrdeutigen Rechnungskandidaten, beschädigten Anhängen oder überschrittenem Dekodierungsbudget werden kontrolliert abgelehnt; leer entschlüsselbare PDFs bleiben unterstützt
 
 ### Qualität
 
 - HTTPX2 als bevorzugtes TestClient-Backend ergänzt und die veraltete HTTPX-Kompatibilität durch eine gezielte Pytest-Warnungsprüfung abgesichert
+- PDF-Randfälle, bytegetreuer XML-Export und Größenbegrenzungen werden durch zusätzliche Regressionstests und den Windows-Smoke-Test abgedeckt
+- pypdf 6 als Mindestversion festgelegt, um dessen zusätzliche Dekompressionsbegrenzung zu nutzen
 
 ## 1.1.0 – 2026-07-18
 

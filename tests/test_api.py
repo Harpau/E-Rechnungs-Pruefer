@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 from lxml import html
 
+import app.main as main_module
 from app.main import app
 
 client = TestClient(app)
@@ -53,6 +55,55 @@ def test_analyze_and_report_endpoints(cii_path):
     assert xml_export.status_code == 200
     assert xml_export.content == payload
     assert "application/xml" in xml_export.headers["content-type"]
+
+
+def test_pdf_xml_export_preserves_selected_attachment_bytes(ubl_path, pdf_bytes_factory):
+    payload = ubl_path.read_bytes()
+    pdf = pdf_bytes_factory(
+        ("invoice.xml", b"<lower-priority-candidate />"),
+        ("factur-x.xml", payload),
+        ("notes.txt", b"Synthetic test attachment."),
+    )
+
+    response = client.post(
+        "/api/xml",
+        files={"file": ("hybrid-rechnung.pdf", pdf, "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert response.content == payload
+    assert response.headers["content-disposition"] == 'attachment; filename="factur-x.xml"'
+
+
+def test_pdf_xml_export_rejects_decoded_attachment_over_limit(monkeypatch, pdf_bytes_factory):
+    payload = b"<Invoice>" + (b"x" * 200_000) + b"</Invoice>"
+    pdf = pdf_bytes_factory(("invoice.xml", payload), compress_attachments=True)
+    assert len(pdf) < 5_000 < len(payload)
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, max_upload_bytes=5_000))
+
+    response = client.post(
+        "/api/xml",
+        files={"file": ("komprimierte-xml.pdf", pdf, "application/pdf")},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "Eine eingebettete XML-Datei überschreitet die zulässige Größenbegrenzung.",
+        "type": "invoice_input_error",
+    }
+
+
+def test_api_rejects_raw_upload_over_limit(monkeypatch):
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, max_upload_bytes=10))
+
+    response = client.post(
+        "/api/xml",
+        files={"file": ("zu-gross.xml", b"<Invoice />", "application/xml")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"] == "invoice_input_error"
+    assert "größer als die zulässigen" in response.json()["detail"]
 
 
 def test_index_and_examples_are_available():

@@ -121,7 +121,12 @@ def analyze_bytes(
         limit_mb = app_settings.max_upload_bytes / (1024 * 1024)
         raise InvoiceInputError(f"Die Datei ist größer als die zulässigen {limit_mb:g} MB.")
 
-    source: ExtractedSource = extract_source(data, filename, media_type)
+    source: ExtractedSource = extract_source(
+        data,
+        filename,
+        media_type,
+        max_embedded_bytes=app_settings.max_upload_bytes,
+    )
     if len(source.xml_bytes) > app_settings.max_upload_bytes:
         raise InvoiceInputError("Die eingebettete XML-Datei überschreitet die zulässige Größenbegrenzung.")
 

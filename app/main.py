@@ -213,7 +213,12 @@ async def analyze(
 async def export_xml(file: UploadFile = File(...)):
     try:
         data = await _read_upload(file)
-        source = extract_source(data, file.filename or "rechnung.xml", file.content_type)
+        source = extract_source(
+            data,
+            file.filename or "rechnung.xml",
+            file.content_type,
+            max_embedded_bytes=settings.max_upload_bytes,
+        )
         filename = _safe_download_filename(source.xml_filename, "rechnung", "xml")
         return Response(
             content=source.xml_bytes,
