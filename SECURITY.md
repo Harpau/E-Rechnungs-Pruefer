@@ -24,8 +24,9 @@ Die Standardkonfiguration ist für den lokalen Einzelplatzbetrieb auf `127.0.0.1
 - Java-/Konfigurationsfehler werden nicht als fachliche Ablehnung interpretiert.
 - Download-Dateinamen werden bereinigt.
 - Browserantworten enthalten restriktive Sicherheitsheader.
+- Der Windows-Desktop-Launcher schützt den lokalen Browserzugriff zusätzlich mit einer zufälligen Sitzung sowie Host- und Origin-Prüfungen.
 - Das Docker-Image verwendet einen nicht privilegierten Benutzer.
-- Release-ZIPs schließen `.env`, `vendor`, Schlüsselmaterial, PDFs und nicht freigegebene XML-Dateien aus.
+- Release-ZIPs schließen `.env`, `vendor`, gebündelte Java-Laufzeiten, Download-Caches, Schlüsselmaterial, PDFs und nicht freigegebene XML-Dateien aus.
 
 ## Netzwerkbetrieb
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -14,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import __version__
 from .analyzer import analyze_bytes
+from .desktop_security import DESKTOP_PORT_ENV, DESKTOP_TOKEN_ENV, DesktopSessionMiddleware
 from .settings import settings
 from .source import extract_source
 from .validators.kosit import KositValidator
@@ -28,6 +30,12 @@ app = FastAPI(
     description="Lokale Darstellung und Prüfung strukturierter E-Rechnungen in CII und UBL.",
     docs_url="/api/docs",
     redoc_url=None,
+)
+_desktop_port = os.getenv(DESKTOP_PORT_ENV)
+app.add_middleware(
+    DesktopSessionMiddleware,
+    token=os.getenv(DESKTOP_TOKEN_ENV),
+    port=int(_desktop_port) if _desktop_port else None,
 )
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=APP_DIR / "templates")

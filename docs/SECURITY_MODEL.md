@@ -15,7 +15,7 @@
 3. XML-Inhalte, Namespaces, Attribute und Textwerte sind untrusted.
 4. Java-/KoSIT-Ausgaben und Berichtsdateien sind untrusted, bis sie sicher geparst wurden.
 5. Browserausgabe muss alle Rechnungswerte escapen.
-6. Downloads aus dem KoSIT-Installer erfolgen nur nach ausdrücklichem Benutzeraufruf.
+6. Downloads aus dem KoSIT-Installer erfolgen nur nach ausdrücklichem Benutzeraufruf. Der Windows-Build lädt ausschließlich festgeschriebene Komponenten und verifiziert ihre SHA-256-Prüfsummen.
 
 ## Wesentliche Bedrohungen und Kontrollen
 
@@ -39,6 +39,10 @@ Uploadgröße, technische Zeilenanzahl und KoSIT-Laufzeit sind begrenzt. Bei Hyb
 
 Jinja2 escaped standardmäßig; die JavaScript-Oberfläche verwendet `escapeHtml` für Rechnungswerte. Änderungen an `innerHTML` müssen sicherstellen, dass jeder untrusted Wert vorab escaped wird. Die Content Security Policy verhindert fremde Skripte und Objekte.
 
+### Lokaler Windows-Webserver
+
+Der Desktop-Launcher bindet ausschließlich einen vorab reservierten Socket auf `127.0.0.1`. Pro Prozess wird ein zufälliges Sitzungstoken erzeugt. Ein Startlink setzt ein `HttpOnly`-/`SameSite=Strict`-Cookie und entfernt das Token durch Weiterleitung aus der sichtbaren URL. Weitere Anfragen benötigen dieses Cookie; Host und bei schreibenden Browseranfragen der Origin werden geprüft. Die Laufzeitdatei unter `%LOCALAPPDATA%` enthält Port, Prozess-ID und Token, ist durch die Benutzerrechte des angemeldeten Windows-Kontos geschützt und wird beim normalen Beenden beziehungsweise bei der Deinstallation entfernt.
+
 ### Pfad- und Dateinamenmanipulation
 
 Upload- und Downloadnamen werden mit `Path(...).name` und einer Zeichen-Whitelist bereinigt. Temporäre KoSIT-Dateien bleiben unter einem neu angelegten Verzeichnis.
@@ -49,7 +53,7 @@ Ein Prozessfehler ohne validen VARL-Bericht ist kein Rechnungsurteil. Eine vorha
 
 ### Geheimnisse und echte Rechnungen im Repository
 
-`.gitignore`, Release-Filter und `AGENTS.md` schließen lokale Konfigurationen, KoSIT-Dateien, PDFs, Schlüssel und nicht freigegebene XML-Dateien aus. Die Schutzwirkung ersetzt keine Review von `git status` und Release-Inhalten.
+`.gitignore`, Release-Filter und `AGENTS.md` schließen lokale Konfigurationen, KoSIT-/Java-Dateien, Download-Caches, PDFs, Schlüssel und nicht freigegebene XML-Dateien aus. Die Schutzwirkung ersetzt keine Review von `git status` und Release-Inhalten. Der Windows-Build nimmt ausschließlich die gesperrten Komponenten in sein eigenes Endbenutzerartefakt auf.
 
 ## Nicht abgedeckt
 

@@ -29,7 +29,11 @@ Reine Sicht- oder Scan-PDFs ohne eingebettete strukturierte XML werden bewusst n
 
 Voraussetzung ist Python 3.11 oder neuer.
 
-### Windows
+### Windows-x64-Installer
+
+Der signierte Windows-Installer aus einem GitHub Release benötigt weder Python noch Java und bringt die festgeschriebenen KoSIT-/XRechnung-Komponenten mit. Details zu Erstellung, Signierung und Prüfung stehen in [`docs/WINDOWS_PACKAGE.md`](docs/WINDOWS_PACKAGE.md).
+
+### Windows aus dem Quellcode
 
 ```bat
 scripts\start.bat
@@ -93,6 +97,8 @@ oder unter Windows:
 
 Der Check umfasst Versionskonsistenz, Ruff, Mypy sowie Pytest mit Branch Coverage. Mit `python scripts/build_release.py` entstehen Wheel, Source Distribution, ein bereinigtes Repository-ZIP und SHA-256-Prüfsummen.
 
+Der Windows-x64-Installer wird nativ auf Windows beziehungsweise im Windows-Job von GitHub Actions gebaut. Er kann auf dem Intel-Mac entwickelt, aber nicht erzeugt oder ausgeführt werden.
+
 ## Weiterentwicklung mit Codex
 
 `AGENTS.md` beschreibt Architektur, Sicherheitsinvarianten, Testbefehle und fachliche Grenzen für Codex. Gute Aufgaben nennen das gewünschte Verhalten, eine anonymisierte Reproduktion und die erwarteten Tests. Beispiele und empfohlene Arbeitsabläufe stehen in [`docs/CODEX.md`](docs/CODEX.md).
@@ -128,7 +134,7 @@ Alternativ stehen die manuellen Schritte und Hinweise für Branch-Schutz, Action
 
 ## KoSIT-Validator einrichten
 
-Die interne Prüfung funktioniert ohne Java. Für eine offizielle profilbezogene XSD-/Schematron-Prüfung werden der KoSIT-Validator und die XRechnung-Konfiguration bewusst nicht mitgeliefert, sondern auf ausdrücklichen Aufruf installiert:
+Die interne Prüfung funktioniert ohne Java. In Quell-, Wheel- und Repository-Paketen werden der KoSIT-Validator und die XRechnung-Konfiguration bewusst nicht mitgeliefert, sondern auf ausdrücklichen Aufruf installiert. Der Windows-x64-Installer enthält dagegen die beim Build festgeschriebenen und verifizierten Versionen samt Java-Laufzeit.
 
 ```sh
 python scripts/install_kosit.py
@@ -195,7 +201,7 @@ Umgebungsvariablen können in `.env` oder `.env.kosit` stehen. Beide Dateien wer
 | `KOSIT_JAVA_BIN` | `java` | Java-Befehl |
 | `KOSIT_VALIDATOR_JAR` | automatisch | Pfad zum Standalone-JAR |
 | `KOSIT_SCENARIOS` | automatisch | Semikolon-getrennte Szenariodateien |
-| `KOSIT_REPOSITORIES` | leer | Semikolon-getrennte Ressourcenpfade |
+| `KOSIT_REPOSITORIES` | automatisch | Semikolon-getrennte Ressourcenpfade |
 | `KOSIT_TIMEOUT_SECONDS` | `60` | Zeitgrenze pro KoSIT-Aufruf |
 
 ## Sicherheit und Datenschutz
@@ -207,6 +213,7 @@ Umgebungsvariablen können in `.env` oder `.env.kosit` stehen. Beide Dateien wer
 - deaktivierte externe Entitäten, DTD-Nachladung und XML-Netzwerkzugriffe
 - begrenzte Upload- und Darstellungsgrößen
 - bereinigte Download-Dateinamen, Sicherheitsheader und Content Security Policy
+- zufällige Sitzung, Host- und Origin-Prüfung im Windows-Desktop-Modus
 - nicht privilegierter Benutzer im Docker-Image
 
 Ein öffentlicher oder mehrbenutzerfähiger Betrieb benötigt zusätzlich Authentifizierung, TLS, Rate Limits, sichere Protokollierung, Malware-Prüfung und Ressourcenbegrenzung. Siehe [`SECURITY.md`](SECURITY.md) und [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).
@@ -219,8 +226,9 @@ Ein öffentlicher oder mehrbenutzerfähiger Betrieb benötigt zusätzlich Authen
 - [`docs/CODEX.md`](docs/CODEX.md) – Arbeit mit Codex
 - [`docs/GITHUB_SETUP.md`](docs/GITHUB_SETUP.md) – Repository, Actions und Branch-Schutz
 - [`docs/RELEASE.md`](docs/RELEASE.md) – Versionierung und Veröffentlichung
+- [`docs/WINDOWS_PACKAGE.md`](docs/WINDOWS_PACKAGE.md) – Windows-Launcher, Installer, Signierung und Pakettest
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) – Beiträge und Pull Requests
 
 ## Lizenz
 
-MIT. Optionale KoSIT- und XRechnung-Komponenten werden separat installiert und behalten ihre jeweiligen Lizenz- und NOTICE-Bedingungen. Siehe [`THIRD_PARTY.md`](THIRD_PARTY.md).
+MIT. Optionale beziehungsweise im Windows-Paket gebündelte KoSIT-, XRechnung- und Java-Komponenten behalten ihre jeweiligen Lizenz- und NOTICE-Bedingungen. Siehe [`THIRD_PARTY.md`](THIRD_PARTY.md).

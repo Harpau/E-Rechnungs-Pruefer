@@ -17,9 +17,19 @@ Maßgeblich sind die Lizenztexte der tatsächlich installierten Versionen.
 
 Pytest, pytest-cov, Ruff, Mypy, Build, Twine, pip-audit, Pre-commit, HTTPX und HTTPX2 werden ausschließlich für Entwicklung, Tests und Veröffentlichung eingesetzt.
 
+## Windows-Paket
+
+| Komponente | Zweck | Projektlizenz |
+|---|---|---|
+| Eclipse Temurin JRE | Java-Laufzeit für die gebündelte KoSIT-Prüfung | GPL-2.0 mit Classpath Exception sowie enthaltene Drittbedingungen |
+| Pillow | Erzeugung des Symbols im Windows-Infobereich | MIT-CMU |
+| pystray | Windows-Infobereich und Beenden-Menü | LGPL-3.0 |
+
+PyInstaller und Inno Setup werden ausschließlich während des Builds verwendet. Für eine kommerzielle Nutzung von Inno Setup sind die jeweils aktuellen Lizenz- und Erwerbsbedingungen zu prüfen.
+
 ## Optionale KoSIT-Komponenten
 
-Der KoSIT-Validator und die Validator-Konfiguration für XRechnung werden nicht mitgeliefert. `scripts/install_kosit.py` lädt sie nach ausdrücklichem Aufruf in das lokale, von Git und Releases ausgeschlossene Verzeichnis `vendor/`.
+Der KoSIT-Validator und die Validator-Konfiguration für XRechnung werden im Quell- und Repository-Release nicht mitgeliefert. `scripts/install_kosit.py` lädt sie nach ausdrücklichem Aufruf in das lokale, von Git und diesen Releases ausgeschlossene Verzeichnis `vendor/`. Der Windows-Installer enthält die in `packaging/windows/components.lock.json` festgeschriebenen und beim Build anhand ihrer SHA-256-Prüfsummen verifizierten Komponenten. Lizenz- und NOTICE-Dateien aus den offiziellen Archiven bleiben erhalten, soweit sie dort enthalten sind.
 
 - KoSIT Validator: Apache License 2.0
 - Validator Configuration for XRechnung: Apache License 2.0

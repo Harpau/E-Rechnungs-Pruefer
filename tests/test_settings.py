@@ -94,6 +94,22 @@ def test_discover_validator_jar_returns_none_without_vendor_directory(
     assert settings_module._discover_validator_jar() is None
 
 
+def test_discover_java_bin_prefers_bundled_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    executable = "java.exe" if settings_module.os.name == "nt" else "java"
+    java = tmp_path / "runtime/java/bin" / executable
+    java.parent.mkdir(parents=True)
+    java.write_bytes(b"")
+    monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
+
+    assert settings_module._discover_java_bin() == str(java)
+
+
+def test_discover_java_bin_falls_back_to_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
+
+    assert settings_module._discover_java_bin() == "java"
+
+
 def test_discovery_returns_empty_when_vendor_directories_contain_no_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -161,3 +177,29 @@ def test_discover_scenarios_uses_src_only_as_fallback(
     monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
 
     assert settings_module._discover_scenarios() == (scenario,)
+
+
+def test_discover_repositories_prefers_resources_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "vendor/kosit/xrechnung/distribution"
+    scenario = root / "config/scenarios.xml"
+    scenario.parent.mkdir(parents=True)
+    (root / "resources").mkdir()
+    scenario.write_text("test", encoding="utf-8")
+    monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
+
+    assert settings_module._discover_repositories((scenario,)) == (root,)
+
+
+def test_discover_repositories_falls_back_to_scenario_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = tmp_path / "vendor/kosit/xrechnung/scenarios.xml"
+    scenario.parent.mkdir(parents=True)
+    scenario.write_text("test", encoding="utf-8")
+    monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
+
+    assert settings_module._discover_repositories((scenario,)) == (scenario.parent,)

@@ -44,6 +44,12 @@ def _bool_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _discover_java_bin() -> str:
+    executable = "java.exe" if os.name == "nt" else "java"
+    bundled = PROJECT_ROOT / "runtime" / "java" / "bin" / executable
+    return str(bundled) if bundled.is_file() else "java"
+
+
 def _discover_validator_jar() -> Path | None:
     base = PROJECT_ROOT / "vendor" / "kosit" / "validator"
     if not base.is_dir():
@@ -71,8 +77,26 @@ def _discover_scenarios() -> tuple[Path, ...]:
     return (candidates[0],)
 
 
+def _discover_repositories(scenarios: tuple[Path, ...]) -> tuple[Path, ...]:
+    repositories: list[Path] = []
+    for scenario in scenarios:
+        current = scenario.parent
+        while True:
+            if (current / "resources").is_dir():
+                break
+            if current == PROJECT_ROOT or current.parent == current:
+                current = scenario.parent
+                break
+            current = current.parent
+        if current not in repositories:
+            repositories.append(current)
+    return tuple(repositories)
+
+
 _JAR_FROM_ENV = os.getenv("KOSIT_VALIDATOR_JAR")
 _SCENARIOS_FROM_ENV = os.getenv("KOSIT_SCENARIOS")
+_REPOSITORIES_FROM_ENV = os.getenv("KOSIT_REPOSITORIES")
+_DEFAULT_SCENARIOS = _split_paths(_SCENARIOS_FROM_ENV) if _SCENARIOS_FROM_ENV else _discover_scenarios()
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,12 +104,12 @@ class Settings:
     max_upload_bytes: int = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
     max_technical_rows: int = int(os.getenv("MAX_TECHNICAL_ROWS", "100000"))
     kosit_enabled: bool = _bool_env("KOSIT_ENABLED", True)
-    kosit_java_bin: str = os.getenv("KOSIT_JAVA_BIN", "java")
+    kosit_java_bin: str = os.getenv("KOSIT_JAVA_BIN", _discover_java_bin())
     kosit_validator_jar: Path | None = _resolve_path(_JAR_FROM_ENV) if _JAR_FROM_ENV else _discover_validator_jar()
-    kosit_scenarios: tuple[Path, ...] = (
-        _split_paths(_SCENARIOS_FROM_ENV) if _SCENARIOS_FROM_ENV else _discover_scenarios()
+    kosit_scenarios: tuple[Path, ...] = _DEFAULT_SCENARIOS
+    kosit_repositories: tuple[Path, ...] = (
+        _split_paths(_REPOSITORIES_FROM_ENV) if _REPOSITORIES_FROM_ENV else _discover_repositories(_DEFAULT_SCENARIOS)
     )
-    kosit_repositories: tuple[Path, ...] = _split_paths(os.getenv("KOSIT_REPOSITORIES"))
     kosit_timeout_seconds: int = int(os.getenv("KOSIT_TIMEOUT_SECONDS", "60"))
     host: str = os.getenv("HOST", "127.0.0.1")
     port: int = int(os.getenv("PORT", "8080"))

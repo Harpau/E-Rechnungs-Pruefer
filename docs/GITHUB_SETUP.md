@@ -45,12 +45,14 @@ Die Sichtbarkeit später nur nach einer Prüfung auf Datenschutz, Lizenzen und e
 
 Enthaltene Workflows:
 
-- `ci.yml`: Lint, Format, Typen, Coverage, Python-Matrix, Windows-Smoke-Test und Docker-Build
+- `ci.yml`: Lint, Format, Typen, Coverage, Python-Matrix, Windows-x64-Installer samt Installationstest und Docker-Build
 - `codeql.yml`: statische Sicherheitsanalyse für Python und JavaScript
 - `dependency-audit.yml`: regelmäßige Prüfung der Python-Abhängigkeiten
-- `release.yml`: Tagprüfung, Tests, Build, Prüfsummen und GitHub Release
+- `release.yml`: Tagprüfung, Quellartefakte, signierter Windows-x64-Installer, Prüfsummen und GitHub Release
 
 Für Releases benötigt der Workflow Schreibrechte auf `contents`. Diese werden nur im Release-Job angefordert.
+
+Der Windows-Installer wird nur mit gültiger Authenticode-Signatur veröffentlicht. Die anfängliche PFX-Integration erwartet `WINDOWS_SIGNING_CERTIFICATE_BASE64` und `WINDOWS_SIGNING_CERTIFICATE_PASSWORD` als Actions-Secrets; ein dedizierter Signing-Dienst mit nicht exportierbarem Schlüssel ist für den dauerhaften Betrieb vorzuziehen. Ohne Signierkonfiguration bleibt das Setup ein internes Actions-Testartefakt.
 
 ## Empfohlener Branch-Schutz
 

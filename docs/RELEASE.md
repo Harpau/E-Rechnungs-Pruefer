@@ -37,7 +37,24 @@ python scripts/build_release.py
 - Source Distribution
 - `E-Rechnungs-Pruefer-<Version>-SHA256SUMS.txt`
 
-Der Repository-Build schließt `.git`, virtuelle Umgebungen, lokale `.env`-Dateien, KoSIT-Dateien, PDFs, Schlüsselmaterial, Berichte und nicht freigegebene XML-Dateien aus.
+Der Repository-Build schließt `.git`, virtuelle Umgebungen, lokale `.env`-Dateien, KoSIT-Dateien, gebündelte Java-Laufzeiten, Download-Caches, PDFs, Schlüsselmaterial, Berichte und nicht freigegebene XML-Dateien aus.
+
+### Windows-x64-Installer
+
+Der Windows-Build läuft nativ auf Windows und ist in [`WINDOWS_PACKAGE.md`](WINDOWS_PACKAGE.md) beschrieben:
+
+```powershell
+python scripts\prepare_windows_components.py
+.\scripts\build_windows.ps1
+.\scripts\test_windows_package.ps1
+```
+
+Zusätzliche Artefakte:
+
+- `E-Rechnungs-Pruefer-<Version>-Windows-x64-Setup.exe`
+- `E-Rechnungs-Pruefer-<Version>-Windows-x64-SHA256.txt`
+
+Ein reduzierter Build mit `-WithoutOfficialValidation` ist nur ein Entwicklungsartefakt. Vor einem Endbenutzerrelease müssen Java, KoSIT und XRechnung aus `components.lock.json` eingebunden und durch den installierten Pakettest ausgeführt worden sein.
 
 ## 4. Artefakte prüfen
 
@@ -61,7 +78,7 @@ git tag -a vX.Y.Z -m "E-Rechnungs-Pruefer X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-Der Release-Workflow wiederholt Check und Build, verifiziert die Tag-Version und veröffentlicht die Dateien aus `dist/`.
+Der Release-Workflow wiederholt Check und Build, verifiziert die Tag-Version und veröffentlicht die Dateien aus `dist/`. Der Windows-Installer wird nur dann an den öffentlichen GitHub Release angehängt, wenn seine Authenticode-Signatur gültig ist. Ohne konfiguriertes Zertifikat bleibt er ein internes Actions-Testartefakt.
 
 ## Rücknahme
 
