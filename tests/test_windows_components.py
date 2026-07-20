@@ -77,8 +77,12 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
         "workflow_dispatch:",
         "environment: release",
         "id-token: write",
-        "uses: azure/login@v2",
+        "uses: azure/login@v3",
+        "client-id: ${{ secrets.AZURE_CLIENT_ID }}",
+        "tenant-id: ${{ secrets.AZURE_TENANT_ID }}",
+        "subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}",
         "AzureSignTool --tool-path $toolDirectory --version 7.0.1",
+        "AZURE_KEY_VAULT_URL",
         "AZURE_CODE_SIGNING_CERTIFICATE",
         "test_windows_package.ps1 -RequireSignature",
         "git merge-base --is-ancestor $env:GITHUB_SHA origin/main",
@@ -88,6 +92,9 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
 
     assert "WINDOWS_SIGNING_CERTIFICATE_BASE64" not in workflow
     assert "WINDOWS_SIGNING_CERTIFICATE_PASSWORD" not in workflow
+    assert "AZURE_CLIENT_SECRET" not in workflow
+    assert "creds:" not in workflow
+    assert "azure/login@v2" not in workflow
     assert "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow
 
     for expected in (
