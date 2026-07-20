@@ -78,7 +78,9 @@ git tag -a vX.Y.Z -m "E-Rechnungs-Pruefer X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-Der Release-Workflow wiederholt Check und Build, verifiziert die Tag-Version und veröffentlicht die Dateien aus `dist/`. Der Windows-Installer wird nur dann an den öffentlichen GitHub Release angehängt, wenn seine Authenticode-Signatur gültig ist. Ohne konfiguriertes Zertifikat bleibt er ein internes Actions-Testartefakt.
+Der Release-Workflow wiederholt Check und Build, verifiziert die Tag-Version und veröffentlicht die Dateien aus `dist/`. Der Windows-Installer wird nur dann an den öffentlichen GitHub Release angehängt, wenn seine Authenticode-Signatur gültig ist. Fehlen Azure-Anmeldung, Key-Vault-Konfiguration oder gültige Signatur, schlägt der Release fehl.
+
+Vor dem ersten öffentlichen Tag ist der Workflow `Release` manuell auf `main` zu starten. Dieser Lauf verwendet die geschützte Umgebung `release`, signiert Anwendung und Installer über Azure Key Vault und stellt das Ergebnis ausschließlich als internes Actions-Artefakt bereit. Das Artefakt ist auf einer sauberen Windows-11-x64-Installation zu prüfen; der manuelle Lauf erzeugt keinen GitHub Release.
 
 ## Rücknahme
 

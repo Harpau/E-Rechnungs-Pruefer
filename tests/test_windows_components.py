@@ -67,3 +67,34 @@ def test_find_java_root_requires_one_windows_java_executable(tmp_path: Path) -> 
     second.write_bytes(b"test")
     with pytest.raises(components.ComponentError, match="eindeutige"):
         components._find_java_root(tmp_path)
+
+
+def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
+    workflow = (PROJECT_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    build_script = (PROJECT_ROOT / "scripts/build_windows.ps1").read_text(encoding="utf-8")
+
+    for expected in (
+        "workflow_dispatch:",
+        "environment: release",
+        "id-token: write",
+        "uses: azure/login@v2",
+        "AzureSignTool --tool-path $toolDirectory --version 7.0.1",
+        "AZURE_CODE_SIGNING_CERTIFICATE",
+        "test_windows_package.ps1 -RequireSignature",
+        "git merge-base --is-ancestor $env:GITHUB_SHA origin/main",
+        "Manuelle Signiertests dürfen nur auf main gestartet werden.",
+    ):
+        assert expected in workflow
+
+    assert "WINDOWS_SIGNING_CERTIFICATE_BASE64" not in workflow
+    assert "WINDOWS_SIGNING_CERTIFICATE_PASSWORD" not in workflow
+    assert "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow
+
+    for expected in (
+        "EINVOICE_AZURE_SIGN_TOOL",
+        "EINVOICE_AZURE_KEY_VAULT_URL",
+        "EINVOICE_AZURE_KEY_VAULT_CERTIFICATE",
+        "--azure-key-vault-managed-identity",
+        "--timestamp-rfc3161",
+    ):
+        assert expected in build_script

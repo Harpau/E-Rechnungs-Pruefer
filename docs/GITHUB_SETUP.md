@@ -52,7 +52,18 @@ Enthaltene Workflows:
 
 Für Releases benötigt der Workflow Schreibrechte auf `contents`. Diese werden nur im Release-Job angefordert.
 
-Der Windows-Installer wird nur mit gültiger Authenticode-Signatur veröffentlicht. Die anfängliche PFX-Integration erwartet `WINDOWS_SIGNING_CERTIFICATE_BASE64` und `WINDOWS_SIGNING_CERTIFICATE_PASSWORD` als Actions-Secrets; ein dedizierter Signing-Dienst mit nicht exportierbarem Schlüssel ist für den dauerhaften Betrieb vorzuziehen. Ohne Signierkonfiguration bleibt das Setup ein internes Actions-Testartefakt.
+### Geschützte Signing-Umgebung
+
+Für die Azure-Key-Vault-Signierung muss unter **Settings → Environments** eine Umgebung namens `release` eingerichtet werden:
+
+- mindestens einen erforderlichen Reviewer festlegen und Selbstfreigabe nur dann erlauben, wenn kein zweiter berechtigter Reviewer vorhanden ist;
+- Deployment nur für den Branch `main` und Tags nach dem Muster `v*` zulassen;
+- Environment-Secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` und `AZURE_SUBSCRIPTION_ID` anlegen;
+- Environment-Variablen `AZURE_KEY_VAULT_URL` und `AZURE_CODE_SIGNING_CERTIFICATE` anlegen.
+
+Die Entra-Anwendung benötigt eine federierte GitHub-Identität für genau diese Umgebung. Bei Repositorys mit unveränderlichen OIDC-Subjects müssen Owner- und Repository-ID enthalten sein. Der Key-Vault-Service-Principal erhält am Vault die Rollen `Key Vault Reader` und `Key Vault Crypto User`.
+
+Der Windows-Installer wird nur mit gültiger Authenticode-Signatur veröffentlicht. Der Workflow speichert weder PFX-Datei noch Client-Secret und bricht bei fehlender oder ungültiger Signatur ab. Ein manueller Workflow-Start auf `main` erzeugt ein signiertes internes Actions-Artefakt, veröffentlicht aber keinen GitHub Release.
 
 ## Empfohlener Branch-Schutz
 
@@ -78,8 +89,10 @@ Für `main`:
 Ein signierter oder annotierter Tag löst den Release-Workflow aus:
 
 ```sh
-git tag -a v1.1.0 -m "E-Rechnungs-Pruefer 1.1.0"
-git push origin v1.1.0
+git tag -a vX.Y.Z -m "E-Rechnungs-Pruefer X.Y.Z"
+git push origin vX.Y.Z
 ```
+
+Vor dem ersten Tag kann der Workflow unter **Actions → Release → Run workflow** auf `main` manuell gestartet werden. Nach Freigabe der Umgebung `release` wird der signierte Installer als kurzlebiges Actions-Artefakt bereitgestellt, ohne einen öffentlichen Release anzulegen.
 
 Vorher müssen `VERSION`, `pyproject.toml`, `app/__init__.py`, KoSIT-Installer und Changelog synchron sein. Details stehen in `docs/RELEASE.md`.

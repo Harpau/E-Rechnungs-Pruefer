@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,6 +12,7 @@ permissions:
 jobs:
   source-release:
     name: Source release artefacts
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -32,14 +34,19 @@ jobs:
         run: python scripts/build_release.py
       - uses: actions/upload-artifact@v7
         with:
-          name: source-release-${{ github.ref_name }}
+          name: source-release-${{ github.run_id }}
           path: dist/*
 
   windows-release:
     name: Windows x64 installer
     runs-on: windows-2022
-    outputs:
-      signed: ${{ steps.signature.outputs.signed }}
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      EINVOICE_AZURE_KEY_VAULT_URL: ${{ vars.AZURE_KEY_VAULT_URL }}
+      EINVOICE_AZURE_KEY_VAULT_CERTIFICATE: ${{ vars.AZURE_CODE_SIGNING_CERTIFICATE }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -49,6 +56,9 @@ jobs:
           python-version: "3.13"
           architecture: x64
           cache: pip
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
       - name: Install application and Windows build dependencies
         run: >-
           python -m pip install --upgrade pip &&
@@ -58,8 +68,16 @@ jobs:
         shell: pwsh
         run: |
           $version = python scripts/verify_version.py --print
-          if ("v$version" -ne $env:GITHUB_REF_NAME) {
-            throw "Tag $env:GITHUB_REF_NAME passt nicht zu Version $version."
+          if ($env:GITHUB_EVENT_NAME -eq "push") {
+            if ("v$version" -ne $env:GITHUB_REF_NAME) {
+              throw "Tag $env:GITHUB_REF_NAME passt nicht zu Version $version."
+            }
+            git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+            if ($LASTEXITCODE -ne 0) {
+              throw "Der Release-Tag zeigt nicht auf einen Commit aus main."
+            }
+          } elseif ($env:GITHUB_REF -ne "refs/heads/main") {
+            throw "Manuelle Signiertests dürfen nur auf main gestartet werden."
           }
           python -m pytest tests/test_api.py tests/test_pdf.py tests/test_kosit.py tests/test_settings.py tests/test_cli.py tests/test_desktop_security.py tests/test_windows_launcher.py tests/test_windows_components.py
       - uses: actions/cache@v5
@@ -68,52 +86,41 @@ jobs:
           key: windows-components-${{ hashFiles('packaging/windows/components.lock.json') }}
       - name: Prepare locked Java and KoSIT components
         run: python scripts/prepare_windows_components.py
-      - name: Import optional Authenticode certificate
+      - name: Authenticate to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Install pinned AzureSignTool
         shell: pwsh
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
         run: |
-          if (-not $env:CERTIFICATE_BASE64) {
-            Write-Warning "Kein Signierzertifikat konfiguriert; das Testartefakt wird nicht im GitHub Release veröffentlicht."
-            exit 0
+          $toolDirectory = Join-Path $env:RUNNER_TEMP "azure-sign-tool"
+          dotnet tool install AzureSignTool --tool-path $toolDirectory --version 7.0.1
+          if ($LASTEXITCODE -ne 0) {
+            throw "AzureSignTool konnte nicht installiert werden."
           }
-          $bytes = [Convert]::FromBase64String($env:CERTIFICATE_BASE64)
-          $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor
-            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
-          $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
-            $bytes,
-            $env:CERTIFICATE_PASSWORD,
-            $flags
-          )
-          $store = [System.Security.Cryptography.X509Certificates.X509Store]::new("My", "CurrentUser")
-          $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-          $store.Add($certificate)
-          $store.Close()
-          "EINVOICE_SIGN_CERT_SHA1=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $tool = Join-Path $toolDirectory "AzureSignTool.exe"
+          "EINVOICE_AZURE_SIGN_TOOL=$tool" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build Windows x64 installer
         shell: pwsh
         run: .\scripts\build_windows.ps1
       - name: Test installed Windows package
         shell: pwsh
-        run: |
-          if ($env:EINVOICE_SIGN_CERT_SHA1) {
-            .\scripts\test_windows_package.ps1 -RequireSignature
-          } else {
-            .\scripts\test_windows_package.ps1
-          }
+        run: .\scripts\test_windows_package.ps1 -RequireSignature
       - name: Inspect installer signature
-        id: signature
         shell: pwsh
         run: |
           $setup = Get-ChildItem dist\*-Windows-x64-Setup.exe | Select-Object -First 1
           $signature = Get-AuthenticodeSignature $setup.FullName
-          $signed = if ($signature.Status -eq "Valid") { "true" } else { "false" }
-          "signed=$signed" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Authenticode-Status: $($signature.Status)"
+          Write-Host "Signiert von: $($signature.SignerCertificate.Subject)"
+          if ($signature.Status -ne "Valid") {
+            throw "Der Installer besitzt keine gültige Authenticode-Signatur."
+          }
       - uses: actions/upload-artifact@v7
         with:
-          name: windows-release-${{ github.ref_name }}
+          name: windows-release-${{ github.run_id }}
           path: |
             dist/*-Windows-x64-Setup.exe
             dist/*-Windows-x64-SHA256.txt
@@ -121,6 +128,7 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: [source-release, windows-release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -128,12 +136,11 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v8
         with:
-          name: source-release-${{ github.ref_name }}
+          name: source-release-${{ github.run_id }}
           path: release-dist
       - uses: actions/download-artifact@v8
-        if: needs.windows-release.outputs.signed == 'true'
         with:
-          name: windows-release-${{ github.ref_name }}
+          name: windows-release-${{ github.run_id }}
           path: release-dist
       - name: Create GitHub release
         env:

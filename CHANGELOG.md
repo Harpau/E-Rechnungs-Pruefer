@@ -4,11 +4,15 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 1.2.0 – 2026-07-20
+
 ### Windows-Paket
 
 - nativer Windows-x64-Installer mit eingebettetem Python, Java, festgeschriebenem KoSIT-Validator und XRechnung-Konfiguration vorbereitet
 - Desktop-Launcher mit dynamischem Loopback-Port, Einmal-Startlink, strengem Sitzungscookie, Host-/Origin-Prüfung, Einzelinstanz und Infobereich-Menü ergänzt
+- KoSIT-Prüfungen starten den eingebetteten Java-Prozess ohne sichtbares Terminalfenster
 - Windows-Build prüft Komponenten-Hashes, Authenticode-Signaturen, Installation, echte KoSIT-Ausführung, bytegetreuen XML-Export und Deinstallation
+- Release-Signierung über GitHub OIDC und einen nicht exportierbaren Azure-Key-Vault-HSM-Schlüssel ergänzt; PFX-Dateien und dauerhafte Azure-Client-Secrets sind nicht erforderlich
 
 ### Darstellung und Prüfung
 
