@@ -5,7 +5,7 @@ import os
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 
@@ -155,10 +155,11 @@ def test_desktop_server_starts_opens_and_stops(tmp_path: Path, monkeypatch: pyte
     listener = Mock()
     fake_uvicorn_server = SimpleNamespace(run=Mock(), should_exit=False)
     config = object()
+    config_factory = Mock(return_value=config)
     monkeypatch.setattr(windows_launcher, "_reserve_loopback_socket", lambda: (listener, 8765))
     monkeypatch.setattr(windows_launcher.secrets, "token_urlsafe", lambda _length: "x" * 32)
     monkeypatch.setattr(windows_launcher, "_health_is_ready", lambda _port: True)
-    monkeypatch.setattr(windows_launcher.uvicorn, "Config", Mock(return_value=config))
+    monkeypatch.setattr(windows_launcher.uvicorn, "Config", config_factory)
     monkeypatch.setattr(windows_launcher.uvicorn, "Server", Mock(return_value=fake_uvicorn_server))
     browser_open = Mock(return_value=True)
     monkeypatch.setattr(windows_launcher.webbrowser, "open", browser_open)
@@ -169,6 +170,14 @@ def test_desktop_server_starts_opens_and_stops(tmp_path: Path, monkeypatch: pyte
 
     server.start()
 
+    config_factory.assert_called_once_with(
+        ANY,
+        host="127.0.0.1",
+        port=8765,
+        access_log=False,
+        log_config=None,
+        log_level="warning",
+    )
     assert windows_launcher.os.environ[windows_launcher.DESKTOP_TOKEN_ENV] == "x" * 32
     assert windows_launcher.os.environ[windows_launcher.DESKTOP_PORT_ENV] == "8765"
     assert windows_launcher._read_runtime_record(runtime_file) == RuntimeRecord(

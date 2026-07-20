@@ -163,6 +163,7 @@ class DesktopServer:
             host="127.0.0.1",
             port=self.port,
             access_log=False,
+            log_config=None,
             log_level="warning",
         )
         self.server = uvicorn.Server(config)
