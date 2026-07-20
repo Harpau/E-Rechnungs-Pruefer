@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,7 +33,8 @@ def test_runtime_record_roundtrip_and_validation(tmp_path: Path) -> None:
     windows_launcher._write_runtime_record(path, expected)
 
     assert windows_launcher._read_runtime_record(path) == expected
-    assert path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
 
     path.write_text(json.dumps({"pid": 0, "port": 80, "token": "kurz"}), encoding="utf-8")
     assert windows_launcher._read_runtime_record(path) is None
