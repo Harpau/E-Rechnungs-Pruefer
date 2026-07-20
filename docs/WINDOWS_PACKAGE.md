@@ -55,14 +55,17 @@ PyInstaller ist kein Cross-Compiler. Quellcode, Tests, Spec- und Installerdateie
 
 ## Authenticode-Signierung
 
-`scripts/build_windows.ps1` signiert zuerst die erzeugten PE-Dateien und danach den Installer, wenn `EINVOICE_SIGN_CERT_SHA1` auf ein im persönlichen Windows-Zertifikatsspeicher vorhandenes RSA-Code-Signing-Zertifikat verweist. Jede Signatur erhält einen RFC-3161-Zeitstempel und wird unmittelbar verifiziert.
+`scripts/build_windows.ps1` signiert zuerst die anwendungseigene `E-Rechnungs-Pruefer.exe` und danach den Installer. Jede Signatur erhält einen RFC-3161-Zeitstempel und wird unmittelbar mit Windows SignTool verifiziert. Bereits signierte Drittkomponenten wie die eingebettete Java-Laufzeit werden nicht mit einer COMPESO-Signatur überschrieben.
 
-Der Release-Workflow unterstützt als anfängliche Lösung diese GitHub-Secrets:
+Für lokale Windows-Builds kann `EINVOICE_SIGN_CERT_SHA1` weiterhin auf ein RSA-Code-Signing-Zertifikat im persönlichen Windows-Zertifikatsspeicher verweisen.
 
-- `WINDOWS_SIGNING_CERTIFICATE_BASE64`: Base64-kodierte PFX-Datei;
-- `WINDOWS_SIGNING_CERTIFICATE_PASSWORD`: PFX-Kennwort.
+Der Release-Workflow verwendet dagegen AzureSignTool 7.0.1 und den nicht exportierbaren HSM-Schlüssel in Azure Key Vault. GitHub Actions meldet sich kennwortlos über OpenID Connect bei Azure an. Weder ein PFX noch ein Client-Secret wird in GitHub gespeichert. Der Windows-Job ist an die geschützte GitHub-Umgebung `release` gebunden und benötigt dort:
 
-Langfristig ist ein nicht exportierbarer Schlüssel in einem dedizierten Signing-Dienst oder HSM vorzuziehen. Ohne gültige Signatur wird der Windows-Build zwar als internes Actions-Artefakt geprüft, aber nicht an den öffentlichen GitHub Release angehängt.
+- Environment-Secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` und `AZURE_SUBSCRIPTION_ID`;
+- Environment-Variable `AZURE_KEY_VAULT_URL`;
+- Environment-Variable `AZURE_CODE_SIGNING_CERTIFICATE`.
+
+Der manuelle Start des Release-Workflows erzeugt nur ein signiertes Actions-Artefakt für die interne Prüfung. Ein öffentlicher GitHub Release entsteht ausschließlich bei einem passenden `v*`-Tag. Der Workflow bricht ab, wenn Anmeldung, HSM-Signierung oder Signaturprüfung fehlschlägt.
 
 ## Automatischer Pakettest
 

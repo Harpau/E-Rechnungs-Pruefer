@@ -3,6 +3,9 @@ param(
     [string]$Python = "python",
     [string]$SignTool = "",
     [string]$CertificateSha1 = $env:EINVOICE_SIGN_CERT_SHA1,
+    [string]$AzureSignTool = $env:EINVOICE_AZURE_SIGN_TOOL,
+    [string]$AzureKeyVaultUrl = $env:EINVOICE_AZURE_KEY_VAULT_URL,
+    [string]$AzureKeyVaultCertificate = $env:EINVOICE_AZURE_KEY_VAULT_CERTIFICATE,
     [string]$TimestampUrl = "http://timestamp.acs.microsoft.com",
     [switch]$WithoutOfficialValidation
 )
@@ -26,6 +29,17 @@ if (-not $IsWindows) {
 if (-not [Environment]::Is64BitProcess) {
     throw "Der Build muss mit einem x64-Python-Prozess laufen."
 }
+
+$AzureSigningValues = @($AzureSignTool, $AzureKeyVaultUrl, $AzureKeyVaultCertificate) |
+    Where-Object { $_ }
+$UseAzureSigning = $AzureSigningValues.Count -gt 0
+if ($UseAzureSigning -and $AzureSigningValues.Count -ne 3) {
+    throw "Für Azure-Signierung müssen EINVOICE_AZURE_SIGN_TOOL, EINVOICE_AZURE_KEY_VAULT_URL und EINVOICE_AZURE_KEY_VAULT_CERTIFICATE gemeinsam gesetzt sein."
+}
+if ($UseAzureSigning -and $CertificateSha1) {
+    throw "Azure-Signierung und lokales Zertifikat dürfen nicht gleichzeitig konfiguriert sein."
+}
+$SigningEnabled = $UseAzureSigning -or [bool]$CertificateSha1
 
 $BundledJava = Join-Path $ProjectRoot "runtime\java\bin\java.exe"
 $BundledValidator = Get-ChildItem (Join-Path $ProjectRoot "vendor\kosit\validator\*-standalone.jar") -ErrorAction SilentlyContinue |
@@ -68,30 +82,60 @@ function Resolve-SignTool {
     return $(if ($firstKit) { $firstKit.FullName } else { "" })
 }
 
+function Resolve-AzureSignTool {
+    $command = Get-Command $AzureSignTool -ErrorAction SilentlyContinue
+    if (-not $command) {
+        throw "AzureSignTool wurde nicht gefunden: $AzureSignTool"
+    }
+    return $command.Source
+}
+
 function Sign-File([string]$Path) {
-    if (-not $CertificateSha1) {
+    if (-not $SigningEnabled) {
         return
     }
-    $ResolvedSignTool = Resolve-SignTool
-    if (-not $ResolvedSignTool) {
-        throw "SignTool wurde nicht gefunden."
+
+    if ($UseAzureSigning) {
+        $ResolvedAzureSignTool = Resolve-AzureSignTool
+        & $ResolvedAzureSignTool sign `
+            --azure-key-vault-url $AzureKeyVaultUrl `
+            --azure-key-vault-certificate $AzureKeyVaultCertificate `
+            --azure-key-vault-managed-identity `
+            --file-digest sha256 `
+            --timestamp-rfc3161 $TimestampUrl `
+            --timestamp-digest sha256 `
+            --description "E-Rechnungs-Prüfer" `
+            --description-url "https://github.com/Harpau/E-Rechnungs-Pruefer" `
+            --verbose `
+            $Path
+        if ($LASTEXITCODE -ne 0) {
+            throw "Die Azure-Key-Vault-Signierung ist fehlgeschlagen: $Path"
+        }
+    } else {
+        $ResolvedSignTool = Resolve-SignTool
+        if (-not $ResolvedSignTool) {
+            throw "SignTool wurde nicht gefunden."
+        }
+        & $ResolvedSignTool sign /sha1 $CertificateSha1 /fd SHA256 /tr $TimestampUrl /td SHA256 $Path
+        if ($LASTEXITCODE -ne 0) {
+            throw "Die Signierung ist fehlgeschlagen: $Path"
+        }
     }
-    & $ResolvedSignTool sign /sha1 $CertificateSha1 /fd SHA256 /tr $TimestampUrl /td SHA256 $Path
-    if ($LASTEXITCODE -ne 0) {
-        throw "Die Signierung ist fehlgeschlagen: $Path"
+
+    $VerificationTool = Resolve-SignTool
+    if (-not $VerificationTool) {
+        throw "SignTool für die Signaturprüfung wurde nicht gefunden."
     }
-    & $ResolvedSignTool verify /pa /all $Path
+    & $VerificationTool verify /pa /all $Path
     if ($LASTEXITCODE -ne 0) {
         throw "Die Signaturprüfung ist fehlgeschlagen: $Path"
     }
 }
 
-if ($CertificateSha1) {
-    Get-ChildItem $AppBundle -Recurse -File |
-        Where-Object { $_.Extension -in ".exe", ".dll", ".pyd" } |
-        ForEach-Object { Sign-File $_.FullName }
+if ($SigningEnabled) {
+    Sign-File (Join-Path $AppBundle "E-Rechnungs-Pruefer.exe")
 } else {
-    Write-Warning "EINVOICE_SIGN_CERT_SHA1 ist nicht gesetzt; das Paket wird für Tests unsigniert gebaut."
+    Write-Warning "Keine Signierkonfiguration gesetzt; das Paket wird für Tests unsigniert gebaut."
 }
 
 $IsccCandidates = @(
