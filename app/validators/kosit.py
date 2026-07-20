@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ TECHNICAL_START_PATTERNS = (
 _REPORT_END_RE = re.compile(rb"</(?:[A-Za-z_][A-Za-z0-9_.-]*:)?report\s*>", re.IGNORECASE)
 _FORMAT_ERROR_PREFIX = b"[Format error!] <"
 _FORMAT_ERROR_SUFFIX = b"> with params <"
+WINDOWS_SUBPROCESS_CREATION_FLAGS = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if sys.platform == "win32" else 0
 
 
 @dataclass(slots=True)
@@ -384,6 +386,7 @@ class KositValidator:
                     timeout=self.settings.kosit_timeout_seconds,
                     check=False,
                     cwd=temp_dir,
+                    creationflags=WINDOWS_SUBPROCESS_CREATION_FLAGS,
                 )
             except subprocess.TimeoutExpired:
                 return self._not_executed(

@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 from app.settings import Settings
+from app.validators import kosit as kosit_module
 from app.validators.kosit import KositValidator
 
 
@@ -107,6 +108,27 @@ def test_kosit_accept_report_is_reported_as_accepted(tmp_path, monkeypatch):
 
     assert result["executed"] is True
     assert result["accepted"] is True
+
+
+def test_windows_kosit_process_is_started_without_console(tmp_path, monkeypatch):
+    jar = tmp_path / "validator-1.6.2-standalone.jar"
+    _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
+    validator = KositValidator(_settings(tmp_path, jar))
+    observed: dict[str, int] = {}
+
+    def fake_run(*args, **kwargs):
+        observed["creationflags"] = kwargs["creationflags"]
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(kosit_module.subprocess, "run", fake_run)
+
+    validator.validate(b"<invoice/>", "invoice.xml")
+
+    expected = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if sys.platform == "win32" else 0
+    if sys.platform == "win32":
+        assert expected != 0
+    assert kosit_module.WINDOWS_SUBPROCESS_CREATION_FLAGS == expected
+    assert observed["creationflags"] == expected
 
 
 def test_installer_selects_only_standalone_jar(tmp_path):
