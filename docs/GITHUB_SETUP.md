@@ -78,8 +78,8 @@ Für `main`:
 Ein signierter oder annotierter Tag löst den Release-Workflow aus:
 
 ```sh
-git tag -a v1.1.0 -m "E-Rechnungs-Pruefer 1.1.0"
-git push origin v1.1.0
+git tag -a vX.Y.Z -m "E-Rechnungs-Pruefer X.Y.Z"
+git push origin vX.Y.Z
 ```
 
 Vorher müssen `VERSION`, `pyproject.toml`, `app/__init__.py`, KoSIT-Installer und Changelog synchron sein. Details stehen in `docs/RELEASE.md`.
