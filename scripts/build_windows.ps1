@@ -30,8 +30,10 @@ if (-not [Environment]::Is64BitProcess) {
     throw "Der Build muss mit einem x64-Python-Prozess laufen."
 }
 
-$AzureSigningValues = @($AzureSignTool, $AzureKeyVaultUrl, $AzureKeyVaultCertificate) |
-    Where-Object { $_ }
+$AzureSigningValues = @(
+    @($AzureSignTool, $AzureKeyVaultUrl, $AzureKeyVaultCertificate) |
+        Where-Object { $_ }
+)
 $UseAzureSigning = $AzureSigningValues.Count -gt 0
 if ($UseAzureSigning -and $AzureSigningValues.Count -ne 3) {
     throw "Für Azure-Signierung müssen EINVOICE_AZURE_SIGN_TOOL, EINVOICE_AZURE_KEY_VAULT_URL und EINVOICE_AZURE_KEY_VAULT_CERTIFICATE gemeinsam gesetzt sein."
