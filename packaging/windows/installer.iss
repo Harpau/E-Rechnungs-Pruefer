@@ -66,4 +66,5 @@ Filename: "{app}\{#AppExeName}"; Description: "{#AppName} starten"; Flags: nowai
 
 [UninstallDelete]
 Type: files; Name: "{localappdata}\E-Rechnungs-Pruefer\runtime.json"
+Type: files; Name: "{localappdata}\E-Rechnungs-Pruefer\startup-error.log"
 Type: dirifempty; Name: "{localappdata}\E-Rechnungs-Pruefer"

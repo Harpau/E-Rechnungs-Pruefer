@@ -33,9 +33,11 @@ $XmlOutput = Join-Path $TestRoot "export.xml"
 $InstallLog = Join-Path $TestRoot "install.log"
 $UninstallLog = Join-Path $TestRoot "uninstall.log"
 $RuntimeFile = Join-Path $env:LOCALAPPDATA "E-Rechnungs-Pruefer\runtime.json"
+$StartupErrorFile = Join-Path $env:LOCALAPPDATA "E-Rechnungs-Pruefer\startup-error.log"
 
 Remove-Item $TestRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $RuntimeFile -Force -ErrorAction SilentlyContinue
+Remove-Item $StartupErrorFile -Force -ErrorAction SilentlyContinue
 New-Item $TestRoot -ItemType Directory -Force | Out-Null
 $runtime = $null
 $health = $null
@@ -57,7 +59,9 @@ try {
         throw "Installierte Anwendung nicht gefunden: $Executable"
     }
 
+    $env:EINVOICE_DESKTOP_NO_DIALOG = "1"
     $process = Start-Process $Executable -PassThru
+    Remove-Item Env:EINVOICE_DESKTOP_NO_DIALOG
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
         Start-Sleep -Milliseconds 250
@@ -73,7 +77,12 @@ try {
     } until (($runtime -and $health.status -eq "ok") -or [DateTime]::UtcNow -ge $deadline -or $process.HasExited)
 
     if (-not $runtime -or -not $health -or $health.status -ne "ok") {
-        throw "Die installierte Anwendung wurde nicht betriebsbereit."
+        $StartupError = if (Test-Path $StartupErrorFile) {
+            (Get-Content $StartupErrorFile -Raw).Trim()
+        } else {
+            "Keine Startdiagnose wurde geschrieben."
+        }
+        throw "Die installierte Anwendung wurde nicht betriebsbereit.`n$StartupError"
     }
     if (-not $health.kosit.configured) {
         throw "Das Windows-Paket enthält keine betriebsbereite KoSIT-Konfiguration."
@@ -147,6 +156,7 @@ try {
         throw "Die Laufzeitdatei blieb nach der Deinstallation zurück."
     }
 } finally {
+    Remove-Item Env:EINVOICE_DESKTOP_NO_DIALOG -ErrorAction SilentlyContinue
     Get-Process "E-Rechnungs-Pruefer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 

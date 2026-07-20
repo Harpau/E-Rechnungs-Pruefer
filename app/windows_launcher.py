@@ -7,6 +7,7 @@ import secrets
 import socket
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 import webbrowser
@@ -21,9 +22,11 @@ from .desktop_security import DESKTOP_PORT_ENV, DESKTOP_TOKEN_ENV, desktop_boots
 
 APP_DIRECTORY_NAME = "E-Rechnungs-Pruefer"
 RUNTIME_FILE_NAME = "runtime.json"
+STARTUP_ERROR_FILE_NAME = "startup-error.log"
 WINDOWS_MUTEX_NAME = "Local\\E-Rechnungs-Pruefer-Desktop"
 ERROR_ALREADY_EXISTS = 183
 SERVER_READY_TIMEOUT_SECONDS = 20.0
+NO_DIALOG_ENV = "EINVOICE_DESKTOP_NO_DIALOG"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +59,16 @@ def _desktop_data_directory() -> Path:
 
 def _runtime_file() -> Path:
     return _desktop_data_directory() / RUNTIME_FILE_NAME
+
+
+def _startup_error_file() -> Path:
+    return _desktop_data_directory() / STARTUP_ERROR_FILE_NAME
+
+
+def _write_startup_error(path: Path, error: BaseException) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(traceback.format_exception(error)), encoding="utf-8")
+    path.chmod(0o600)
 
 
 def _write_runtime_record(path: Path, record: RuntimeRecord) -> None:
@@ -245,7 +258,9 @@ def main() -> None:
 
     mutex: WindowsMutex | None = None
     server: DesktopServer | None = None
+    startup_error_file = _startup_error_file()
     try:
+        startup_error_file.unlink(missing_ok=True)
         mutex = _create_windows_mutex()
         runtime_file = _runtime_file()
         if mutex.already_exists:
@@ -258,7 +273,12 @@ def main() -> None:
         server.start()
         _run_tray(server)
     except Exception as exc:
-        _show_windows_message(f"Die Anwendung konnte nicht gestartet werden:\n\n{exc}", error=True)
+        try:
+            _write_startup_error(startup_error_file, exc)
+        except OSError:
+            pass
+        if not os.getenv(NO_DIALOG_ENV):
+            _show_windows_message(f"Die Anwendung konnte nicht gestartet werden:\n\n{exc}", error=True)
     finally:
         if server is not None:
             server.stop()

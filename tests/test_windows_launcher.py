@@ -42,6 +42,16 @@ def test_runtime_record_roundtrip_and_validation(tmp_path: Path) -> None:
     assert windows_launcher._read_runtime_record(path) is None
 
 
+def test_startup_error_is_written_for_headless_diagnostics(tmp_path: Path) -> None:
+    path = tmp_path / "startup-error.log"
+
+    windows_launcher._write_startup_error(path, RuntimeError("Start fehlgeschlagen"))
+
+    assert "RuntimeError: Start fehlgeschlagen" in path.read_text(encoding="utf-8")
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
 def test_reserve_loopback_socket_uses_an_available_local_port(monkeypatch: pytest.MonkeyPatch) -> None:
     listener = Mock()
     listener.getsockname.return_value = ("127.0.0.1", 8765)
@@ -210,6 +220,7 @@ def test_main_reopens_existing_windows_instance(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(windows_launcher.sys, "platform", "win32")
     monkeypatch.setattr(windows_launcher, "_create_windows_mutex", Mock(return_value=mutex))
     monkeypatch.setattr(windows_launcher, "_runtime_file", lambda: runtime_file)
+    monkeypatch.setattr(windows_launcher, "_startup_error_file", lambda: tmp_path / "startup-error.log")
     open_existing = Mock(return_value=True)
     monkeypatch.setattr(windows_launcher, "_open_existing_instance", open_existing)
 
@@ -227,6 +238,7 @@ def test_main_starts_and_stops_first_windows_instance(tmp_path: Path, monkeypatc
     monkeypatch.setattr(windows_launcher.sys, "platform", "win32")
     monkeypatch.setattr(windows_launcher, "_create_windows_mutex", Mock(return_value=mutex))
     monkeypatch.setattr(windows_launcher, "_runtime_file", lambda: runtime_file)
+    monkeypatch.setattr(windows_launcher, "_startup_error_file", lambda: tmp_path / "startup-error.log")
     monkeypatch.setattr(windows_launcher, "DesktopServer", Mock(return_value=server))
     run_tray = Mock()
     monkeypatch.setattr(windows_launcher, "_run_tray", run_tray)
@@ -239,8 +251,9 @@ def test_main_starts_and_stops_first_windows_instance(tmp_path: Path, monkeypatc
     mutex.close.assert_called_once_with()
 
 
-def test_main_reports_windows_start_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_reports_windows_start_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(windows_launcher.sys, "platform", "win32")
+    monkeypatch.setattr(windows_launcher, "_startup_error_file", lambda: tmp_path / "startup-error.log")
     monkeypatch.setattr(windows_launcher, "_create_windows_mutex", Mock(side_effect=RuntimeError("kaputt")))
     show_message = Mock()
     monkeypatch.setattr(windows_launcher, "_show_windows_message", show_message)
@@ -251,6 +264,7 @@ def test_main_reports_windows_start_error(monkeypatch: pytest.MonkeyPatch) -> No
         "Die Anwendung konnte nicht gestartet werden:\n\nkaputt",
         error=True,
     )
+    assert "RuntimeError: kaputt" in (tmp_path / "startup-error.log").read_text(encoding="utf-8")
 
 
 def test_main_rejects_non_windows_platform(monkeypatch: pytest.MonkeyPatch) -> None:
