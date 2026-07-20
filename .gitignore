@@ -12,6 +12,8 @@ coverage.xml
 htmlcov/
 build/
 dist/
+.cache/
+runtime/
 
 # Local configuration and optional third-party validator
 .env

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "components": {
+    "java": {
+      "version": "Eclipse Temurin JRE 21.0.11+10",
+      "filename": "OpenJDK21U-jre_x64_windows_hotspot_21.0.11_10.zip",
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.11%2B10/OpenJDK21U-jre_x64_windows_hotspot_21.0.11_10.zip",
+      "sha256": "be26677aaa20b39a62edcaab4c8857a8b76673b0f45abc0b6143b142b62717e4"
+    },
+    "validator": {
+      "version": "KoSIT Validator 1.6.2",
+      "filename": "validator-1.6.2-standalone.jar",
+      "url": "https://github.com/itplr-kosit/validator/releases/download/v1.6.2/validator-1.6.2-standalone.jar",
+      "sha256": "244978514ad48f67c7573acfffc8f4fd73d81feda6f276710033f9913579857e"
+    },
+    "xrechnung": {
+      "version": "Validator Configuration XRechnung 2026-01-31",
+      "filename": "xrechnung-3.0.2-validator-configuration-2026-01-31.zip",
+      "url": "https://github.com/itplr-kosit/validator-configuration-xrechnung/releases/download/v2026-01-31/xrechnung-3.0.2-validator-configuration-2026-01-31.zip",
+      "sha256": "6a5a5911a421b25fbc423f62f93f894df7b236f5d73ca4f84bb222a945082704"
+    }
+  }
+}
