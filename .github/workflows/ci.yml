@@ -81,7 +81,7 @@ jobs:
           python -m pytest tests/test_api.py tests/test_pdf.py tests/test_kosit.py
           tests/test_settings.py tests/test_cli.py tests/test_desktop_security.py tests/test_windows_launcher.py
           tests/test_windows_components.py
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: .cache/windows-components
           key: windows-components-${{ hashFiles('packaging/windows/components.lock.json') }}
