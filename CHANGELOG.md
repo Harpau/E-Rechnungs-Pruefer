@@ -4,6 +4,10 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Wartung
+
+- Azure-Login im Release-Workflow auf die native Node.js-24-Version aktualisiert
+
 ## 1.2.0 – 2026-07-20
 
 ### Windows-Paket
