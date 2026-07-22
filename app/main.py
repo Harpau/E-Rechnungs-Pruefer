@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import os
 import re
+import threading
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -12,10 +13,18 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 from . import __version__
 from .analyzer import analyze_bytes
-from .desktop_security import DESKTOP_PORT_ENV, DESKTOP_TOKEN_ENV, DesktopSessionMiddleware
+from .desktop_security import (
+    API_TOKEN_ENV,
+    DESKTOP_PORT_ENV,
+    DESKTOP_TOKEN_ENV,
+    DesktopSessionMiddleware,
+    validate_api_token,
+)
+from .pdf_report import render_pdf_report
 from .settings import settings
 from .source import extract_source
 from .validators.kosit import KositValidator
@@ -23,6 +32,34 @@ from .xml_utils import InvoiceInputError
 
 APP_DIR = Path(__file__).resolve().parent
 EXAMPLES_DIR = APP_DIR / "examples"
+REPORT_RESPONSE_HEADERS = {
+    "X-Einvoice-Syntax": {
+        "description": "Erkannte Rechnungssyntax.",
+        "schema": {"type": "string", "enum": ["CII", "UBL", "UNKNOWN"]},
+    },
+    "X-Einvoice-Validation-Status": {
+        "description": "Gemeinsamer Status der internen und gegebenenfalls offiziellen Prüfung.",
+        "schema": {"type": "string", "enum": ["ok", "warning", "invalid"]},
+    },
+    "X-Einvoice-Official-Status": {
+        "description": "Differenzierter Ausführungs- und Entscheidungsstatus der KoSIT-Prüfung.",
+        "schema": {
+            "type": "string",
+            "enum": ["accepted", "rejected", "not-requested", "unavailable", "indeterminate"],
+        },
+    },
+}
+ANALYSIS_BUSY_RESPONSE: dict[int | str, dict[str, Any]] = {
+    503: {
+        "description": "Die begrenzte Analysekapazität ist vorübergehend ausgelastet.",
+        "headers": {
+            "Retry-After": {
+                "description": "Empfohlene Wartezeit bis zum nächsten Versuch in Sekunden.",
+                "schema": {"type": "integer", "minimum": 5, "maximum": 600},
+            }
+        },
+    }
+}
 
 app = FastAPI(
     title="E-Rechnungs-Viewer & Prüfer",
@@ -32,13 +69,54 @@ app = FastAPI(
     redoc_url=None,
 )
 _desktop_port = os.getenv(DESKTOP_PORT_ENV)
+_configured_api_token = os.getenv(API_TOKEN_ENV)
+if _configured_api_token is not None:
+    _configured_api_token = validate_api_token(_configured_api_token)
 app.add_middleware(
     DesktopSessionMiddleware,
     token=os.getenv(DESKTOP_TOKEN_ENV),
     port=int(_desktop_port) if _desktop_port else None,
+    api_token=_configured_api_token,
 )
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=APP_DIR / "templates")
+_analysis_slots = threading.BoundedSemaphore(2)
+_pdf_render_slots = threading.BoundedSemaphore(2)
+_ANALYSIS_RETRY_AFTER_SECONDS = min(max(settings.kosit_timeout_seconds + 5, 5), 600)
+
+
+class _AnalysisCapacityError(RuntimeError):
+    pass
+
+
+def _analyze_bytes_limited(
+    data: bytes,
+    filename: str,
+    media_type: str | None,
+    *,
+    run_official_validation: bool,
+) -> dict[str, Any]:
+    if not _analysis_slots.acquire(blocking=False):
+        raise _AnalysisCapacityError
+    try:
+        return analyze_bytes(
+            data,
+            filename,
+            media_type,
+            run_official_validation=run_official_validation,
+        )
+    finally:
+        _analysis_slots.release()
+
+
+def _render_pdf_report_limited(
+    result: dict[str, Any],
+    *,
+    generated_at: str,
+    version: str,
+) -> bytes:
+    with _pdf_render_slots:
+        return render_pdf_report(result, generated_at=generated_at, version=version)
 
 
 def _format_number(value: Any, digits: int | None = None) -> str:
@@ -121,8 +199,28 @@ def _safe_download_filename(value: Any, fallback: str, extension: str) -> str:
     return f"{(text[:120] or fallback)}.{extension.lstrip('.')}"
 
 
-def _safe_report_filename(value: Any) -> str:
-    return _safe_download_filename(value, "Bericht", "html")
+def _official_report_status(result: dict[str, Any], *, requested: bool) -> str:
+    if not requested:
+        return "not-requested"
+
+    official = result["validation"]["official"]
+    if official.get("executed"):
+        if official.get("accepted") is True:
+            return "accepted"
+        if official.get("accepted") is False:
+            return "rejected"
+        return "indeterminate"
+    if not official.get("configured"):
+        return "unavailable"
+    return "indeterminate"
+
+
+def _report_status_headers(result: dict[str, Any], *, official_requested: bool) -> dict[str, str]:
+    return {
+        "X-Einvoice-Syntax": str(result["document"]["syntax"]),
+        "X-Einvoice-Validation-Status": str(result["validation"]["status"]),
+        "X-Einvoice-Official-Status": _official_report_status(result, requested=official_requested),
+    }
 
 
 @app.middleware("http")
@@ -163,6 +261,19 @@ async def input_error_handler(request: Request, exc: InvoiceInputError):
     )
 
 
+@app.exception_handler(_AnalysisCapacityError)
+async def analysis_capacity_handler(request: Request, exc: _AnalysisCapacityError):
+    del request, exc
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "Der Prüfdienst ist ausgelastet. Bitte versuchen Sie es später erneut.",
+            "type": "analysis_capacity_error",
+        },
+        headers={"Retry-After": str(_ANALYSIS_RETRY_AFTER_SECONDS)},
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     kosit_state = KositValidator(settings).configuration_state()
@@ -180,10 +291,11 @@ async def index(request: Request):
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
+    kosit_state = KositValidator(settings).configuration_state()
     return {
         "status": "ok",
         "version": __version__,
-        "kosit": KositValidator(settings).configuration_state(),
+        "kosit": {"configured": bool(kosit_state["configured"])},
     }
 
 
@@ -199,14 +311,15 @@ async def example(example_name: str):
     return FileResponse(path, media_type="application/xml", filename=path.name)
 
 
-@app.post("/api/analyze")
+@app.post("/api/analyze", responses=ANALYSIS_BUSY_RESPONSE)
 async def analyze(
     file: UploadFile = File(...),
     official: bool = Form(True),
 ):
     try:
         data = await _read_upload(file)
-        result = analyze_bytes(
+        result = await run_in_threadpool(
+            _analyze_bytes_limited,
             data,
             file.filename or "rechnung.xml",
             file.content_type,
@@ -237,7 +350,17 @@ async def export_xml(file: UploadFile = File(...)):
         await file.close()
 
 
-@app.post("/api/report", response_class=HTMLResponse)
+@app.post(
+    "/api/report",
+    response_class=HTMLResponse,
+    responses={
+        200: {
+            "description": "Eigenständiger HTML-Bericht mit maschinenlesbarer Statuszusammenfassung.",
+            "headers": REPORT_RESPONSE_HEADERS,
+        },
+        **ANALYSIS_BUSY_RESPONSE,
+    },
+)
 async def report(
     request: Request,
     file: UploadFile = File(...),
@@ -245,12 +368,15 @@ async def report(
 ):
     try:
         data = await _read_upload(file)
-        result = analyze_bytes(
+        result = await run_in_threadpool(
+            _analyze_bytes_limited,
             data,
             file.filename or "rechnung.xml",
             file.content_type,
             run_official_validation=official,
         )
+        response_headers = _report_status_headers(result, official_requested=official)
+        response_headers["Content-Disposition"] = 'inline; filename="E-Rechnungs-Pruefbericht.html"'
         return templates.TemplateResponse(
             request=request,
             name="report.html",
@@ -259,9 +385,50 @@ async def report(
                 "generated_at": datetime.now().astimezone().strftime("%d.%m.%Y %H:%M:%S %Z"),
                 "version": __version__,
             },
-            headers={
-                "Content-Disposition": f"inline; filename=E-Rechnung-{_safe_report_filename(result['document'].get('id'))}"
-            },
+            headers=response_headers,
+        )
+    finally:
+        await file.close()
+
+
+@app.post(
+    "/api/report/pdf",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "Eigenständiger PDF-Bericht mit maschinenlesbarer Statuszusammenfassung.",
+            "content": {"application/pdf": {}},
+            "headers": REPORT_RESPONSE_HEADERS,
+        },
+        **ANALYSIS_BUSY_RESPONSE,
+    },
+)
+async def pdf_report(
+    file: UploadFile = File(...),
+    official: bool = Form(True),
+):
+    try:
+        data = await _read_upload(file)
+        result = await run_in_threadpool(
+            _analyze_bytes_limited,
+            data,
+            file.filename or "rechnung.xml",
+            file.content_type,
+            run_official_validation=official,
+        )
+        generated_at = datetime.now().astimezone().strftime("%d.%m.%Y %H:%M:%S %Z")
+        response_headers = _report_status_headers(result, official_requested=official)
+        response_headers["Content-Disposition"] = 'attachment; filename="E-Rechnungs-Pruefbericht.pdf"'
+        payload = await run_in_threadpool(
+            _render_pdf_report_limited,
+            result,
+            generated_at=generated_at,
+            version=__version__,
+        )
+        return Response(
+            content=payload,
+            media_type="application/pdf",
+            headers=response_headers,
         )
     finally:
         await file.close()

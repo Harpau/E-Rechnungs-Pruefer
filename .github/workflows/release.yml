@@ -107,7 +107,7 @@ jobs:
         run: .\scripts\build_windows.ps1
       - name: Test installed Windows package
         shell: pwsh
-        run: .\scripts\test_windows_package.ps1 -RequireSignature
+        run: .\scripts\test_windows_package.ps1 -RequireSignature -ConfirmIsolatedEnvironment
       - name: Inspect installer signature
         shell: pwsh
         run: |

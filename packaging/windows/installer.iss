@@ -37,7 +37,6 @@ WizardStyle=modern
 SetupLogging=yes
 CloseApplications=yes
 RestartApplications=no
-AppMutex=Local\E-Rechnungs-Pruefer-Desktop
 UninstallDisplayIcon={app}\{#AppExeName}
 LicenseFile={#ProjectRoot}\LICENSE
 InfoAfterFile={#ProjectRoot}\THIRD_PARTY.md
@@ -47,6 +46,7 @@ Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Desktop-Verknüpfung erstellen"; GroupDescription: "Zusätzliche Symbole:"; Flags: unchecked
+Name: "autostart"; Description: "Bei Windows-Anmeldung automatisch starten"; GroupDescription: "Automatisierung:"; Flags: unchecked
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\_internal"
@@ -61,10 +61,140 @@ Source: "{#ProjectRoot}\THIRD_PARTY.md"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "E-Rechnungs-Pruefer"; Flags: deletevalue; Check: not WizardIsTaskSelected('autostart')
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "E-Rechnungs-Pruefer"; ValueData: """{app}\{#AppExeName}"" --background"; Flags: uninsdeletevalue; Tasks: autostart
+
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "{#AppName} starten"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Parameters: "--background"; Flags: nowait; Check: ShouldRestartBackgroundAfterUpdate
+Filename: "{app}\{#AppExeName}"; Description: "{#AppName} starten"; Flags: nowait postinstall skipifsilent; Check: not ShouldRestartBackgroundAfterUpdate
 
 [UninstallDelete]
 Type: files; Name: "{localappdata}\E-Rechnungs-Pruefer\runtime.json"
+Type: files; Name: "{localappdata}\E-Rechnungs-Pruefer\api-token.txt"
 Type: files; Name: "{localappdata}\E-Rechnungs-Pruefer\startup-error.log"
 Type: dirifempty; Name: "{localappdata}\E-Rechnungs-Pruefer"
+
+[Code]
+const
+  AppMutexName = 'Local\E-Rechnungs-Pruefer-Desktop';
+  ShutdownEventName = 'Local\E-Rechnungs-Pruefer-Desktop-Shutdown';
+  EventModifyState = $0002;
+  ShutdownTimeoutMilliseconds = 30000;
+  ShutdownPollMilliseconds = 250;
+
+var
+  ShutdownPrepared: Boolean;
+  RestartBackgroundAfterUpdate: Boolean;
+
+function OpenEvent(DesiredAccess: DWORD; InheritHandle: BOOL; Name: String): Cardinal;
+  external 'OpenEventW@kernel32.dll stdcall';
+function SetEvent(EventHandle: Cardinal): BOOL;
+  external 'SetEvent@kernel32.dll stdcall';
+function CloseHandle(Handle: Cardinal): BOOL;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+function SignalApplicationShutdown: Boolean;
+var
+  ShutdownHandle: Cardinal;
+begin
+  ShutdownHandle := OpenEvent(EventModifyState, False, ShutdownEventName);
+  if ShutdownHandle = 0 then
+  begin
+    Log('Das Shutdown-Ereignis der laufenden Anwendung konnte nicht geöffnet werden.');
+    Result := False;
+    Exit;
+  end;
+
+  try
+    Result := SetEvent(ShutdownHandle);
+    if not Result then
+      Log('Das Shutdown-Ereignis der laufenden Anwendung konnte nicht signalisiert werden.');
+  finally
+    CloseHandle(ShutdownHandle);
+  end;
+end;
+
+function WaitForApplicationExit: Boolean;
+var
+  WaitedMilliseconds: Cardinal;
+begin
+  WaitedMilliseconds := 0;
+  while CheckForMutexes(AppMutexName) and
+        (WaitedMilliseconds < ShutdownTimeoutMilliseconds) do
+  begin
+    Sleep(ShutdownPollMilliseconds);
+    WaitedMilliseconds := WaitedMilliseconds + ShutdownPollMilliseconds;
+  end;
+  Result := not CheckForMutexes(AppMutexName);
+end;
+
+function StopRunningApplication(var WasRunning: Boolean): String;
+begin
+  WasRunning := CheckForMutexes(AppMutexName);
+  if not WasRunning then
+  begin
+    Result := '';
+    Exit;
+  end;
+
+  if not SignalApplicationShutdown then
+  begin
+    Result :=
+      'Die laufende Anwendung unterstützt das kontrollierte Beenden noch nicht. ' +
+      'Beenden Sie den E-Rechnungs-Prüfer einmalig über das Symbol im Infobereich ' +
+      'und starten Sie den Vorgang anschließend erneut.';
+    Exit;
+  end;
+
+  if not WaitForApplicationExit then
+  begin
+    Result :=
+      'Der laufende E-Rechnungs-Prüfer konnte nicht innerhalb von 30 Sekunden ' +
+      'kontrolliert beendet werden. Beenden Sie ihn über das Symbol im Infobereich ' +
+      'und starten Sie den Vorgang anschließend erneut.';
+    Exit;
+  end;
+
+  Result := '';
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  WasRunning: Boolean;
+  ExistingInstallation: Boolean;
+begin
+  if ShutdownPrepared then
+  begin
+    Result := '';
+    Exit;
+  end;
+
+  ExistingInstallation := FileExists(ExpandConstant('{app}\{#AppExeName}'));
+  Result := StopRunningApplication(WasRunning);
+  if Result = '' then
+  begin
+    ShutdownPrepared := True;
+    RestartBackgroundAfterUpdate := WasRunning and ExistingInstallation;
+  end;
+end;
+
+function ShouldRestartBackgroundAfterUpdate: Boolean;
+begin
+  Result := RestartBackgroundAfterUpdate and WizardIsTaskSelected('autostart');
+end;
+
+function InitializeUninstall: Boolean;
+var
+  WasRunning: Boolean;
+  ErrorMessage: String;
+begin
+  ErrorMessage := StopRunningApplication(WasRunning);
+  Result := ErrorMessage = '';
+  if not Result then
+  begin
+    Log(ErrorMessage);
+    if not UninstallSilent then
+      MsgBox(ErrorMessage, mbError, MB_OK);
+  end;
+end;

@@ -22,6 +22,7 @@ datas = [
     (str(PROJECT_ROOT / "app" / "templates"), "app/templates"),
     (str(PROJECT_ROOT / "app" / "static"), "app/static"),
     (str(PROJECT_ROOT / "app" / "examples"), "app/examples"),
+    (str(PROJECT_ROOT / "app" / "assets" / "fonts"), "app/assets/fonts"),
 ]
 for optional_source, destination in (
     (PROJECT_ROOT / "vendor" / "kosit", "vendor/kosit"),

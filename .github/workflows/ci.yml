@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -92,7 +95,7 @@ jobs:
         run: .\scripts\build_windows.ps1
       - name: Test installed Windows package
         shell: pwsh
-        run: .\scripts\test_windows_package.ps1
+        run: .\scripts\test_windows_package.ps1 -ConfirmIsolatedEnvironment
       - uses: actions/upload-artifact@v7
         with:
           name: windows-x64-package-${{ github.sha }}

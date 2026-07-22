@@ -17,7 +17,7 @@ def _load_script(name: str):
 
 def test_version_declarations_are_synchronized():
     module = _load_script("verify_version.py")
-    assert module.verify() == "1.2.0"
+    assert module.verify() == "1.3.0"
 
 
 def test_release_filter_excludes_local_and_sensitive_files():

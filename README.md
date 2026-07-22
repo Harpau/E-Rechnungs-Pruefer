@@ -19,7 +19,7 @@ Reine Sicht- oder Scan-PDFs ohne eingebettete strukturierte XML werden bewusst n
 - XML-Text- und Tabellenansichten sowie bytegetreuer Export der ursprünglichen XML-Bytes
 - interne Pflichtfeld-, Datums-, Format-, Rechen- und Plausibilitätsprüfungen
 - optionale KoSIT-Prüfung mit zuverlässiger Auswertung des VARL-Berichts
-- JSON-, XML- und eigenständiger HTML-Bericht; PDF-Ausgabe über den Browserdruck
+- JSON-, XML-, eigenständiger HTML- und paginierter PDF-Prüfbericht
 - lokale HTTP-API mit OpenAPI-Dokumentation
 - Docker-Konfiguration, automatisierte Tests, Typprüfung, Linting, Coverage und Release-Build
 - vorbereitetes GitHub-Repository mit CI, CodeQL, Dependency Audit, Dependabot, Issue- und Pull-Request-Vorlagen
@@ -174,10 +174,11 @@ Interaktive Dokumentation: `http://127.0.0.1:8080/api/docs`
 
 | Methode | Endpunkt | Zweck |
 |---|---|---|
-| `GET` | `/api/health` | Anwendungsversion und KoSIT-Konfiguration |
+| `GET` | `/api/health` | Anwendungsversion und KoSIT-Bereitschaft |
 | `GET` | `/api/examples/{cii|ubl}` | anonymisierte Beispieldatei |
 | `POST` | `/api/analyze` | normalisiertes Modell und gemeinsamer Prüfbericht als JSON |
 | `POST` | `/api/report` | eigenständiger HTML-Bericht |
+| `POST` | `/api/report/pdf` | eigenständiger PDF-Bericht für Mail-Automatisierungen |
 | `POST` | `/api/xml` | ursprüngliche oder aus PDF extrahierte XML bytegetreu |
 
 Beispiel:
@@ -186,6 +187,20 @@ Beispiel:
 curl -F "file=@rechnung.xml" -F "official=false" \
   http://127.0.0.1:8080/api/analyze > pruefbericht.json
 ```
+
+`POST /api/report` liefert den eigenständigen HTML-Bericht, `POST /api/report/pdf` einen direkt öffnungsfähigen
+PDF-Bericht für Mail-Automatisierungen. Beide Antworten enthalten die Header `X-Einvoice-Syntax`,
+`X-Einvoice-Validation-Status` und `X-Einvoice-Official-Status`; ihre Download-Dateinamen enthalten keine
+Rechnungs- oder Originaldateikennung. Der verbindliche Wertebereich und die Automatisierungsregeln stehen in
+[`docs/AUTOMATION_INTEGRATION.md`](docs/AUTOMATION_INTEGRATION.md).
+
+Die installierte Windows-App läuft auf dem festen Loopback-Port `8080` beziehungsweise dem mit `PORT`
+konfigurierten Port. Für lokale Automatisierungen legt sie ein persistentes Bearer-Token unter
+`%LOCALAPPDATA%\E-Rechnungs-Pruefer\api-token.txt` an. Dieses Token darf nur über den geschützten
+Credential-Speicher oder die Prozessumgebung von Node-RED eingebunden werden, niemals direkt im exportierten Flow.
+Mit `E-Rechnungs-Pruefer.exe --background` startet sie ohne ein automatisches Browserfenster.
+Der Installer bietet dazu die standardmäßig abgewählte Aufgabe „Bei Windows-Anmeldung automatisch starten“ an.
+Sie richtet einen benutzerbezogenen Autostart ein und ist kein Windows-Dienst.
 
 ## Konfiguration
 
@@ -203,6 +218,7 @@ Umgebungsvariablen können in `.env` oder `.env.kosit` stehen. Beide Dateien wer
 | `KOSIT_SCENARIOS` | automatisch | Semikolon-getrennte Szenariodateien |
 | `KOSIT_REPOSITORIES` | automatisch | Semikolon-getrennte Ressourcenpfade |
 | `KOSIT_TIMEOUT_SECONDS` | `60` | Zeitgrenze pro KoSIT-Aufruf |
+| `EINVOICE_API_TOKEN` | automatisch im Windows-Launcher | optional vorgegebenes URL-sicheres ASCII-API-Token mit mindestens 32 Zeichen |
 
 ## Sicherheit und Datenschutz
 
@@ -222,6 +238,8 @@ Ein öffentlicher oder mehrbenutzerfähiger Betrieb benötigt zusätzlich Authen
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) – Komponenten und Datenfluss
 - [`docs/VALIDATION.md`](docs/VALIDATION.md) – interne und offizielle Prüfung
+- [`docs/AUTOMATION_INTEGRATION.md`](docs/AUTOMATION_INTEGRATION.md) – verbindliche Status- und Fehlerregeln für Node-RED und andere Automatisierungen
+- [`docs/NODE_RED.md`](docs/NODE_RED.md) – Import und Konfiguration des anonymisierten Node-RED-Beispielflows
 - [`docs/TAX_CATEGORIES.md`](docs/TAX_CATEGORIES.md) – Darstellung und Plausibilitätsregeln
 - [`docs/CODEX.md`](docs/CODEX.md) – Arbeit mit Codex
 - [`docs/GITHUB_SETUP.md`](docs/GITHUB_SETUP.md) – Repository, Actions und Branch-Schutz

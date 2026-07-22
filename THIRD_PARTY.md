@@ -12,6 +12,8 @@ Maßgeblich sind die Lizenztexte der tatsächlich installierten Versionen.
 | python-multipart | Multipart-Uploads | Apache-2.0 |
 | lxml | XML-Verarbeitung | BSD-artig |
 | pypdf | eingebettete PDF-Dateien | BSD-3-Clause |
+| ReportLab | Erzeugung eigenständiger PDF-Prüfberichte | BSD-3-Clause |
+| Noto Sans und Noto Sans SC | Eingebettete Unicode-Schriften in PDF-Prüfberichten | SIL Open Font License 1.1 |
 
 ## Entwicklung
 

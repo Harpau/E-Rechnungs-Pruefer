@@ -1,0 +1,528 @@
+[
+  {
+    "id": "e100000000000001",
+    "type": "tab",
+    "label": "E-Rechnungs-Pruefer",
+    "disabled": true,
+    "info": "Anonymisierte Vorlage zur Prüfung eingehender XML-/PDF-Mailanhänge über die lokale API des E-Rechnungs-Prüfers. Konfiguration siehe docs/NODE_RED.md."
+  },
+  {
+    "id": "e100000000000002",
+    "type": "comment",
+    "z": "e100000000000001",
+    "name": "Vor Aktivierung konfigurieren: API-Token, Empfänger und Mailkonten",
+    "info": "Erforderlich: EINVOICE_API_TOKEN und EINVOICE_RESULT_TO in der Node-RED-Prozessumgebung. Optional: EINVOICE_API_URL und EINVOICE_REQUIRE_KOSIT. Anschließend die enthaltenen SMTP- und IMAP-Kontoknoten konfigurieren, das Abrufintervall prüfen und erst dann diesen Flow aktivieren.",
+    "x": 360,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "e100000000000018",
+    "type": "inject",
+    "z": "e100000000000001",
+    "name": "Postfach alle 10 Sekunden prüfen",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "10",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 150,
+    "y": 100,
+    "wires": [
+      [
+        "e100000000000019"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000019",
+    "type": "imap-email in",
+    "z": "e100000000000001",
+    "name": "Rechnungspostfach abrufen",
+    "account": "e100000000000015",
+    "mailbox": "INBOX",
+    "batchSize": 5,
+    "frontWindowSize": 500,
+    "maxInflight": 5,
+    "retryAfterMs": 1800000,
+    "scanTimeLimitMs": 10000,
+    "maxUidPerCommand": 500,
+    "deletedSelection": "exclude",
+    "seenSelection": "exclude",
+    "answeredSelection": "ignore",
+    "flaggedSelection": "ignore",
+    "expungeDeletedFront": false,
+    "expungeDeletedFrontLimit": 200,
+    "maxMessageBytes": 67108864,
+    "downloadChunkSize": 65536,
+    "includeAttachments": true,
+    "emitRaw": false,
+    "diagnostics": "stats",
+    "x": 410,
+    "y": 100,
+    "wires": [
+      [
+        "e10000000000001a"
+      ],
+      [
+        "e10000000000000f"
+      ],
+      []
+    ]
+  },
+  {
+    "id": "e10000000000001a",
+    "type": "function",
+    "z": "e100000000000001",
+    "name": "IMAP-Anhangsdaten prüfen",
+    "func": "if (!Array.isArray(msg.email?.attachments)) {\n    msg.automationError = {\n        class: 'configuration',\n        message: 'Der IMAP-Eingang hat keine Attachment-Daten geliefert. Die Option Attachments muss aktiviert sein.',\n        candidate: null,\n        correlationId: String(msg._msgid || ''),\n        occurredAt: new Date().toISOString()\n    };\n    delete msg.payload;\n    return [null, msg];\n}\nreturn [msg, null];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 690,
+    "y": 100,
+    "wires": [
+      [
+        "e100000000000004"
+      ],
+      [
+        "e10000000000000f"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000004",
+    "type": "function",
+    "z": "e100000000000001",
+    "name": "Alle XML/PDF-Kandidaten vorbereiten",
+    "func": "const attachments = Array.isArray(msg.email?.attachments) ? msg.email.attachments : [];\nconst candidates = [];\nconst preparationErrors = [];\n\nfunction asBuffer(content) {\n    if (Buffer.isBuffer(content)) return Buffer.from(content);\n    if (content && content.type === 'Buffer' && Array.isArray(content.data)) return Buffer.from(content.data);\n    if (typeof content !== 'string') return null;\n    const compact = content.replace(/\\s+/g, '');\n    if (!compact || compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) return null;\n    return Buffer.from(compact, 'base64');\n}\n\nfunction looksLikeXml(buffer) {\n    let start = 0;\n    if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) start = 3;\n    while (start < buffer.length && [0x09, 0x0a, 0x0d, 0x20].includes(buffer[start])) start += 1;\n    return buffer[start] === 0x3c || (buffer.length >= 2 && ((buffer[0] === 0xff && buffer[1] === 0xfe) || (buffer[0] === 0xfe && buffer[1] === 0xff)));\n}\n\nfor (let index = 0; index < attachments.length; index += 1) {\n    const attachment = attachments[index] || {};\n    const filename = String(attachment.filename || `anhang-${index + 1}`).replace(/[\\r\\n]/g, '');\n    const contentType = String(attachment.contentType || '').toLowerCase();\n    const lowerName = filename.toLowerCase();\n    const extensionCandidate = lowerName.endsWith('.xml') || lowerName.endsWith('.pdf');\n    const mimeCandidate = contentType.includes('xml') || contentType.includes('pdf');\n    const content = asBuffer(attachment.content);\n    if (!content) {\n        if (extensionCandidate || mimeCandidate) preparationErrors.push({ filename, reason: 'Anhang enthält keine lesbaren Binärdaten.' });\n        continue;\n    }\n    const byteXml = looksLikeXml(content);\n    const bytePdf = content.subarray(0, 5).toString('ascii') === '%PDF-';\n    if (!extensionCandidate && !mimeCandidate && !byteXml && !bytePdf) continue;\n    const kind = byteXml || lowerName.endsWith('.xml') || contentType.includes('xml') ? 'xml' : 'pdf';\n    if (candidates.some((candidate) => candidate.content.length === content.length && candidate.content.equals(content))) continue;\n    candidates.push({ filename, contentType: kind === 'xml' ? 'application/xml' : 'application/pdf', kind, content, originalIndex: index });\n}\n\ncandidates.sort((left, right) => (left.kind === right.kind ? left.originalIndex - right.originalIndex : left.kind === 'xml' ? -1 : 1));\nmsg.automation = {\n    candidates,\n    candidateIndex: 0,\n    retryCount: 0,\n    reports: [],\n    results: preparationErrors.map((item) => ({ outcome: 'input-error', ...item })),\n    correlationId: String(msg._msgid || ''),\n    requireKosit: String(env.get('EINVOICE_REQUIRE_KOSIT') ?? 'true').toLowerCase() !== 'false'\n};\ndelete msg.payload;\ndelete msg.headers;\ndelete msg.statusCode;\nif (candidates.length === 0) {\n    msg.automation.outcome = 'not-supported';\n    return [null, msg];\n}\nreturn [msg, null];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 970,
+    "y": 100,
+    "wires": [
+      [
+        "e100000000000005"
+      ],
+      [
+        "e10000000000000c"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000005",
+    "type": "delay",
+    "z": "e100000000000001",
+    "name": "Maximal 1 neuer Kandidat/s",
+    "pauseType": "rate",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 620,
+    "y": 100,
+    "wires": [
+      [
+        "e100000000000006"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000006",
+    "type": "function",
+    "z": "e100000000000001",
+    "name": "Multipart-API-Aufruf vorbereiten",
+    "func": "const state = msg.automation;\nconst candidate = state?.candidates?.[state.candidateIndex];\nconst apiUrl = String(env.get('EINVOICE_API_URL') || 'http://127.0.0.1:8080/api/report/pdf').trim();\nconst apiToken = String(env.get('EINVOICE_API_TOKEN') || '');\n\nfunction configurationError(message) {\n    msg.automationError = { class: 'configuration', message, candidate: candidate?.filename || null, correlationId: state?.correlationId || null, occurredAt: new Date().toISOString() };\n    delete msg.payload;\n    delete msg.headers;\n    delete msg.requestTimeout;\n    delete msg.followRedirects;\n    return [null, msg];\n}\n\nif (!candidate) return configurationError('Interner Flowzustand enthält keinen aktuellen Anhang.');\nconst apiUrlMatch = /^http:\\/\\/(127\\.0\\.0\\.1|localhost)(?::([0-9]{1,5}))?\\/api\\/report\\/pdf$/i.exec(apiUrl);\nconst apiPort = apiUrlMatch?.[2] ? Number(apiUrlMatch[2]) : 80;\nif (!apiUrlMatch || !Number.isInteger(apiPort) || apiPort < 1 || apiPort > 65535) {\n    return configurationError('EINVOICE_API_URL muss auf den lokalen /api/report/pdf-Endpunkt mit einem gültigen Port zeigen.');\n}\nif (!/^[A-Za-z0-9_-]{32,}$/.test(apiToken)) return configurationError('EINVOICE_API_TOKEN fehlt oder entspricht nicht dem erwarteten URL-sicheren Format.');\n\nconst safeFilename = candidate.filename.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || `rechnung-${state.candidateIndex + 1}.${candidate.kind}`;\nconst boundary = `----------------einvoice-${String(msg._msgid || 'request').replace(/[^A-Za-z0-9]/g, '')}-${state.candidateIndex}-${state.retryCount}`;\nconst officialValue = state.requireKosit === false ? 'false' : 'true';\nconst beforeFile = Buffer.from(`--${boundary}\\r\\nContent-Disposition: form-data; name=\\\"file\\\"; filename=\\\"${safeFilename}\\\"\\r\\nContent-Type: ${candidate.contentType}\\r\\n\\r\\n`, 'utf8');\nconst afterFile = Buffer.from(`\\r\\n--${boundary}\\r\\nContent-Disposition: form-data; name=\\\"official\\\"\\r\\n\\r\\n${officialValue}\\r\\n--${boundary}--\\r\\n`, 'utf8');\nmsg.payload = Buffer.concat([beforeFile, candidate.content, afterFile]);\nmsg.method = 'POST';\nmsg.url = apiUrl;\nmsg.requestTimeout = 90000;\nmsg.followRedirects = false;\nmsg.headers = {\n    'Content-Type': `multipart/form-data; boundary=${boundary}`,\n    'Authorization': `Bearer ${apiToken}`,\n    'Accept': 'application/pdf'\n};\nreturn [msg, null];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 880,
+    "y": 100,
+    "wires": [
+      [
+        "e100000000000007"
+      ],
+      [
+        "e10000000000000f"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000007",
+    "type": "http request",
+    "z": "e100000000000001",
+    "name": "POST /api/report/pdf",
+    "method": "use",
+    "ret": "bin",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "e10000000000001b",
+    "insecureHTTPParser": false,
+    "followRedirects": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 1120,
+    "y": 100,
+    "wires": [
+      [
+        "e100000000000008"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000008",
+    "type": "function",
+    "z": "e100000000000001",
+    "name": "HTTP- und Prüfstatus klassifizieren",
+    "func": "const state = msg.automation;\nconst candidate = state.candidates[state.candidateIndex];\nconst status = Number(msg.statusCode || 0);\nconst responseHeaders = msg.headers && typeof msg.headers === 'object' ? msg.headers : {};\nconst responseBody = Buffer.isBuffer(msg.payload) ? msg.payload : Buffer.from(msg.payload == null ? '' : String(msg.payload), 'utf8');\n\nfunction header(name) {\n    const key = Object.keys(responseHeaders).find((item) => item.toLowerCase() === name.toLowerCase());\n    const value = key ? responseHeaders[key] : undefined;\n    return Array.isArray(value) ? String(value[0] || '') : String(value || '');\n}\nfunction clearHttpState() {\n    delete msg.payload;\n    delete msg.headers;\n    delete msg.statusCode;\n    delete msg.requestTimeout;\n    delete msg.followRedirects;\n}\nfunction parseRetryAfter(value) {\n    const raw = String(value || '').trim();\n    if (!raw) return null;\n    if (/^\\d+$/.test(raw)) {\n        const seconds = Number(raw);\n        return Number.isFinite(seconds) ? Math.min(seconds * 1000, 600000) : 600000;\n    }\n    const target = Date.parse(raw);\n    if (!Number.isFinite(target)) return null;\n    return Math.min(Math.max(target - Date.now(), 0), 600000);\n}\nfunction finishCandidate(outcome, detail) {\n    state.results.push({ filename: candidate.filename, outcome, ...detail });\n    clearHttpState();\n    return [msg, null, null];\n}\nfunction retry(message) {\n    state.retryAfterMs = parseRetryAfter(header('retry-after'));\n    state.lastError = message;\n    clearHttpState();\n    return [null, msg, null];\n}\nfunction fail(errorClass, message) {\n    msg.automationError = { class: errorClass, message, candidate: candidate.filename, correlationId: state.correlationId, occurredAt: new Date().toISOString() };\n    clearHttpState();\n    return [null, null, msg];\n}\n\nif (status >= 200 && status < 300) {\n    const syntax = header('x-einvoice-syntax');\n    const validation = header('x-einvoice-validation-status');\n    const official = header('x-einvoice-official-status');\n    const mediaType = header('content-type').toLowerCase().split(';', 1)[0].trim();\n    const hasPdfSignature = responseBody.length >= 5 && responseBody.subarray(0, 5).toString('ascii') === '%PDF-';\n    const allowedSyntax = ['CII', 'UBL', 'UNKNOWN'];\n    const allowedValidation = ['ok', 'warning', 'invalid'];\n    const allowedOfficial = ['accepted', 'rejected', 'not-requested', 'unavailable', 'indeterminate'];\n    if (!allowedSyntax.includes(syntax) || !allowedValidation.includes(validation) || !allowedOfficial.includes(official) || mediaType !== 'application/pdf' || !hasPdfSignature) {\n        return fail('protocol', 'API-Antwort enthält nicht den vereinbarten PDF- und Statusvertrag.');\n    }\n    if (syntax === 'UNKNOWN') return finishCandidate('not-supported', { syntax, validation, official });\n    if (state.requireKosit && official === 'indeterminate') return retry('KoSIT-Prüfung war technisch unbestimmt.');\n    if (state.requireKosit && (official === 'unavailable' || official === 'not-requested')) {\n        return fail('configuration', `Verpflichtende KoSIT-Prüfung ist nicht verfügbar (${official}).`);\n    }\n    const reportNumber = state.reports.length + 1;\n    const rawCorrelation = String(state.correlationId || msg._msgid || 'mail');\n    const correlationToken = Buffer.from(rawCorrelation, 'utf8').toString('base64').replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '') || 'bWFpbA';\n    state.reports.push({\n        filename: `E-Rechnungs-Pruefbericht-${correlationToken}-${reportNumber}.pdf`,\n        content: responseBody,\n        contentType: 'application/pdf',\n        contentDisposition: 'attachment',\n        sourceFilename: candidate.filename,\n        syntax,\n        validation,\n        official\n    });\n    return finishCandidate('processed', { syntax, validation, official });\n}\n\nif (status === 413 || status === 422) return finishCandidate('input-error', { httpStatus: status });\nif (status === 408 || status === 429 || status >= 500) return retry(`Vorübergehender API-Fehler HTTP ${status || 'ohne Status'}.`);\nif ([400, 401, 403, 404, 405].includes(status)) return fail('configuration', `Nicht wiederholbarer API-Fehler HTTP ${status}.`);\nreturn fail('protocol', `Unerwarteter API-Status ${status || 'ohne Status'}.`);",
+    "outputs": 3,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1370,
+    "y": 100,
+    "wires": [
+      [
+        "e100000000000009"
+      ],
+      [
+        "e10000000000000a"
+      ],
+      [
+        "e10000000000000f"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000009",
+    "type": "function",
+    "z": "e100000000000001",
+    "name": "Nächsten Kandidaten wählen",
+    "func": "const state = msg.automation;\ndelete msg.requestTimeout;\ndelete msg.followRedirects;\nstate.candidateIndex += 1;\nstate.retryCount = 0;\nstate.retryAfterMs = null;\nstate.lastError = null;\nif (state.candidateIndex < state.candidates.length) return [msg, null];\nstate.outcome = state.reports.length > 0 ? 'processed' : 'not-supported';\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1620,
+    "y": 100,
+    "wires": [
+      [
+        "e100000000000005"
+      ],
+      [
+        "e10000000000000c"
+      ]
+    ]
+  },
+  {
+    "id": "e10000000000000a",
+    "type": "function",
+    "z": "e100000000000001",
+    "name": "Begrenzt wiederholen",
+    "func": "const state = msg.automation || {};\nconst transportDetail = msg.error?.message || msg.error;\nif (transportDetail) state.lastError = `HTTP-Verbindungsfehler: ${String(transportDetail).slice(0, 900)}`;\nstate.retryCount = Number(state.retryCount || 0) + 1;\nconst delays = [30000, 120000, 600000];\ndelete msg.payload;\ndelete msg.headers;\ndelete msg.statusCode;\ndelete msg.requestTimeout;\ndelete msg.followRedirects;\ndelete msg.error;\nif (state.retryCount <= delays.length) {\n    const hasServerDelay = state.retryAfterMs !== null && state.retryAfterMs !== undefined;\n    const serverDelay = Number(state.retryAfterMs);\n    msg.delay = hasServerDelay && Number.isFinite(serverDelay) && serverDelay >= 0 ? Math.min(serverDelay, 600000) : delays[state.retryCount - 1];\n    state.retryAfterMs = null;\n    return [msg, null];\n}\nconst candidate = state.candidates?.[state.candidateIndex];\nmsg.automationError = {\n    class: 'retry-exhausted',\n    message: state.lastError || 'Wiederholungen ohne Erfolg ausgeschöpft.',\n    candidate: candidate?.filename || null,\n    correlationId: state.correlationId || null,\n    occurredAt: new Date().toISOString()\n};\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1370,
+    "y": 180,
+    "wires": [
+      [
+        "e10000000000000b"
+      ],
+      [
+        "e10000000000000f"
+      ]
+    ]
+  },
+  {
+    "id": "e10000000000000b",
+    "type": "delay",
+    "z": "e100000000000001",
+    "name": "Retry-Backoff",
+    "pauseType": "delayv",
+    "timeout": "30",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 1590,
+    "y": 180,
+    "wires": [
+      [
+        "e100000000000006"
+      ]
+    ]
+  },
+  {
+    "id": "e10000000000000c",
+    "type": "function",
+    "z": "e100000000000001",
+    "name": "Mailergebnis abschließen",
+    "func": "const state = msg.automation || { reports: [], results: [] };\ndelete msg.requestTimeout;\ndelete msg.followRedirects;\nif (!Array.isArray(state.reports) || state.reports.length === 0) {\n    state.outcome = 'not-supported';\n    delete msg.payload;\n    delete msg.headers;\n    return [null, msg, null];\n}\nconst recipient = String(env.get('EINVOICE_RESULT_TO') || '').trim();\nif (!recipient) {\n    msg.automationError = { class: 'configuration', message: 'EINVOICE_RESULT_TO ist nicht gesetzt.', candidate: null, correlationId: state.correlationId || null, occurredAt: new Date().toISOString() };\n    return [null, null, msg];\n}\nif (!msg.email || typeof msg.email !== 'object') msg.email = {};\nif (!Array.isArray(msg.email.attachments)) msg.email.attachments = [];\nfor (const report of state.reports) {\n    msg.email.attachments.push({ filename: report.filename, content: report.content, contentType: report.contentType, contentDisposition: 'attachment' });\n}\nconst summary = state.reports.map((report) => `${report.sourceFilename}: ${report.syntax}, Prüfstatus ${report.validation}, KoSIT ${report.official}`).join('\\n');\nmsg.email.topic = `E-Rechnung: ${String(msg.email.topic || 'Prüfergebnis')}`;\nmsg.email.text = `Der E-Rechnungs-Prüfer hat ${state.reports.length} strukturierte Rechnung(en) erkannt.\\n\\n${summary}\\n\\nDie PDF-Prüfberichte sind angehängt; mögliche Darstellungsgrenzen werden im jeweiligen Bericht ausgewiesen.`;\nmsg.automationRecipient = recipient;\ndelete msg.payload;\ndelete msg.headers;\ndelete msg.statusCode;\nreturn [msg, null, null];",
+    "outputs": 3,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 600,
+    "y": 300,
+    "wires": [
+      [
+        "e10000000000000d"
+      ],
+      [
+        "e10000000000000e"
+      ],
+      [
+        "e10000000000000f"
+      ]
+    ]
+  },
+  {
+    "id": "e10000000000000d",
+    "type": "smtp-email send",
+    "z": "e100000000000001",
+    "name": "Prüfbericht versenden",
+    "account": "e100000000000014",
+    "toSource": "msg",
+    "toValue": "automationRecipient",
+    "ccSource": "str",
+    "ccValue": "",
+    "bccSource": "str",
+    "bccValue": "",
+    "fromSource": "str",
+    "fromValue": "",
+    "replyToSource": "msg",
+    "replyToValue": "email.header.reply-to",
+    "subjectSource": "msg",
+    "subjectValue": "email.topic",
+    "textSource": "msg",
+    "textValue": "email.text",
+    "htmlSource": "str",
+    "htmlValue": "",
+    "attachmentsSource": "msg",
+    "attachmentsValue": "email.attachments",
+    "x": 880,
+    "y": 280,
+    "wires": [
+      [
+        "e10000000000000e"
+      ],
+      [
+        "e10000000000000f"
+      ]
+    ]
+  },
+  {
+    "id": "e10000000000000e",
+    "type": "imap-email ack",
+    "z": "e100000000000001",
+    "name": "Erst jetzt quittieren",
+    "account": "e100000000000015",
+    "actionMode": "flag",
+    "targetMailbox": "",
+    "seenAction": "set",
+    "answeredAction": "ignore",
+    "flaggedAction": "ignore",
+    "flagAdd": "",
+    "flagRemove": "",
+    "batchSize": 100,
+    "flushMs": 500,
+    "maxUidPerCommand": 500,
+    "maxBatchesPerFlush": 20,
+    "diagnostics": "stats",
+    "x": 1140,
+    "y": 300,
+    "wires": [
+      [],
+      [
+        "e10000000000000f"
+      ],
+      []
+    ]
+  },
+  {
+    "id": "e10000000000000f",
+    "type": "function",
+    "z": "e100000000000001",
+    "name": "Technischen Fehler bereinigen",
+    "func": "const state = msg.automation || {};\nif (!msg.automationError) {\n    const detail = msg.error?.message || msg.smtpEmail?.error || msg.imapAck?.error || 'Unerwarteter technischer Flowfehler.';\n    const candidate = state.candidates?.[state.candidateIndex];\n    msg.automationError = { class: 'runtime', message: String(detail).slice(0, 1000), candidate: candidate?.filename || null, correlationId: state.correlationId || String(msg._msgid || ''), occurredAt: new Date().toISOString() };\n    if (msg.error?.code) msg.automationError.code = String(msg.error.code).slice(0, 100);\n}\nif (!msg.automationError.occurredAt) msg.automationError.occurredAt = new Date().toISOString();\ndelete msg.payload;\ndelete msg.headers;\ndelete msg.statusCode;\ndelete msg.url;\ndelete msg.method;\ndelete msg.requestTimeout;\ndelete msg.followRedirects;\ndelete msg.error;\nnode.status({ fill: 'red', shape: 'ring', text: msg.automationError.class });\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 890,
+    "y": 400,
+    "wires": [
+      [
+        "e100000000000010",
+        "e100000000000011"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000010",
+    "type": "debug",
+    "z": "e100000000000001",
+    "name": "Nur bereinigte Fehlerdiagnose",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "automationError",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1180,
+    "y": 380,
+    "wires": []
+  },
+  {
+    "id": "e100000000000011",
+    "type": "link out",
+    "z": "e100000000000001",
+    "name": "TECHNISCHER FEHLER – persistent anbinden",
+    "mode": "link",
+    "links": [],
+    "x": 1175,
+    "y": 420,
+    "wires": []
+  },
+  {
+    "id": "e100000000000012",
+    "type": "catch",
+    "z": "e100000000000001",
+    "name": "HTTP-Verbindungsfehler",
+    "scope": [
+      "e100000000000007"
+    ],
+    "uncaught": false,
+    "x": 1110,
+    "y": 180,
+    "wires": [
+      [
+        "e10000000000000a"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000013",
+    "type": "catch",
+    "z": "e100000000000001",
+    "name": "Unerwartete Flowfehler",
+    "scope": [
+      "e100000000000004",
+      "e100000000000006",
+      "e100000000000008",
+      "e100000000000009",
+      "e10000000000000a",
+      "e10000000000000c"
+    ],
+    "uncaught": false,
+    "x": 600,
+    "y": 400,
+    "wires": [
+      [
+        "e10000000000000f"
+      ]
+    ]
+  },
+  {
+    "id": "e100000000000017",
+    "type": "comment",
+    "z": "e100000000000001",
+    "name": "Fehlerpfad quittiert absichtlich nicht",
+    "info": "Den Link-Ausgang mit einem dauerhaften, überwachten Fehlerpfad verbinden. Erst dessen erfolgreicher Abschluss darf die IMAP-Mail quittieren.",
+    "x": 1170,
+    "y": 460,
+    "wires": []
+  },
+  {
+    "id": "e10000000000001b",
+    "type": "http proxy",
+    "name": "Nur lokale API – kein externer Proxy",
+    "url": "http://127.0.0.1:9",
+    "noproxy": [
+      "127.0.0.1",
+      "localhost"
+    ]
+  },
+  {
+    "id": "e100000000000014",
+    "type": "smtp-email account",
+    "name": "SMTP-Konto nach Import konfigurieren",
+    "host": "smtp.example.invalid",
+    "port": 587,
+    "secure": false,
+    "rejectUnauthorized": true,
+    "from": "rechnung@example.invalid"
+  },
+  {
+    "id": "e100000000000015",
+    "type": "imap-email account",
+    "name": "IMAP-Konto nach Import konfigurieren",
+    "host": "imap.example.invalid",
+    "port": 993,
+    "secure": true,
+    "tlsRejectUnauthorized": true,
+    "connectionTimeout": 30000,
+    "greetingTimeout": 30000,
+    "socketTimeout": 300000
+  },
+  {
+    "id": "e100000000000016",
+    "type": "global-config",
+    "env": [],
+    "modules": {
+      "@compeso/node-red-contrib-smtp-email": "0.1.0",
+      "@compeso/node-red-contrib-imap-email": "1.0.1"
+    }
+  }
+]
