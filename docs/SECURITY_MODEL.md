@@ -41,7 +41,11 @@ Jinja2 escaped standardmäßig; die JavaScript-Oberfläche verwendet `escapeHtml
 
 ### Lokaler Windows-Webserver
 
-Der Desktop-Launcher bindet ausschließlich einen vorab reservierten Socket auf `127.0.0.1`. Pro Prozess wird ein zufälliges Sitzungstoken erzeugt. Ein Startlink setzt ein `HttpOnly`-/`SameSite=Strict`-Cookie und entfernt das Token durch Weiterleitung aus der sichtbaren URL. Weitere Anfragen benötigen dieses Cookie; Host und bei schreibenden Browseranfragen der Origin werden geprüft. Die Laufzeitdatei unter `%LOCALAPPDATA%` enthält Port, Prozess-ID und Token, ist durch die Benutzerrechte des angemeldeten Windows-Kontos geschützt und wird beim normalen Beenden beziehungsweise bei der Deinstallation entfernt.
+Der Desktop-Launcher bindet den konfigurierten festen Port ausschließlich auf `127.0.0.1`. Pro Prozess wird ein zufälliges Browser-Sitzungstoken erzeugt. Ein Startlink setzt ein `HttpOnly`-/`SameSite=Strict`-Cookie und entfernt das Token durch Weiterleitung aus der sichtbaren URL. Weitere Browseranfragen benötigen dieses Cookie; Host und bei schreibenden Browseranfragen der Origin werden geprüft. Die Laufzeitdatei unter `%LOCALAPPDATA%` enthält Port, Prozess-ID und das kurzlebige Browser-Token, ist durch die Benutzerrechte des angemeldeten Windows-Kontos geschützt und wird beim normalen Beenden beziehungsweise bei der Deinstallation entfernt.
+
+Ein davon getrenntes, zufälliges API-Token wird dauerhaft im lokalen Anwendungsdatenverzeichnis des Benutzers gespeichert. Bearer-Authentifizierung mit diesem Token gilt nur für `/api/*` und gewährt keinen Zugriff auf Startseite oder Desktop-Bootstrap. Der tokenfreie Healthcheck ist auf zulässige Loopback-Hostheader begrenzt und liefert weder Pfade noch KoSIT-Konfigurationsprobleme. Das Token besteht ausschließlich aus URL-sicherem ASCII, erscheint weder in URLs noch in der Laufzeitdatei und wird bei der Deinstallation entfernt. Nicht-ASCII-Eingaben werden kontrolliert abgewiesen und führen nicht zu einem Serverfehler. Prozesse desselben kompromittierten Benutzerkontos liegen weiterhin außerhalb der Schutzgrenze.
+
+Installer und Uninstaller fordern das Beenden ausschließlich über ein benanntes lokales Windows-Ereignis an. Es gibt bewusst keinen HTTP-Shutdown-Endpunkt; ein Inhaber des API-Tokens erhält damit keine zusätzliche Prozesssteuerungsberechtigung.
 
 ### Pfad- und Dateinamenmanipulation
 

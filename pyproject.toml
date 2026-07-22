@@ -40,6 +40,7 @@ dependencies = [
   "python-multipart>=0.0.18,<1",
   "lxml>=5.3,<7",
   "pypdf>=6,<7",
+  "reportlab>=5,<6",
 ]
 
 [project.optional-dependencies]
@@ -63,7 +64,15 @@ e-rechnung-pruefer = "app.cli:main"
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["templates/*.html", "static/*.css", "static/*.js", "examples/*.xml"]
+app = [
+  "templates/*.html",
+  "static/*.css",
+  "static/*.js",
+  "examples/*.xml",
+  "assets/fonts/*.ttf",
+  "assets/fonts/*.txt",
+  "assets/fonts/*.md",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-config --strict-markers"

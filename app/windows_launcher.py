@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import ctypes
 import json
 import os
@@ -11,22 +12,36 @@ import traceback
 import urllib.error
 import urllib.request
 import webbrowser
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from typing import Any
 
 import uvicorn
 
-from .desktop_security import DESKTOP_PORT_ENV, DESKTOP_TOKEN_ENV, desktop_bootstrap_url
+from .desktop_security import (
+    API_TOKEN_ENV,
+    DESKTOP_PORT_ENV,
+    DESKTOP_TOKEN_ENV,
+    desktop_bootstrap_url,
+    validate_api_token,
+)
 
 APP_DIRECTORY_NAME = "E-Rechnungs-Pruefer"
 RUNTIME_FILE_NAME = "runtime.json"
+API_TOKEN_FILE_NAME = "api-token.txt"
 STARTUP_ERROR_FILE_NAME = "startup-error.log"
 WINDOWS_MUTEX_NAME = "Local\\E-Rechnungs-Pruefer-Desktop"
+WINDOWS_SHUTDOWN_EVENT_NAME = "Local\\E-Rechnungs-Pruefer-Desktop-Shutdown"
 ERROR_ALREADY_EXISTS = 183
+WAIT_OBJECT_0 = 0
+WAIT_TIMEOUT = 258
+WAIT_FAILED = 0xFFFFFFFF
+SHUTDOWN_EVENT_POLL_MILLISECONDS = 250
 SERVER_READY_TIMEOUT_SECONDS = 20.0
 NO_DIALOG_ENV = "EINVOICE_DESKTOP_NO_DIALOG"
+_DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +65,35 @@ class WindowsMutex:
             self.handle = 0
 
 
+@dataclass(slots=True)
+class WindowsShutdownEvent:
+    handle: int
+
+    def wait(self, timeout_milliseconds: int) -> bool:
+        kernel32 = ctypes.CDLL("kernel32")
+        wait_for_single_object = kernel32.WaitForSingleObject
+        wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        wait_for_single_object.restype = ctypes.c_ulong
+        result = int(wait_for_single_object(ctypes.c_void_p(self.handle), timeout_milliseconds))
+        if result == WAIT_OBJECT_0:
+            return True
+        if result == WAIT_TIMEOUT:
+            return False
+        error = result
+        if result == WAIT_FAILED:
+            kernel32.GetLastError.restype = ctypes.c_ulong
+            error = int(kernel32.GetLastError())
+        raise OSError(error, "WaitForSingleObject ist für das Shutdown-Ereignis fehlgeschlagen.")
+
+    def close(self) -> None:
+        if self.handle:
+            close_handle = ctypes.CDLL("kernel32").CloseHandle
+            close_handle.argtypes = [ctypes.c_void_p]
+            close_handle.restype = ctypes.c_bool
+            close_handle(ctypes.c_void_p(self.handle))
+            self.handle = 0
+
+
 def _desktop_data_directory() -> Path:
     base = os.getenv("LOCALAPPDATA")
     if not base:
@@ -59,6 +103,10 @@ def _desktop_data_directory() -> Path:
 
 def _runtime_file() -> Path:
     return _desktop_data_directory() / RUNTIME_FILE_NAME
+
+
+def _api_token_file() -> Path:
+    return _desktop_data_directory() / API_TOKEN_FILE_NAME
 
 
 def _startup_error_file() -> Path:
@@ -79,6 +127,44 @@ def _write_runtime_record(path: Path, record: RuntimeRecord) -> None:
     temporary.replace(path)
 
 
+def _load_or_create_api_token(path: Path) -> str:
+    configured = os.getenv(API_TOKEN_ENV)
+    if configured is not None:
+        token = configured
+        try:
+            validate_api_token(token)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return token
+
+    try:
+        token = path.read_text(encoding="ascii").rstrip("\r\n")
+    except FileNotFoundError:
+        token = secrets.token_urlsafe(32)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(token + "\n", encoding="ascii")
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"API-Zugriffstoken konnte nicht gelesen werden: {exc}") from exc
+
+    try:
+        validate_api_token(token, description="Das gespeicherte API-Zugriffstoken")
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return token
+
+
+def _configured_port() -> int:
+    # Settings are imported only after main() has installed its startup error
+    # handling. Invalid local configuration can therefore be diagnosed via the
+    # regular startup-error.log instead of aborting during module import.
+    from .settings import settings
+
+    return settings.port
+
+
 def _read_runtime_record(path: Path) -> RuntimeRecord | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -90,10 +176,12 @@ def _read_runtime_record(path: Path) -> RuntimeRecord | None:
     return record
 
 
-def _reserve_loopback_socket() -> tuple[socket.socket, int]:
+def _reserve_loopback_socket(port: int) -> tuple[socket.socket, int]:
+    if not 1 <= port <= 65535:
+        raise ValueError("Der lokale API-Port muss zwischen 1 und 65535 liegen.")
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        listener.bind(("127.0.0.1", 0))
+        listener.bind(("127.0.0.1", port))
         listener.setblocking(False)
         port = int(listener.getsockname()[1])
         return listener, port
@@ -104,7 +192,7 @@ def _reserve_loopback_socket() -> tuple[socket.socket, int]:
 
 def _health_is_ready(port: int, timeout: float = 0.5) -> bool:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=timeout) as response:
+        with _DIRECT_HTTP_OPENER.open(f"http://127.0.0.1:{port}/api/health", timeout=timeout) as response:
             return response.status == 200
     except (OSError, urllib.error.URLError):
         return False
@@ -135,6 +223,18 @@ def _create_windows_mutex() -> WindowsMutex:
     )
 
 
+def _create_windows_shutdown_event() -> WindowsShutdownEvent:
+    kernel32 = ctypes.CDLL("kernel32")
+    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel32.CreateEventW.restype = ctypes.c_void_p
+    kernel32.GetLastError.restype = ctypes.c_ulong
+    handle = kernel32.CreateEventW(None, True, False, WINDOWS_SHUTDOWN_EVENT_NAME)
+    if not handle:
+        error = int(kernel32.GetLastError())
+        raise OSError(error, "CreateEventW ist für das Shutdown-Ereignis fehlgeschlagen.")
+    return WindowsShutdownEvent(handle=int(handle))
+
+
 def _show_windows_message(message: str, *, error: bool = False) -> None:
     flags = 0x10 if error else 0x40
     message_box = ctypes.CDLL("user32").MessageBoxW
@@ -144,16 +244,18 @@ def _show_windows_message(message: str, *, error: bool = False) -> None:
 
 
 class DesktopServer:
-    def __init__(self, runtime_file: Path) -> None:
+    def __init__(self, runtime_file: Path, api_token: str) -> None:
         self.runtime_file = runtime_file
-        self.listener, self.port = _reserve_loopback_socket()
+        self.listener, self.port = _reserve_loopback_socket(_configured_port())
         self.token = secrets.token_urlsafe(32)
+        self.api_token = api_token
         self.server: uvicorn.Server | None = None
         self.thread: Thread | None = None
 
     def start(self) -> None:
         os.environ[DESKTOP_TOKEN_ENV] = self.token
         os.environ[DESKTOP_PORT_ENV] = str(self.port)
+        os.environ[API_TOKEN_ENV] = self.api_token
 
         # Import only after the environment has activated the desktop middleware.
         from .main import app
@@ -196,11 +298,16 @@ class DesktopServer:
         if self.thread is not None:
             self.thread.join()
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
         if self.server is not None:
             self.server.should_exit = True
+
+    def stop(self) -> None:
+        self.request_stop()
         if self.thread is not None and self.thread.is_alive():
             self.thread.join(timeout=10)
+        if self.thread is not None and self.thread.is_alive():
+            raise RuntimeError("Der lokale Webserver konnte nicht innerhalb von 10 Sekunden beendet werden.")
         self.listener.close()
         record = _read_runtime_record(self.runtime_file)
         if record is not None and record.token == self.token:
@@ -219,20 +326,20 @@ def _tray_image() -> Any:
     return image
 
 
-def _run_tray(server: DesktopServer) -> None:
+def _run_tray(server: DesktopServer, *, open_browser_on_start: bool = True) -> None:
     try:
         import pystray
     except ImportError:
-        server.open_browser()
+        if open_browser_on_start:
+            server.open_browser()
         server.wait()
         return
 
     def open_browser(_icon=None, _item=None) -> None:
         server.open_browser()
 
-    def stop(icon, _item=None) -> None:
-        server.stop()
-        icon.stop()
+    def stop(_icon, _item=None) -> None:
+        server.request_stop()
 
     icon = pystray.Icon(
         "e-rechnungs-pruefer",
@@ -244,20 +351,50 @@ def _run_tray(server: DesktopServer) -> None:
         ),
     )
 
-    def stop_tray_after_server() -> None:
+    def stop_tray_after_server(running_icon) -> None:
+        # pystray invokes this setup callback only after its platform event loop
+        # has marked the icon as running. A shutdown requested during server
+        # startup can therefore no longer be lost in Icon.stop().
+        running_icon.visible = True
         server.wait()
-        icon.stop()
+        running_icon.stop()
 
-    Thread(target=stop_tray_after_server, name="E-Rechnungs-Pruefer-Waechter", daemon=True).start()
-    server.open_browser()
-    icon.run()
+    if open_browser_on_start:
+        server.open_browser()
+    icon.run(setup=stop_tray_after_server)
 
 
-def main() -> None:
+def _parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="E-Rechnungs-Pruefer")
+    parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Webserver und Infobereich starten, ohne den Browser zu öffnen.",
+    )
+    return parser.parse_args(argv)
+
+
+def _watch_for_shutdown(
+    shutdown_event: WindowsShutdownEvent,
+    watcher_stop: Event,
+    server: DesktopServer,
+) -> None:
+    while not watcher_stop.is_set():
+        if shutdown_event.wait(SHUTDOWN_EVENT_POLL_MILLISECONDS):
+            if not watcher_stop.is_set():
+                server.request_stop()
+            return
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    options = _parse_arguments(sys.argv[1:] if argv is None else argv)
     if sys.platform != "win32":
         raise SystemExit("Der Desktop-Launcher ist ausschließlich für Windows vorgesehen.")
 
     mutex: WindowsMutex | None = None
+    shutdown_event: WindowsShutdownEvent | None = None
+    shutdown_watcher: Thread | None = None
+    shutdown_watcher_stop = Event()
     server: DesktopServer | None = None
     startup_error_file = _startup_error_file()
     try:
@@ -265,14 +402,26 @@ def main() -> None:
         mutex = _create_windows_mutex()
         runtime_file = _runtime_file()
         if mutex.already_exists:
-            if not _open_existing_instance(runtime_file):
+            if not options.background and not _open_existing_instance(runtime_file):
                 _show_windows_message("Die Anwendung läuft bereits, konnte aber nicht geöffnet werden.", error=True)
             return
 
+        # Create the manual-reset event before starting the server. A shutdown
+        # request received during startup therefore remains signalled until the
+        # watcher can process it.
+        shutdown_event = _create_windows_shutdown_event()
         runtime_file.unlink(missing_ok=True)
-        server = DesktopServer(runtime_file)
+        api_token = _load_or_create_api_token(_api_token_file())
+        server = DesktopServer(runtime_file, api_token)
         server.start()
-        _run_tray(server)
+        shutdown_watcher = Thread(
+            target=_watch_for_shutdown,
+            args=(shutdown_event, shutdown_watcher_stop, server),
+            name="E-Rechnungs-Pruefer-Shutdown-Waechter",
+            daemon=True,
+        )
+        shutdown_watcher.start()
+        _run_tray(server, open_browser_on_start=not options.background)
     except Exception as exc:
         try:
             _write_startup_error(startup_error_file, exc)
@@ -281,8 +430,13 @@ def main() -> None:
         if not os.getenv(NO_DIALOG_ENV):
             _show_windows_message(f"Die Anwendung konnte nicht gestartet werden:\n\n{exc}", error=True)
     finally:
+        shutdown_watcher_stop.set()
+        if shutdown_watcher is not None:
+            shutdown_watcher.join(timeout=2)
         if server is not None:
             server.stop()
+        if shutdown_event is not None and (shutdown_watcher is None or not shutdown_watcher.is_alive()):
+            shutdown_event.close()
         if mutex is not None:
             mutex.close()
 

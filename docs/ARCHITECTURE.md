@@ -20,7 +20,7 @@ flowchart LR
     C --> K[validators/kosit.py]
     J --> L[Gemeinsamer Prüfbericht]
     K --> L
-    I --> M[FastAPI / JSON / HTML / Browser-UI]
+    I --> M[FastAPI / JSON / HTML / PDF / Browser-UI]
     L --> M
 ```
 
@@ -46,6 +46,10 @@ Die Anwendung stellt dieselbe Rechnungs-XML für unterschiedliche Zwecke in vier
 - `technical.rows` ist eine navigierbare Tabelle aus nichtleerem direktem Elementtext und Attributen mit Pfad und Namespace-URI. Die Namespace-Deklarationen des Wurzelelements werden als zusätzliche Zeilen aufgenommen. Element- und Attributzeilen sind durch `MAX_TECHNICAL_ROWS` begrenzt; `technical.truncated` zeigt eine Kürzung an.
 
 Die Tabelle ist keine verlustfreie XML-Repräsentation: Leere Elemente, Kommentare, Processing Instructions und lokal deklarierte Namespace-Bindungen erscheinen nicht zwingend als eigene Zeilen. Für die vollständige Quelle und den bytegetreuen Export bleiben die unveränderten XML-Bytes maßgeblich.
+
+Der per E-Mail geeignete PDF-Bericht begrenzt seinen technischen Tabellen- und Rohtextanhang zusätzlich und
+weist diese Begrenzung sichtbar aus. Diese Darstellungsgrenze verändert weder das Analysemodell noch den
+bytegetreuen Export des vollständigen Original-XML.
 
 ### Syntaxparser
 
@@ -77,7 +81,18 @@ Beträge und Mengen werden zunächst als XML-Text erhalten. Für Berechnungen ko
 
 ### API und UI
 
-`app/main.py` bietet Upload-, Analyse-, Bericht-, XML-Export- und Health-Endpunkte. `app/static/app.js` rendert das JSON-Modell in die interaktive Oberfläche. `app/templates/report.html` erzeugt einen eigenständigen, druckbaren HTML-Bericht.
+`app/main.py` bietet Upload-, Analyse-, HTML-/PDF-Bericht-, XML-Export- und Health-Endpunkte. `app/static/app.js`
+rendert das JSON-Modell in die interaktive Oberfläche. `app/templates/report.html` erzeugt einen eigenständigen,
+druckbaren HTML-Bericht; `app/pdf_report.py` erzeugt den speicherbasierten, paginierten PDF-Bericht mit
+eingebetteten Noto-Unicode-Schriften. Vor dem Layout begrenzt der Renderer die Anzahl von Positionen,
+Prüfmeldungen und Hinweisen sowie Einzelwerte, Gesamttext und Zeilenumbrüche deterministisch. Nicht von Noto Sans
+oder Noto Sans SC abgedeckte Zeichen erscheinen als sichtbarer Unicode-Codepunkt. Bei mehr als 200 benötigten
+Seiten wird ein kompakter, gültiger Ersatzbericht erzeugt. PDF-Renderings laufen außerhalb des ASGI-Event-Loops
+und pro Prozess höchstens zweimal parallel. Auch die vorgelagerte Rechnungsanalyse einschließlich einer
+angeforderten KoSIT-Prüfung läuft außerhalb des Event-Loops und wird pro Prozess auf zwei gleichzeitige Analysen
+begrenzt, sodass Healthchecks und weitere lokale Requests während längerer Prüfungen beantwortbar bleiben. Sind
+beide Plätze belegt, antwortet die API sofort mit `503` und einem begrenzten `Retry-After`, statt weitere Arbeit
+hinter möglicherweise bereits abgebrochenen Clientanfragen aufzustauen.
 
 ## Erweiterungspunkte
 

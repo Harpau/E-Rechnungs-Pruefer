@@ -4,9 +4,33 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### API und Automatisierung
+
+- HTML-Berichte liefern maschinenlesbare Header für erkannte Syntax, gemeinsamen Prüfstatus und den differenzierten KoSIT-Status
+- zusätzlicher PDF-Berichtsendpunkt mit festen, datensparsamen Antwortnamen; der Node-RED-Mailflow versendet direkt öffnungsfähige PDF- statt temporärer HTML-Anhänge
+- robuste PDF-Darstellung mit eingebetteten Noto-Schriften, sichtbarem Fallback für nicht unterstützte Zeichen, festen Inhaltsbudgets, 200-Seiten-Schutz und begrenzter Render-Parallelität
+- technische KoSIT-Rohberichte beginnen mit ihrer Überschrift auf einer neuen Seite und nutzen den verfügbaren Seitenraum ohne unteilbare Textblöcke
+- Rechnungsanalysen und KoSIT-Aufrufe blockieren den API-Event-Loop nicht mehr, sind pro Prozess auf zwei gleichzeitige Prüfungen begrenzt und melden Überlast sofort mit `503`/`Retry-After`
+- installierte Windows-App stellt `/api/*` auf einem festen Loopback-Port mit einem separaten persistenten Bearer-Token für lokale Automatisierungen bereit
+- API-Token-Schutz greift auch ohne Desktop-Sitzung; der öffentliche Healthcheck prüft weiterhin den lokalen Host und veröffentlicht nur Version und KoSIT-Bereitschaft
+- Windows-Launcher unterstützt mit `--background` einen stillen Start von Webserver und Infobereich ohne automatisches Browserfenster
+- Windows-Installer bietet einen optionalen, nicht privilegierten Autostart bei Benutzeranmeldung und entfernt ihn bei Abwahl oder Deinstallation
+- Installer und Uninstaller können eine laufende neue Desktop-Version kontrolliert beenden; ein laufender Autostart wird nach einem Update im Hintergrund wiederhergestellt
+- API-Token werden als URL-sicheres ASCII validiert und auch frühe Port-/Konfigurationsfehler im Startprotokoll festgehalten
+- anonymisierter Node-RED-Beispielflow enthält einen sicher vorkonfigurierten IMAP-Eingang, verarbeitet alle XML-/PDF-Kandidaten über die lokale Berichts-API, trennt Verbindungsfehler vom normalen Antwortpfad und quittiert erst nach terminalem Abschluss
+- die lokale API-URL wird mit einer Node-RED-Function-kompatiblen, streng verankerten Prüfung validiert; der Test-Harness bildet die eingeschränkte Node-RED-Sandbox nach
+- `EINVOICE_REQUIRE_KOSIT=false` wird vom Node-RED-Flow als `official=false` an die Berichts-API weitergegeben und überspringt die KoSIT-Prüfung tatsächlich
+- lokale Healthchecks und der Node-RED-Berichtsaufruf umgehen Prozess-Proxys ausdrücklich, damit weder lokale Starts fehlschlagen noch Rechnungsdaten oder API-Token an externe Proxys gelangen
+- echter Node.js-Laufzeittest prüft Multipart-Bytes, Status-/Retryregeln, Mehrfachberichte und SMTP-/IMAP-ACK-Semantik; das HTTP-Zeitlimit wird wirksam über `msg.requestTimeout` gesetzt
+
+### Dokumentation
+
+- verbindlichen fachlichen Vertrag für Node-RED- und andere Automatisierungsintegrationen mit getrennten Erkennungs-, Prüf- und KoSIT-Status, Fehlerklassen, Retry- und Quittierungsregeln ergänzt
+
 ### Wartung
 
 - Azure-Login im Release-Workflow auf die native Node.js-24-Version aktualisiert
+- Windows-Pakettest verweigert Eingriffe in bestehende Installationen und Benutzerzustände, bereinigt nur den eigenen Testprozess und verlangt eine ausdrücklich bestätigte Wegwerf-VM oder Testidentität
 
 ## 1.2.0 – 2026-07-20
 
