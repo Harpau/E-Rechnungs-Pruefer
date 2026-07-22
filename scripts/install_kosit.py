@@ -21,7 +21,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_ROOT = PROJECT_ROOT / "vendor" / "kosit"
-USER_AGENT = "e-rechnung-pruefer-kosit-installer/1.2.0"
+USER_AGENT = "e-rechnung-pruefer-kosit-installer/1.3.0"
 
 
 class InstallError(RuntimeError):

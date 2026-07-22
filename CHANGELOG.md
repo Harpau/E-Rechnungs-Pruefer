@@ -4,6 +4,8 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 1.3.0 – 2026-07-22
+
 ### API und Automatisierung
 
 - HTML-Berichte liefern maschinenlesbare Header für erkannte Syntax, gemeinsamen Prüfstatus und den differenzierten KoSIT-Status
