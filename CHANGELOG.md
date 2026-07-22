@@ -31,6 +31,7 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 - Azure-Login im Release-Workflow auf die native Node.js-24-Version aktualisiert
 - Windows-Pakettest verweigert Eingriffe in bestehende Installationen und Benutzerzustände, bereinigt nur den eigenen Testprozess und verlangt eine ausdrücklich bestätigte Wegwerf-VM oder Testidentität
+- optionale Autostart-Registrywerte werden im Windows-Pakettest auch auf vollständig sauberen Benutzerprofilen kontrolliert und ohne irreführenden Vorabfehler gelesen
 
 ## 1.2.0 – 2026-07-20
 

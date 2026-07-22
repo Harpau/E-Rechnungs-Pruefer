@@ -136,6 +136,61 @@ function Invoke-TestInstaller {
     }
 }
 
+function Get-OptionalRegistryValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $MissingValue = [PSCustomObject]@{
+        Exists = $false
+        Kind = $null
+        Value = $null
+    }
+    if (-not (Test-Path -LiteralPath $Path -ErrorAction Stop)) {
+        return $MissingValue
+    }
+
+    $RegistryKey = Get-Item -LiteralPath $Path -ErrorAction Stop
+    try {
+        $ExistingName = $RegistryKey.GetValueNames() |
+            Where-Object { [string]::Equals($_, $Name, [System.StringComparison]::OrdinalIgnoreCase) } |
+            Select-Object -First 1
+        if ($null -eq $ExistingName) {
+            return $MissingValue
+        }
+        return [PSCustomObject]@{
+            Exists = $true
+            Kind = $RegistryKey.GetValueKind($ExistingName)
+            Value = $RegistryKey.GetValue(
+                $ExistingName,
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+        }
+    } finally {
+        $RegistryKey.Dispose()
+    }
+}
+
+function Test-ExpectedStringRegistryValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        $State,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedValue
+    )
+
+    return (
+        $State.Exists -and
+        $State.Kind -eq [Microsoft.Win32.RegistryValueKind]::String -and
+        $State.Value -is [string] -and
+        [string]::Equals([string]$State.Value, $ExpectedValue, [System.StringComparison]::Ordinal)
+    )
+}
+
 if (-not $IsWindows) {
     throw "Der Installer-Test kann nur unter Windows laufen."
 }
@@ -242,11 +297,8 @@ try {
         [void]$ExistingState.Add("Anwendungsdatenverzeichnis: $DataDirectory")
     }
 
-    $ExistingAutostartCommand = Get-ItemPropertyValue `
-        -Path $RunKey `
-        -Name $RunValueName `
-        -ErrorAction SilentlyContinue
-    if ($null -ne $ExistingAutostartCommand) {
+    $ExistingAutostartState = Get-OptionalRegistryValue -Path $RunKey -Name $RunValueName
+    if ($ExistingAutostartState.Exists) {
         [void]$ExistingState.Add("Autostart-Eintrag: $RunKey\$RunValueName")
     }
     foreach ($UninstallKey in $UninstallKeys) {
@@ -290,9 +342,9 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     if (-not (Test-Path -LiteralPath $Executable)) {
         throw "Installierte Anwendung nicht gefunden: $Executable"
     }
-    $AutostartCommand = Get-ItemPropertyValue -Path $RunKey -Name $RunValueName -ErrorAction SilentlyContinue
-    if ($AutostartCommand -ne $ExpectedAutostartCommand) {
-        throw "Der optionale Autostart wurde nicht korrekt eingerichtet: $AutostartCommand"
+    $AutostartState = Get-OptionalRegistryValue -Path $RunKey -Name $RunValueName
+    if (-not (Test-ExpectedStringRegistryValue -State $AutostartState -ExpectedValue $ExpectedAutostartCommand)) {
+        throw "Der optionale Autostart wurde nicht korrekt eingerichtet: $($AutostartState.Value)"
     }
 
     try {
@@ -488,7 +540,8 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     if (Test-Path -LiteralPath $ApiTokenFile) {
         throw "Das API-Zugriffstoken blieb nach der Deinstallation zurück."
     }
-    if ($null -ne (Get-ItemPropertyValue -Path $RunKey -Name $RunValueName -ErrorAction SilentlyContinue)) {
+    $RemainingAutostartState = Get-OptionalRegistryValue -Path $RunKey -Name $RunValueName
+    if ($RemainingAutostartState.Exists) {
         throw "Der Autostart-Eintrag blieb nach der Deinstallation zurück."
     }
 } finally {
@@ -522,14 +575,15 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
         }
     }
 
-    if ($InstallationStarted) {
-        $CurrentAutostartCommand = Get-ItemPropertyValue `
-            -Path $RunKey `
-            -Name $RunValueName `
-            -ErrorAction SilentlyContinue
-        if ($CurrentAutostartCommand -eq $ExpectedAutostartCommand) {
-            Remove-ItemProperty -Path $RunKey -Name $RunValueName -Force -ErrorAction SilentlyContinue
+    try {
+        if ($InstallationStarted) {
+            $CurrentAutostartState = Get-OptionalRegistryValue -Path $RunKey -Name $RunValueName
+            if (Test-ExpectedStringRegistryValue -State $CurrentAutostartState -ExpectedValue $ExpectedAutostartCommand) {
+                Remove-ItemProperty -Path $RunKey -Name $RunValueName -Force -ErrorAction SilentlyContinue
+            }
         }
+    } catch {
+        Write-Warning "Der test-eigene Autostart-Eintrag konnte nicht sicher geprüft oder bereinigt werden: $_"
     }
     try {
         if ($PackageTestMutexAcquired) {

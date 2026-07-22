@@ -156,6 +156,12 @@ def test_windows_installer_stops_running_app_for_update_and_uninstall() -> None:
 def test_windows_package_test_refuses_existing_state_before_installation() -> None:
     script = (PROJECT_ROOT / "scripts/test_windows_package.ps1").read_text(encoding="utf-8")
 
+    assert script.count("Get-OptionalRegistryValue") == 5
+    assert "Get-ItemPropertyValue" not in script
+    assert "$RegistryKey.GetValueNames()" in script
+    assert "$RegistryKey.GetValueKind($ExistingName)" in script
+    assert "$RegistryKey.Dispose()" in script
+    assert "[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames" in script
     for expected in (
         "[switch]$ConfirmIsolatedEnvironment",
         "if (-not $ConfirmIsolatedEnvironment)",
@@ -195,7 +201,8 @@ def test_windows_package_test_refuses_existing_state_before_installation() -> No
         "Test-Path -LiteralPath $DefaultInstallDir",
         "Test-Path -LiteralPath $StartMenuDir",
         "foreach ($StateFile in @($RuntimeFile, $ApiTokenFile, $StartupErrorFile))",
-        "$null -ne $ExistingAutostartCommand",
+        "Get-OptionalRegistryValue -Path $RunKey -Name $RunValueName",
+        "$ExistingAutostartState.Exists",
         "foreach ($UninstallKey in $UninstallKeys)",
         "$ExistingProcesses.Count -gt 0",
     ):
@@ -212,7 +219,9 @@ def test_windows_package_test_cleans_up_only_owned_state() -> None:
     assert "$PackageTestMutex.WaitOne(0)" in script
     assert '"Global\\E-Rechnungs-Pruefer-Package-Test-$CurrentUserSid"' in script
     assert "[Guid]::NewGuid().ToString('N')" in script
-    assert "$CurrentAutostartCommand -eq $ExpectedAutostartCommand" in script
+    assert "Test-ExpectedStringRegistryValue -State $CurrentAutostartState" in script
+    assert "$State.Kind -eq [Microsoft.Win32.RegistryValueKind]::String" in script
+    assert "$State.Value -is [string]" in script
     assert script.count("Remove-ItemProperty") == 1
     assert "Remove-Item $RuntimeFile" not in script
     assert "Remove-Item $ApiTokenFile" not in script
