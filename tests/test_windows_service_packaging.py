@@ -559,7 +559,6 @@ def test_test_installer_logs_only_allowlisted_internal_open_client_diagnostics()
         "owner",
         "dacl-missing",
         "dacl-control",
-        "protected-exact-explicit",
         "unprotected-exact-explicit",
         "ace-count",
         "ace-read",

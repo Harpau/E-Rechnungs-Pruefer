@@ -137,7 +137,6 @@ class _ProfileHiveCanonicalizationFailure(StrEnum):
     OWNER = "owner"
     DACL_MISSING = "dacl-missing"
     DACL_CONTROL = "dacl-control"
-    PROTECTED_EXACT_EXPLICIT = "protected-exact-explicit"
     UNPROTECTED_EXACT_EXPLICIT = "unprotected-exact-explicit"
     ACE_COUNT = "ace-count"
     ACE_READ = "ace-read"
@@ -168,9 +167,6 @@ _PROFILE_HIVE_CANONICALIZATION_MESSAGES = {
     ),
     _ProfileHiveCanonicalizationFailure.DACL_CONTROL: (
         "Eine Registry-Supportdatei besitzt keine prüfbare Windows-DACL-Steuerung."
-    ),
-    _ProfileHiveCanonicalizationFailure.PROTECTED_EXACT_EXPLICIT: (
-        "Eine Registry-Supportdatei besitzt eine geschützte explizite Windows-DACL."
     ),
     _ProfileHiveCanonicalizationFailure.UNPROTECTED_EXACT_EXPLICIT: (
         "Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."
@@ -1297,11 +1293,9 @@ def _canonicalize_profile_hive_support_file(
             if len(observed_flags) != 1:
                 raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_FLAGS)
             exact_flags = next(iter(observed_flags))
-            if protected:
-                if exact_flags != 0:
-                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_FLAGS)
-                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.PROTECTED_EXACT_EXPLICIT)
-            if exact_flags == 0:
+            if protected and exact_flags != 0:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_FLAGS)
+            if not protected and exact_flags == 0:
                 raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.UNPROTECTED_EXACT_EXPLICIT)
 
             try:

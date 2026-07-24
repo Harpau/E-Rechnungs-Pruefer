@@ -57,7 +57,6 @@ _SETUP_DIAGNOSTIC_DETAILS = frozenset(
         "owner",
         "dacl-missing",
         "dacl-control",
-        "protected-exact-explicit",
         "unprotected-exact-explicit",
         "ace-count",
         "ace-read",

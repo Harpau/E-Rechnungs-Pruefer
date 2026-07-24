@@ -496,7 +496,6 @@ begin
     (CompareText(Value, 'owner') = 0) or
     (CompareText(Value, 'dacl-missing') = 0) or
     (CompareText(Value, 'dacl-control') = 0) or
-    (CompareText(Value, 'protected-exact-explicit') = 0) or
     (CompareText(Value, 'unprotected-exact-explicit') = 0) or
     (CompareText(Value, 'ace-count') = 0) or
     (CompareText(Value, 'ace-read') = 0) or
