@@ -430,3 +430,18 @@ def test_setup_diagnostic_never_overwrites_an_existing_target(
     )
 
     assert target.read_bytes() == b"preexisting"
+
+
+def test_setup_diagnostic_extracts_only_numeric_pywin32_error_code() -> None:
+    class error(Exception):
+        pass
+
+    error.__module__ = "pywintypes"
+    failure = error(5, "RegUnLoadKey", "secret path and token")
+
+    assert windows_open_client._setup_error_code(failure) == "windows-api-error"
+    assert windows_open_client._setup_winerror(failure) == 5
+
+    invalid = error("5", "RegUnLoadKey", "secret path and token")
+    assert windows_open_client._setup_error_code(invalid) == "internal-error"
+    assert windows_open_client._setup_winerror(invalid) is None

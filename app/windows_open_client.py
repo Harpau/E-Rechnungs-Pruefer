@@ -239,6 +239,8 @@ def _validated_setup_diagnostic_path(value: str) -> Path:
 
 
 def _setup_error_code(exc: BaseException) -> str:
+    if _pywin32_error_code(exc) is not None:
+        return "windows-api-error"
     if isinstance(exc, PermissionError):
         return "permission-error"
     if isinstance(exc, FileExistsError):
@@ -256,6 +258,19 @@ def _setup_error_code(exc: BaseException) -> str:
     return "internal-error"
 
 
+def _pywin32_error_code(exc: BaseException) -> int | None:
+    error_type = type(exc)
+    if error_type.__module__ != "pywintypes" or error_type.__name__ != "error":
+        return None
+    arguments = getattr(exc, "args", ())
+    if not isinstance(arguments, tuple) or not arguments:
+        return None
+    value = arguments[0]
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFFFF:
+        return value
+    return None
+
+
 def _setup_winerror(exc: BaseException) -> int | None:
     current: BaseException | None = exc
     seen: set[int] = set()
@@ -269,6 +284,9 @@ def _setup_winerror(exc: BaseException) -> int | None:
             value = None
         if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFFFF:
             return value
+        pywin32_error = _pywin32_error_code(current)
+        if pywin32_error is not None:
+            return pywin32_error
         current = current.__cause__ if current.__cause__ is not None else current.__context__
     return None
 

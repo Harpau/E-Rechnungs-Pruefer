@@ -538,6 +538,7 @@ def test_test_installer_logs_only_allowlisted_internal_open_client_diagnostics()
         "plan-migration",
         "apply-migration",
         "runtime-error",
+        "windows-api-error",
         "os-error",
         "internal-error",
     ):

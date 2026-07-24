@@ -438,6 +438,7 @@ begin
     (CompareText(Value, 'file-exists') = 0) or
     (CompareText(Value, 'file-not-found') = 0) or
     (CompareText(Value, 'timeout') = 0) or
+    (CompareText(Value, 'windows-api-error') = 0) or
     (CompareText(Value, 'os-error') = 0) or
     (CompareText(Value, 'value-error') = 0) or
     (CompareText(Value, 'runtime-error') = 0) or
