@@ -363,7 +363,9 @@ def test_internal_setup_failure_writes_only_bounded_sanitized_diagnostic(
     )
 
     payload = target.read_bytes()
-    assert payload == (b"ERP_SETUP_DIAGNOSTIC_V1|stage=preflight-port|error=os-error|origin=unknown|winerror=5")
+    assert payload == (
+        b"ERP_SETUP_DIAGNOSTIC_V1|stage=preflight-port|error=os-error|origin=unknown|detail=none|winerror=5"
+    )
     assert len(payload) <= windows_open_client._SETUP_DIAGNOSTIC_MAX_BYTES
     assert b"token" not in payload
     assert b"Secret" not in payload
@@ -469,3 +471,50 @@ def test_setup_diagnostic_origin_uses_only_fixed_allowlisted_function_codes() ->
     assert windows_open_client._setup_error_origin(caught.value) == "hive-support-file"
     assert "secret" not in windows_open_client._setup_error_origin(caught.value)
     assert windows_open_client._setup_error_origin(LookupError("secret")) == "unknown"
+
+
+def test_setup_diagnostic_detail_uses_only_exact_fixed_canonicalization_codes() -> None:
+    migration = windows_open_client._desktop_migration
+    expected = {"none", *(failure.value for failure in migration._ProfileHiveCanonicalizationFailure)}
+    assert windows_open_client._SETUP_DIAGNOSTIC_DETAILS == expected
+
+    for failure in migration._ProfileHiveCanonicalizationFailure:
+        error = migration._ProfileHiveCanonicalizationError(failure)
+        assert windows_open_client._setup_error_detail(error) == failure.value
+        assert "S-1-" not in str(error)
+
+    class _LookalikeCanonicalizationError(RuntimeError):
+        failure = migration._ProfileHiveCanonicalizationFailure.OWNER
+
+    assert windows_open_client._setup_error_detail(_LookalikeCanonicalizationError("secret")) == "none"
+    assert windows_open_client._setup_error_detail(RuntimeError(r"secret C:\\path S-1-5-21-1000")) == "none"
+
+
+def test_setup_diagnostic_serializes_canonicalization_detail_without_cause_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = windows_open_client._desktop_migration
+    target = tmp_path / windows_open_client._SETUP_DIAGNOSTIC_FILE_NAME
+    monkeypatch.setattr(
+        windows_open_client,
+        "_validated_setup_diagnostic_path",
+        Mock(return_value=target),
+    )
+    secret = OSError(5, r"token=secret C:\\invoice.xml S-1-5-21-1000")
+    secret.winerror = 5  # type: ignore[attr-defined]
+    try:
+        raise migration._ProfileHiveCanonicalizationError(
+            migration._ProfileHiveCanonicalizationFailure.ACE_FLAGS
+        ) from secret
+    except migration._ProfileHiveCanonicalizationError as error:
+        windows_open_client._write_setup_diagnostic(
+            str(target),
+            stage="verify-applied-migration",
+            exc=error,
+        )
+
+    assert target.read_bytes() == (
+        b"ERP_SETUP_DIAGNOSTIC_V1|stage=verify-applied-migration|error=runtime-error"
+        b"|origin=unknown|detail=ace-flags|winerror=5"
+    )

@@ -1432,33 +1432,49 @@ def test_profile_hive_snapshot_absence_wait_rejects_persistent_path(
 
 
 @pytest.mark.parametrize(
-    "aces",
+    ("aces", "expected_failure"),
     [
         (
-            ((0, 0x10), 0x0F, migration.SYSTEM_SID),
-            ((0, 0x10), 0x0F, "S-1-5-21-unknown"),
+            (
+                ((0, 0x10), 0x0F, migration.SYSTEM_SID),
+                ((0, 0x10), 0x0F, "S-1-5-21-unknown"),
+            ),
+            migration._ProfileHiveCanonicalizationFailure.ACE_SID,
         ),
         (
-            ((0, 0x10), 0x0F, migration.SYSTEM_SID),
-            ((0, 0x10), 0x01, migration.ADMINISTRATORS_SID),
+            (
+                ((0, 0x10), 0x0F, migration.SYSTEM_SID),
+                ((0, 0x10), 0x01, migration.ADMINISTRATORS_SID),
+            ),
+            migration._ProfileHiveCanonicalizationFailure.ACE_MASK,
         ),
         (
-            ((1, 0x10), 0x0F, migration.SYSTEM_SID),
-            ((0, 0x10), 0x0F, migration.ADMINISTRATORS_SID),
+            (
+                ((1, 0x10), 0x0F, migration.SYSTEM_SID),
+                ((0, 0x10), 0x0F, migration.ADMINISTRATORS_SID),
+            ),
+            migration._ProfileHiveCanonicalizationFailure.ACE_TYPE,
         ),
         (
-            ((0, 0), 0x0F, migration.SYSTEM_SID),
-            ((0, 0x10), 0x0F, migration.ADMINISTRATORS_SID),
+            (
+                ((0, 0), 0x0F, migration.SYSTEM_SID),
+                ((0, 0x10), 0x0F, migration.ADMINISTRATORS_SID),
+            ),
+            migration._ProfileHiveCanonicalizationFailure.ACE_FLAGS,
         ),
         (
-            ((0, 0x10), 0x0F, migration.SYSTEM_SID),
-            ((0, 0x10), 0x0F, migration.SYSTEM_SID),
+            (
+                ((0, 0x10), 0x0F, migration.SYSTEM_SID),
+                ((0, 0x10), 0x0F, migration.SYSTEM_SID),
+            ),
+            migration._ProfileHiveCanonicalizationFailure.ACE_DUPLICATE,
         ),
     ],
     ids=("unknown-sid", "wrong-mask", "unknown-ace", "mixed-flags", "duplicate-sid"),
 )
 def test_profile_hive_support_canonicalization_rejects_implausible_acl_before_set(
     aces: tuple[tuple[tuple[int, int], int, str], ...],
+    expected_failure: migration._ProfileHiveCanonicalizationFailure,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1483,15 +1499,70 @@ def test_profile_hive_support_canonicalization_rejects_implausible_acl_before_se
         Mock(side_effect=RuntimeError("not canonical")),
     )
 
-    with pytest.raises(RuntimeError, match="plausible Windows-DACL"):
+    with pytest.raises(migration._ProfileHiveCanonicalizationError, match="plausible Windows-DACL") as caught:
         migration._canonicalize_profile_hive_support_file(
             support,
             snapshot_directory=snapshot_directory,
             expected_transaction_id=transaction_id,
         )
 
+    assert caught.value.failure is expected_failure
     set_security.assert_not_called()
     assert support.read_bytes() == b"partial"
+
+
+@pytest.mark.parametrize(
+    ("include_dacl", "expected_failure"),
+    [
+        (False, migration._ProfileHiveCanonicalizationFailure.DACL_MISSING),
+        (True, migration._ProfileHiveCanonicalizationFailure.ACE_COUNT),
+    ],
+    ids=("missing-dacl", "wrong-ace-count"),
+)
+def test_profile_hive_support_canonicalization_reports_acl_shape_without_observed_values(
+    include_dacl: bool,
+    expected_failure: migration._ProfileHiveCanonicalizationFailure,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction_id = "e" * 32
+    snapshot_directory = tmp_path / (f"{migration.PROFILE_HIVE_SNAPSHOT_DIRECTORY_PREFIX}{transaction_id}-{'f' * 32}")
+    snapshot_directory.mkdir()
+    support = snapshot_directory / "NTUSER.DAT.LOG1"
+    support.write_bytes(b"partial")
+    modules, descriptors = _fake_migration_security_modules()
+    _pywintypes, _win32api, _win32con, _win32file, win32security, ntsecuritycon = modules
+    descriptor = _FakeDescriptor()
+    descriptor.owner = "S-1-5-21-1000"
+    if include_dacl:
+        descriptor.dacl = _FakeAcl()
+        descriptor.dacl.AddAccessAllowedAceEx(
+            4,
+            0x10,
+            ntsecuritycon.FILE_ALL_ACCESS,
+            migration.SYSTEM_SID,
+        )
+    descriptors[str(support)] = descriptor
+    set_security = Mock()
+    win32security.SetNamedSecurityInfo = set_security
+    monkeypatch.setattr(migration, "_migration_windows_modules", lambda: modules)
+    monkeypatch.setattr(migration, "_validate_profile_hive_recovery_directory", Mock())
+    monkeypatch.setattr(
+        migration,
+        "_verify_profile_hive_support_file",
+        Mock(side_effect=RuntimeError("not canonical")),
+    )
+
+    with pytest.raises(migration._ProfileHiveCanonicalizationError) as caught:
+        migration._canonicalize_profile_hive_support_file(
+            support,
+            snapshot_directory=snapshot_directory,
+            expected_transaction_id=transaction_id,
+        )
+
+    assert caught.value.failure is expected_failure
+    assert "S-1-" not in str(caught.value)
+    set_security.assert_not_called()
 
 
 def test_profile_hive_support_canonicalization_rejects_unresolved_owner_before_set(
@@ -1522,13 +1593,14 @@ def test_profile_hive_support_canonicalization_rejects_unresolved_owner_before_s
         Mock(side_effect=RuntimeError("not canonical")),
     )
 
-    with pytest.raises(RuntimeError, match="keinen auflösbaren"):
+    with pytest.raises(migration._ProfileHiveCanonicalizationError, match="keinen auflösbaren") as caught:
         migration._canonicalize_profile_hive_support_file(
             support,
             snapshot_directory=snapshot_directory,
             expected_transaction_id=transaction_id,
         )
 
+    assert caught.value.failure is migration._ProfileHiveCanonicalizationFailure.OWNER
     set_security.assert_not_called()
     assert support.exists()
 
@@ -1566,7 +1638,7 @@ def test_profile_hive_primary_snapshot_with_user_owner_is_never_canonicalized(
     assert snapshot_directory.exists()
 
 
-def test_profile_hive_support_canonicalization_rejects_protected_user_owner_sidecar(
+def test_profile_hive_support_canonicalization_classifies_exact_protected_user_owner_sidecar(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1589,15 +1661,106 @@ def test_profile_hive_support_canonicalization_rejects_protected_user_owner_side
     monkeypatch.setattr(migration, "_migration_windows_modules", lambda: modules)
     monkeypatch.setattr(migration, "_validate_profile_hive_recovery_directory", Mock())
 
-    with pytest.raises(RuntimeError, match="keine plausible Windows-DACL"):
+    with pytest.raises(
+        migration._ProfileHiveCanonicalizationError,
+        match="geschützte explizite Windows-DACL",
+    ) as caught:
         migration._canonicalize_profile_hive_support_file(
             support,
             snapshot_directory=snapshot_directory,
             expected_transaction_id=transaction_id,
         )
 
+    assert caught.value.failure is migration._ProfileHiveCanonicalizationFailure.PROTECTED_EXACT_EXPLICIT
     set_security.assert_not_called()
     assert support.read_bytes() == b"partial log"
+
+
+def test_profile_hive_support_canonicalization_classifies_exact_unprotected_explicit_acl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction_id = "d" * 32
+    snapshot_directory = tmp_path / (f"{migration.PROFILE_HIVE_SNAPSHOT_DIRECTORY_PREFIX}{transaction_id}-{'e' * 32}")
+    snapshot_directory.mkdir()
+    support = snapshot_directory / "NTUSER.DAT.LOG1"
+    support.write_bytes(b"partial log")
+    modules, descriptors = _fake_migration_security_modules()
+    _pywintypes, _win32api, _win32con, _win32file, win32security, ntsecuritycon = modules
+    descriptor = _FakeDescriptor()
+    descriptor.owner = "S-1-5-21-1000"
+    descriptor.dacl = _FakeAcl()
+    for sid in (migration.SYSTEM_SID, migration.ADMINISTRATORS_SID):
+        descriptor.dacl.AddAccessAllowedAceEx(4, 0, ntsecuritycon.FILE_ALL_ACCESS, sid)
+    descriptors[str(support)] = descriptor
+    set_security = Mock()
+    win32security.SetNamedSecurityInfo = set_security
+    monkeypatch.setattr(migration, "_migration_windows_modules", lambda: modules)
+    monkeypatch.setattr(migration, "_validate_profile_hive_recovery_directory", Mock())
+    monkeypatch.setattr(
+        migration,
+        "_verify_profile_hive_support_file",
+        Mock(side_effect=RuntimeError("not canonical")),
+    )
+
+    with pytest.raises(migration._ProfileHiveCanonicalizationError) as caught:
+        migration._canonicalize_profile_hive_support_file(
+            support,
+            snapshot_directory=snapshot_directory,
+            expected_transaction_id=transaction_id,
+        )
+
+    assert caught.value.failure is migration._ProfileHiveCanonicalizationFailure.UNPROTECTED_EXACT_EXPLICIT
+    set_security.assert_not_called()
+    assert support.read_bytes() == b"partial log"
+
+
+def test_profile_hive_support_canonicalization_classifies_disappeared_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction_id = "f" * 32
+    snapshot_directory = tmp_path / (f"{migration.PROFILE_HIVE_SNAPSHOT_DIRECTORY_PREFIX}{transaction_id}-{'0' * 32}")
+    snapshot_directory.mkdir()
+    support = snapshot_directory / "NTUSER.DAT.LOG1"
+    verify = Mock(side_effect=RuntimeError("not canonical"))
+    monkeypatch.setattr(migration, "_validate_profile_hive_recovery_directory", Mock())
+    monkeypatch.setattr(migration, "_verify_profile_hive_support_file", verify)
+
+    with pytest.raises(migration._ProfileHiveCanonicalizationError) as caught:
+        migration._canonicalize_profile_hive_support_file(
+            support,
+            snapshot_directory=snapshot_directory,
+            expected_transaction_id=transaction_id,
+        )
+
+    assert caught.value.failure is migration._ProfileHiveCanonicalizationFailure.PATH_DISAPPEARED
+    assert verify.call_count == 1
+
+
+def test_profile_hive_support_canonicalization_classifies_lock_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction_id = "1" * 32
+    snapshot_directory = tmp_path / (f"{migration.PROFILE_HIVE_SNAPSHOT_DIRECTORY_PREFIX}{transaction_id}-{'0' * 32}")
+    snapshot_directory.mkdir()
+    support = snapshot_directory / "NTUSER.DAT.LOG1"
+    lock_error = OSError(32, "secret path")
+    verify = Mock(side_effect=[RuntimeError("not canonical")])
+    monkeypatch.setattr(migration, "_validate_profile_hive_recovery_directory", Mock())
+    monkeypatch.setattr(migration, "_verify_profile_hive_support_file", verify)
+    monkeypatch.setattr(migration, "_locked_local_path", Mock(side_effect=lock_error))
+
+    with pytest.raises(migration._ProfileHiveCanonicalizationError) as caught:
+        migration._canonicalize_profile_hive_support_file(
+            support,
+            snapshot_directory=snapshot_directory,
+            expected_transaction_id=transaction_id,
+        )
+
+    assert caught.value.failure is migration._ProfileHiveCanonicalizationFailure.LOCK_OPEN
+    assert "secret" not in str(caught.value)
 
 
 @pytest.mark.parametrize("kind", ["directory", "symlink", "hardlink"])
@@ -1669,12 +1832,13 @@ def test_profile_hive_support_set_failure_preserves_complete_partial_tail(
 
     monkeypatch.setattr(migration, "_verify_profile_hive_support_file", Mock(side_effect=verify_file))
 
-    with pytest.raises(RuntimeError, match="konnte nicht sicher kanonisiert"):
+    with pytest.raises(migration._ProfileHiveCanonicalizationError, match="konnte nicht sicher kanonisiert") as caught:
         migration._remove_profile_hive_snapshot(
             snapshot,
             expected_transaction_id=transaction_id,
         )
 
+    assert caught.value.failure is migration._ProfileHiveCanonicalizationFailure.SECURITY_WRITE
     set_security.assert_called_once()
     assert snapshot.read_bytes() == b"partial hive"
     assert support.read_bytes() == b"partial log"

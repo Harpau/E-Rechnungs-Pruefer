@@ -130,6 +130,77 @@ class MigrationPhase(StrEnum):
     SERVICE_COMMITTED = "service_committed"
 
 
+class _ProfileHiveCanonicalizationFailure(StrEnum):
+    LOCK_OPEN = "lock-open"
+    PATH_DISAPPEARED = "path-disappeared"
+    SECURITY_READ = "security-read"
+    OWNER = "owner"
+    DACL_MISSING = "dacl-missing"
+    DACL_CONTROL = "dacl-control"
+    PROTECTED_EXACT_EXPLICIT = "protected-exact-explicit"
+    UNPROTECTED_EXACT_EXPLICIT = "unprotected-exact-explicit"
+    ACE_COUNT = "ace-count"
+    ACE_READ = "ace-read"
+    ACE_TYPE = "ace-type"
+    ACE_FLAGS = "ace-flags"
+    ACE_MASK = "ace-mask"
+    ACE_SID = "ace-sid"
+    ACE_DUPLICATE = "ace-duplicate"
+    ACE_COMPLETENESS = "ace-completeness"
+    SECURITY_WRITE = "security-write"
+
+
+_PROFILE_HIVE_CANONICALIZATION_MESSAGES = {
+    _ProfileHiveCanonicalizationFailure.LOCK_OPEN: (
+        "Eine Registry-Supportdatei konnte nicht sicher für die Prüfung gesperrt werden."
+    ),
+    _ProfileHiveCanonicalizationFailure.PATH_DISAPPEARED: (
+        "Eine Registry-Supportdatei ist während der Kanonisierung verschwunden."
+    ),
+    _ProfileHiveCanonicalizationFailure.SECURITY_READ: (
+        "Eine Registry-Supportdatei besitzt keine prüfbare Windows-DACL."
+    ),
+    _ProfileHiveCanonicalizationFailure.OWNER: (
+        "Eine Registry-Supportdatei besitzt keinen auflösbaren administrativen oder Benutzereigentümer."
+    ),
+    _ProfileHiveCanonicalizationFailure.DACL_MISSING: (
+        "Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."
+    ),
+    _ProfileHiveCanonicalizationFailure.DACL_CONTROL: (
+        "Eine Registry-Supportdatei besitzt keine prüfbare Windows-DACL-Steuerung."
+    ),
+    _ProfileHiveCanonicalizationFailure.PROTECTED_EXACT_EXPLICIT: (
+        "Eine Registry-Supportdatei besitzt eine geschützte explizite Windows-DACL."
+    ),
+    _ProfileHiveCanonicalizationFailure.UNPROTECTED_EXACT_EXPLICIT: (
+        "Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."
+    ),
+    _ProfileHiveCanonicalizationFailure.ACE_COUNT: ("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."),
+    _ProfileHiveCanonicalizationFailure.ACE_READ: ("Eine Registry-Supportdatei besitzt keine prüfbare Windows-DACL."),
+    _ProfileHiveCanonicalizationFailure.ACE_TYPE: ("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."),
+    _ProfileHiveCanonicalizationFailure.ACE_FLAGS: ("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."),
+    _ProfileHiveCanonicalizationFailure.ACE_MASK: ("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."),
+    _ProfileHiveCanonicalizationFailure.ACE_SID: ("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."),
+    _ProfileHiveCanonicalizationFailure.ACE_DUPLICATE: (
+        "Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."
+    ),
+    _ProfileHiveCanonicalizationFailure.ACE_COMPLETENESS: (
+        "Eine Registry-Supportdatei besitzt keine plausible Windows-DACL."
+    ),
+    _ProfileHiveCanonicalizationFailure.SECURITY_WRITE: (
+        "Eine Registry-Supportdatei konnte nicht sicher kanonisiert werden."
+    ),
+}
+
+
+class _ProfileHiveCanonicalizationError(RuntimeError):
+    """Carry one closed diagnostic code without retaining observed ACL data."""
+
+    def __init__(self, failure: _ProfileHiveCanonicalizationFailure) -> None:
+        self.failure = failure
+        super().__init__(_PROFILE_HIVE_CANONICALIZATION_MESSAGES[failure])
+
+
 MIGRATION_PHASE_GENERATIONS = {
     MigrationPhase.ROLLBACKABLE: 0,
     MigrationPhase.SERVICE_TRANSITION: 1,
@@ -1130,84 +1201,138 @@ def _canonicalize_profile_hive_support_file(
         raise RuntimeError("Eine Registry-Supportdatei liegt außerhalb des geschützten Snapshot-Verzeichnisses.")
     try:
         _verify_profile_hive_support_file(path)
+    except OSError as exc:
+        raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.LOCK_OPEN) from exc
     except RuntimeError:
         pass
     else:
         return
 
-    with _locked_local_path(path, directory=False) as exists:
-        if not exists:
-            raise RuntimeError("Eine Registry-Supportdatei ist während der Kanonisierung verschwunden.")
-        _pywintypes, _win32api, _win32con, _win32file, win32security, ntsecuritycon = _migration_windows_modules()
-        try:
-            descriptor = win32security.GetNamedSecurityInfo(
-                str(path),
-                win32security.SE_FILE_OBJECT,
-                win32security.DACL_SECURITY_INFORMATION
-                | getattr(win32security, "OWNER_SECURITY_INFORMATION", 0x00000001),
-            )
-            owner = descriptor.GetSecurityDescriptorOwner()
-            owner_sid = win32security.ConvertSidToStringSid(owner)
-            dacl = descriptor.GetSecurityDescriptorDacl()
-            control, _revision = descriptor.GetSecurityDescriptorControl()
-        except Exception as exc:
-            raise RuntimeError("Eine Registry-Supportdatei besitzt keine prüfbare Windows-DACL.") from exc
-        if owner_sid not in {SYSTEM_SID, ADMINISTRATORS_SID}:
+    try:
+        with _locked_local_path(path, directory=False) as exists:
+            if not exists:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.PATH_DISAPPEARED)
+            (
+                _pywintypes,
+                _win32api,
+                _win32con,
+                _win32file,
+                win32security,
+                ntsecuritycon,
+            ) = _migration_windows_modules()
             try:
-                _specific_user_sid(owner, win32security=win32security)
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    "Eine Registry-Supportdatei besitzt keinen auflösbaren administrativen oder Benutzereigentümer."
-                ) from exc
-        if dacl is None:
-            raise RuntimeError("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL.")
-        inherited_ace = getattr(win32security, "INHERITED_ACE", 0x10)
-        if control & win32security.SE_DACL_PROTECTED:
-            raise RuntimeError("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL.")
-        observed: set[str] = set()
-        for index in range(dacl.GetAceCount()):
-            try:
-                header, mask, sid = dacl.GetAce(index)
-                sid_text = win32security.ConvertSidToStringSid(sid)
+                descriptor = win32security.GetNamedSecurityInfo(
+                    str(path),
+                    win32security.SE_FILE_OBJECT,
+                    win32security.DACL_SECURITY_INFORMATION
+                    | getattr(win32security, "OWNER_SECURITY_INFORMATION", 0x00000001),
+                )
             except Exception as exc:
-                raise RuntimeError("Eine Registry-Supportdatei besitzt keine prüfbare Windows-DACL.") from exc
-            if (
-                int(header[0]) != win32security.ACCESS_ALLOWED_ACE_TYPE
-                or int(header[1]) != inherited_ace
-                or int(mask) != int(ntsecuritycon.FILE_ALL_ACCESS)
-                or sid_text not in {SYSTEM_SID, ADMINISTRATORS_SID}
-                or sid_text in observed
-            ):
-                raise RuntimeError("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL.")
-            observed.add(sid_text)
-        if observed != {SYSTEM_SID, ADMINISTRATORS_SID} or dacl.GetAceCount() != 2:
-            raise RuntimeError("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL.")
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.SECURITY_READ) from exc
+            try:
+                owner = descriptor.GetSecurityDescriptorOwner()
+                owner_sid = win32security.ConvertSidToStringSid(owner)
+            except Exception as exc:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.OWNER) from exc
+            try:
+                dacl = descriptor.GetSecurityDescriptorDacl()
+            except Exception as exc:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.SECURITY_READ) from exc
+            try:
+                control, _revision = descriptor.GetSecurityDescriptorControl()
+            except Exception as exc:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.DACL_CONTROL) from exc
+            if owner_sid not in {SYSTEM_SID, ADMINISTRATORS_SID}:
+                try:
+                    _specific_user_sid(owner, win32security=win32security)
+                except RuntimeError as exc:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.OWNER) from exc
+            if dacl is None:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.DACL_MISSING)
+            inherited_ace = getattr(win32security, "INHERITED_ACE", 0x10)
+            protected = bool(control & win32security.SE_DACL_PROTECTED)
+            try:
+                ace_count = dacl.GetAceCount()
+            except Exception as exc:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_READ) from exc
+            if ace_count != 2:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_COUNT)
+            observed_sids: set[str] = set()
+            observed_flags: set[int] = set()
+            for index in range(ace_count):
+                try:
+                    header, mask, sid = dacl.GetAce(index)
+                except Exception as exc:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_READ) from exc
+                try:
+                    ace_type = int(header[0])
+                except Exception as exc:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_TYPE) from exc
+                if ace_type != win32security.ACCESS_ALLOWED_ACE_TYPE:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_TYPE)
+                try:
+                    ace_flags = int(header[1])
+                except Exception as exc:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_FLAGS) from exc
+                if ace_flags not in {0, inherited_ace}:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_FLAGS)
+                observed_flags.add(ace_flags)
+                try:
+                    ace_mask = int(mask)
+                except Exception as exc:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_MASK) from exc
+                if ace_mask != int(ntsecuritycon.FILE_ALL_ACCESS):
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_MASK)
+                try:
+                    sid_text = win32security.ConvertSidToStringSid(sid)
+                except Exception as exc:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_SID) from exc
+                if sid_text not in {SYSTEM_SID, ADMINISTRATORS_SID}:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_SID)
+                if sid_text in observed_sids:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_DUPLICATE)
+                observed_sids.add(sid_text)
+            if observed_sids != {SYSTEM_SID, ADMINISTRATORS_SID}:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_COMPLETENESS)
+            if len(observed_flags) != 1:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_FLAGS)
+            exact_flags = next(iter(observed_flags))
+            if protected:
+                if exact_flags != 0:
+                    raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.ACE_FLAGS)
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.PROTECTED_EXACT_EXPLICIT)
+            if exact_flags == 0:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.UNPROTECTED_EXACT_EXPLICIT)
 
-        canonical_dacl = win32security.ACL()
-        for sid_text in (SYSTEM_SID, ADMINISTRATORS_SID):
-            canonical_dacl.AddAccessAllowedAceEx(
-                win32security.ACL_REVISION_DS,
-                0,
-                ntsecuritycon.FILE_ALL_ACCESS,
-                win32security.ConvertStringSidToSid(sid_text),
-            )
-        information = (
-            getattr(win32security, "OWNER_SECURITY_INFORMATION", 0x00000001)
-            | win32security.DACL_SECURITY_INFORMATION
-            | getattr(win32security, "PROTECTED_DACL_SECURITY_INFORMATION", 0x80000000)
-        )
-        try:
-            win32security.SetNamedSecurityInfo(
-                str(path),
-                win32security.SE_FILE_OBJECT,
-                information,
-                win32security.ConvertStringSidToSid(ADMINISTRATORS_SID),
-                None,
-                canonical_dacl,
-                None,
-            )
-        except Exception as exc:
-            raise RuntimeError("Eine Registry-Supportdatei konnte nicht sicher kanonisiert werden.") from exc
+            try:
+                canonical_dacl = win32security.ACL()
+                for sid_text in (SYSTEM_SID, ADMINISTRATORS_SID):
+                    canonical_dacl.AddAccessAllowedAceEx(
+                        win32security.ACL_REVISION_DS,
+                        0,
+                        ntsecuritycon.FILE_ALL_ACCESS,
+                        win32security.ConvertStringSidToSid(sid_text),
+                    )
+                information = (
+                    getattr(win32security, "OWNER_SECURITY_INFORMATION", 0x00000001)
+                    | win32security.DACL_SECURITY_INFORMATION
+                    | getattr(win32security, "PROTECTED_DACL_SECURITY_INFORMATION", 0x80000000)
+                )
+                win32security.SetNamedSecurityInfo(
+                    str(path),
+                    win32security.SE_FILE_OBJECT,
+                    information,
+                    win32security.ConvertStringSidToSid(ADMINISTRATORS_SID),
+                    None,
+                    canonical_dacl,
+                    None,
+                )
+            except Exception as exc:
+                raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.SECURITY_WRITE) from exc
+    except _ProfileHiveCanonicalizationError:
+        raise
+    except OSError as exc:
+        raise _ProfileHiveCanonicalizationError(_ProfileHiveCanonicalizationFailure.LOCK_OPEN) from exc
     _verify_profile_hive_support_file(path)
 
 

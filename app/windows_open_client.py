@@ -48,6 +48,28 @@ from .windows_service_preflight import (
 _SETUP_DIAGNOSTIC_FILE_NAME = "setup-action-diagnostic-v1.txt"
 _SETUP_DIAGNOSTIC_HEADER = "ERP_SETUP_DIAGNOSTIC_V1"
 _SETUP_DIAGNOSTIC_MAX_BYTES = 256
+_SETUP_DIAGNOSTIC_DETAILS = frozenset(
+    {
+        "none",
+        "lock-open",
+        "path-disappeared",
+        "security-read",
+        "owner",
+        "dacl-missing",
+        "dacl-control",
+        "protected-exact-explicit",
+        "unprotected-exact-explicit",
+        "ace-count",
+        "ace-read",
+        "ace-type",
+        "ace-flags",
+        "ace-mask",
+        "ace-sid",
+        "ace-duplicate",
+        "ace-completeness",
+        "security-write",
+    }
+)
 _INTERNAL_ACTION_STAGES = (
     ("prepare_desktop_migration_transfer", "prepare-transfer"),
     ("clear_desktop_migration_transfer", "clear-transfer"),
@@ -328,6 +350,22 @@ def _setup_error_origin(exc: BaseException) -> str:
     return origin
 
 
+def _setup_error_detail(exc: BaseException) -> str:
+    """Return only a fixed code from the exact internal diagnostic exception."""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if type(current) is _desktop_migration._ProfileHiveCanonicalizationError:
+            detail = current.failure.value
+            return detail if detail in _SETUP_DIAGNOSTIC_DETAILS else "none"
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return "none"
+
+
 def _write_setup_diagnostic(value: str, *, stage: str, exc: BaseException) -> None:
     try:
         path = _validated_setup_diagnostic_path(value)
@@ -335,6 +373,7 @@ def _write_setup_diagnostic(value: str, *, stage: str, exc: BaseException) -> No
         payload = (
             f"{_SETUP_DIAGNOSTIC_HEADER}|stage={stage}|error={_setup_error_code(exc)}"
             f"|origin={_setup_error_origin(exc)}"
+            f"|detail={_setup_error_detail(exc)}"
             f"|winerror={winerror if winerror is not None else 'none'}"
         ).encode("ascii")
         if len(payload) > _SETUP_DIAGNOSTIC_MAX_BYTES:

@@ -486,9 +486,32 @@ begin
     (CompareText(Value, 'legacy-conflict-check') = 0);
 end;
 
+function IsKnownSetupDiagnosticDetail(Value: String): Boolean;
+begin
+  Result :=
+    (CompareText(Value, 'none') = 0) or
+    (CompareText(Value, 'lock-open') = 0) or
+    (CompareText(Value, 'path-disappeared') = 0) or
+    (CompareText(Value, 'security-read') = 0) or
+    (CompareText(Value, 'owner') = 0) or
+    (CompareText(Value, 'dacl-missing') = 0) or
+    (CompareText(Value, 'dacl-control') = 0) or
+    (CompareText(Value, 'protected-exact-explicit') = 0) or
+    (CompareText(Value, 'unprotected-exact-explicit') = 0) or
+    (CompareText(Value, 'ace-count') = 0) or
+    (CompareText(Value, 'ace-read') = 0) or
+    (CompareText(Value, 'ace-type') = 0) or
+    (CompareText(Value, 'ace-flags') = 0) or
+    (CompareText(Value, 'ace-mask') = 0) or
+    (CompareText(Value, 'ace-sid') = 0) or
+    (CompareText(Value, 'ace-duplicate') = 0) or
+    (CompareText(Value, 'ace-completeness') = 0) or
+    (CompareText(Value, 'security-write') = 0);
+end;
+
 function ParseSetupDiagnostic(
   Value: String; var Stage: String; var ErrorCode: String;
-  var Origin: String; var WinError: String): Boolean;
+  var Origin: String; var Detail: String; var WinError: String): Boolean;
 var
   Remainder: String;
   Separator: Integer;
@@ -497,6 +520,7 @@ begin
   Stage := '';
   ErrorCode := '';
   Origin := '';
+  Detail := '';
   WinError := '';
   if Pos(SetupDiagnosticHeader + '|stage=', Value) <> 1 then
     Exit;
@@ -512,10 +536,15 @@ begin
     Exit;
   ErrorCode := Copy(Remainder, 1, Separator - 1);
   Delete(Remainder, 1, Separator + Length('|origin=') - 1);
-  Separator := Pos('|winerror=', Remainder);
+  Separator := Pos('|detail=', Remainder);
   if Separator <= 1 then
     Exit;
   Origin := Copy(Remainder, 1, Separator - 1);
+  Delete(Remainder, 1, Separator + Length('|detail=') - 1);
+  Separator := Pos('|winerror=', Remainder);
+  if Separator <= 1 then
+    Exit;
+  Detail := Copy(Remainder, 1, Separator - 1);
   WinError := Copy(
     Remainder, Separator + Length('|winerror='), Length(Remainder));
   Result :=
@@ -523,6 +552,7 @@ begin
     IsKnownSetupDiagnosticStage(Stage) and
     IsKnownSetupDiagnosticError(ErrorCode) and
     IsKnownSetupDiagnosticOrigin(Origin) and
+    IsKnownSetupDiagnosticDetail(Detail) and
     IsSetupDiagnosticWinError(WinError);
 end;
 
@@ -559,6 +589,7 @@ var
   Stage: String;
   ErrorCode: String;
   Origin: String;
+  Detail: String;
   WinError: String;
 begin
   if (DiagnosticPath = '') or (not FileExists(DiagnosticPath)) then
@@ -571,10 +602,12 @@ begin
     else if LoadStringFromFile(DiagnosticPath, RawDiagnostic) then
     begin
       Diagnostic := String(RawDiagnostic);
-      if ParseSetupDiagnostic(Diagnostic, Stage, ErrorCode, Origin, WinError) then
+      if ParseSetupDiagnostic(
+        Diagnostic, Stage, ErrorCode, Origin, Detail, WinError) then
         Log(
           Description + ': interne Diagnose Stufe=' + Stage +
           ', Fehlerklasse=' + ErrorCode + ', Herkunft=' + Origin +
+          ', Detail=' + Detail +
           ', Windows-Fehler=' + WinError + '.')
       else
         Log(Description + ': eine ungültige interne Diagnose wurde verworfen.');
