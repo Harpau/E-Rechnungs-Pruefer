@@ -1112,6 +1112,130 @@ def _verify_profile_hive_support_file(path: Path) -> None:
             raise RuntimeError("Eine Registry-Supportdatei besitzt nicht die exakt erforderliche Windows-DACL.")
 
 
+def _canonicalize_profile_hive_support_file(
+    path: Path,
+    *,
+    snapshot_directory: Path,
+    expected_transaction_id: str,
+) -> None:
+    """Canonicalize only a plausible Registry-created file in one bound snapshot directory."""
+
+    _validate_profile_hive_recovery_directory(
+        snapshot_directory,
+        expected_transaction_id=expected_transaction_id,
+    )
+    if path.parent != snapshot_directory:
+        raise RuntimeError("Eine Registry-Supportdatei liegt außerhalb des geschützten Snapshot-Verzeichnisses.")
+    try:
+        _verify_profile_hive_support_file(path)
+    except RuntimeError:
+        pass
+    else:
+        return
+
+    with _locked_local_path(path, directory=False) as exists:
+        if not exists:
+            raise RuntimeError("Eine Registry-Supportdatei ist während der Kanonisierung verschwunden.")
+        _pywintypes, _win32api, _win32con, _win32file, win32security, ntsecuritycon = _migration_windows_modules()
+        try:
+            descriptor = win32security.GetNamedSecurityInfo(
+                str(path),
+                win32security.SE_FILE_OBJECT,
+                win32security.DACL_SECURITY_INFORMATION
+                | getattr(win32security, "OWNER_SECURITY_INFORMATION", 0x00000001),
+            )
+            owner = descriptor.GetSecurityDescriptorOwner()
+            owner_sid = win32security.ConvertSidToStringSid(owner)
+            dacl = descriptor.GetSecurityDescriptorDacl()
+            control, _revision = descriptor.GetSecurityDescriptorControl()
+        except Exception as exc:
+            raise RuntimeError("Eine Registry-Supportdatei besitzt keine prüfbare Windows-DACL.") from exc
+        if owner_sid not in {SYSTEM_SID, ADMINISTRATORS_SID}:
+            try:
+                _specific_user_sid(owner, win32security=win32security)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "Eine Registry-Supportdatei besitzt keinen auflösbaren administrativen oder Benutzereigentümer."
+                ) from exc
+        if dacl is None:
+            raise RuntimeError("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL.")
+        inherited_ace = getattr(win32security, "INHERITED_ACE", 0x10)
+        if control & win32security.SE_DACL_PROTECTED:
+            raise RuntimeError("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL.")
+        observed: set[str] = set()
+        for index in range(dacl.GetAceCount()):
+            try:
+                header, mask, sid = dacl.GetAce(index)
+                sid_text = win32security.ConvertSidToStringSid(sid)
+            except Exception as exc:
+                raise RuntimeError("Eine Registry-Supportdatei besitzt keine prüfbare Windows-DACL.") from exc
+            if (
+                int(header[0]) != win32security.ACCESS_ALLOWED_ACE_TYPE
+                or int(header[1]) != inherited_ace
+                or int(mask) != int(ntsecuritycon.FILE_ALL_ACCESS)
+                or sid_text not in {SYSTEM_SID, ADMINISTRATORS_SID}
+                or sid_text in observed
+            ):
+                raise RuntimeError("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL.")
+            observed.add(sid_text)
+        if observed != {SYSTEM_SID, ADMINISTRATORS_SID} or dacl.GetAceCount() != 2:
+            raise RuntimeError("Eine Registry-Supportdatei besitzt keine plausible Windows-DACL.")
+
+        canonical_dacl = win32security.ACL()
+        for sid_text in (SYSTEM_SID, ADMINISTRATORS_SID):
+            canonical_dacl.AddAccessAllowedAceEx(
+                win32security.ACL_REVISION_DS,
+                0,
+                ntsecuritycon.FILE_ALL_ACCESS,
+                win32security.ConvertStringSidToSid(sid_text),
+            )
+        information = (
+            getattr(win32security, "OWNER_SECURITY_INFORMATION", 0x00000001)
+            | win32security.DACL_SECURITY_INFORMATION
+            | getattr(win32security, "PROTECTED_DACL_SECURITY_INFORMATION", 0x80000000)
+        )
+        try:
+            win32security.SetNamedSecurityInfo(
+                str(path),
+                win32security.SE_FILE_OBJECT,
+                information,
+                win32security.ConvertStringSidToSid(ADMINISTRATORS_SID),
+                None,
+                canonical_dacl,
+                None,
+            )
+        except Exception as exc:
+            raise RuntimeError("Eine Registry-Supportdatei konnte nicht sicher kanonisiert werden.") from exc
+    _verify_profile_hive_support_file(path)
+
+
+def _canonicalize_profile_hive_recovery_tail(
+    snapshot_directory: Path,
+    *,
+    expected_transaction_id: str,
+) -> tuple[Path, ...]:
+    """Canonicalize a complete, transaction-bound tail before its deletion."""
+
+    _validate_profile_hive_recovery_directory(
+        snapshot_directory,
+        expected_transaction_id=expected_transaction_id,
+    )
+    try:
+        entries = tuple(snapshot_directory.iterdir())
+    except OSError as exc:
+        raise RuntimeError("Das geschützte NTUSER-Hive-Verzeichnis konnte nicht inventarisiert werden.") from exc
+    for entry in entries:
+        if entry.name.casefold() == PROFILE_HIVE_SNAPSHOT_FILE_NAME.casefold():
+            _verify_profile_hive_support_file(entry)
+        else:
+            _canonicalize_profile_hive_support_file(
+                entry,
+                snapshot_directory=snapshot_directory,
+                expected_transaction_id=expected_transaction_id,
+            )
+    return entries
+
+
 def _validate_profile_hive_snapshot(
     snapshot: Path,
     *,
@@ -1183,6 +1307,11 @@ def _remove_profile_hive_snapshot(
     expected_transaction_id: str | None = None,
 ) -> None:
     snapshot_directory = snapshot.parent
+    if expected_transaction_id is not None:
+        _canonicalize_profile_hive_recovery_tail(
+            snapshot_directory,
+            expected_transaction_id=expected_transaction_id,
+        )
     entries = _validate_profile_hive_snapshot(
         snapshot,
         expected_transaction_id=expected_transaction_id,
@@ -1258,7 +1387,7 @@ def _recover_orphaned_profile_audit_state(
                     "Ein verwaister, transaktionsgebundener Registry-Audit-Mount konnte nicht entladen werden."
                 ) from exc
     for snapshot_directory in snapshot_directories:
-        _validate_profile_hive_recovery_tail(
+        _canonicalize_profile_hive_recovery_tail(
             snapshot_directory,
             expected_transaction_id=transaction_id,
         )
@@ -3419,6 +3548,10 @@ def _clear_migration_state(*, expected_reader_sid: str, require_current_user: bo
                 ) from exc
 
     for snapshot_directory in snapshot_paths:
+        _canonicalize_profile_hive_recovery_tail(
+            snapshot_directory,
+            expected_transaction_id=transaction_id,
+        )
         _validate_profile_hive_snapshot(
             snapshot_directory / PROFILE_HIVE_SNAPSHOT_FILE_NAME,
             expected_transaction_id=transaction_id,
