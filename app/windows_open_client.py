@@ -77,6 +77,20 @@ _INTERNAL_ACTION_STAGES = (
     ("purge_runtime_state", "purge-runtime-state"),
     ("purge_machine_state", "purge-machine-state"),
 )
+_SETUP_DIAGNOSTIC_ORIGINS = {
+    "_clear_migration_state": "clear-state",
+    "_enable_registry_hive_privileges": "hive-privileges",
+    "_locked_local_path": "locked-path",
+    "_migration_state_entries": "state-inventory",
+    "_profile_audit_mounts": "hive-mount-inventory",
+    "_profile_installation_candidates": "profile-inventory",
+    "_recover_orphaned_profile_audit_state": "hive-recovery",
+    "_remove_profile_hive_snapshot": "hive-remove",
+    "_validate_profile_hive_recovery_tail": "hive-recovery-tail",
+    "_validate_profile_hive_snapshot": "hive-validate",
+    "_verify_profile_hive_support_file": "hive-support-file",
+    "verify_no_legacy_desktop_conflicts": "legacy-conflict-check",
+}
 
 
 def _show_message(message: str, *, error: bool) -> None:
@@ -291,12 +305,31 @@ def _setup_winerror(exc: BaseException) -> int | None:
     return None
 
 
+def _setup_error_origin(exc: BaseException) -> str:
+    origin = "unknown"
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        traceback = current.__traceback__
+        while traceback is not None:
+            candidate = _SETUP_DIAGNOSTIC_ORIGINS.get(traceback.tb_frame.f_code.co_name)
+            if candidate is not None:
+                origin = candidate
+            traceback = traceback.tb_next
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return origin
+
+
 def _write_setup_diagnostic(value: str, *, stage: str, exc: BaseException) -> None:
     try:
         path = _validated_setup_diagnostic_path(value)
         winerror = _setup_winerror(exc)
         payload = (
             f"{_SETUP_DIAGNOSTIC_HEADER}|stage={stage}|error={_setup_error_code(exc)}"
+            f"|origin={_setup_error_origin(exc)}"
             f"|winerror={winerror if winerror is not None else 'none'}"
         ).encode("ascii")
         if len(payload) > _SETUP_DIAGNOSTIC_MAX_BYTES:

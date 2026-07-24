@@ -522,9 +522,10 @@ def test_test_installer_logs_only_allowlisted_internal_open_client_diagnostics()
     assert "FileSize(DiagnosticPath, DiagnosticSize)" in diagnostic_support
     assert "DiagnosticSize > 256" in diagnostic_support
     assert "LoadStringFromFile(DiagnosticPath, RawDiagnostic)" in diagnostic_support
-    assert "ParseSetupDiagnostic(Diagnostic, Stage, ErrorCode, WinError)" in diagnostic_support
+    assert "ParseSetupDiagnostic(Diagnostic, Stage, ErrorCode, Origin, WinError)" in diagnostic_support
     assert "IsKnownSetupDiagnosticStage(Stage)" in diagnostic_support
     assert "IsKnownSetupDiagnosticError(ErrorCode)" in diagnostic_support
+    assert "IsKnownSetupDiagnosticOrigin(Origin)" in diagnostic_support
     assert "IsSetupDiagnosticWinError(WinError)" in diagnostic_support
     assert "DeleteFile(DiagnosticPath)" in diagnostic_support
     assert "GetExceptionMessage" not in diagnostic_support
@@ -541,6 +542,9 @@ def test_test_installer_logs_only_allowlisted_internal_open_client_diagnostics()
         "windows-api-error",
         "os-error",
         "internal-error",
+        "hive-support-file",
+        "hive-remove",
+        "locked-path",
     ):
         assert safe_code in diagnostic_support
 

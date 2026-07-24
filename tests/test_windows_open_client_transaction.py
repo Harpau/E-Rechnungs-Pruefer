@@ -363,7 +363,7 @@ def test_internal_setup_failure_writes_only_bounded_sanitized_diagnostic(
     )
 
     payload = target.read_bytes()
-    assert payload == (b"ERP_SETUP_DIAGNOSTIC_V1|stage=preflight-port|error=os-error|winerror=5")
+    assert payload == (b"ERP_SETUP_DIAGNOSTIC_V1|stage=preflight-port|error=os-error|origin=unknown|winerror=5")
     assert len(payload) <= windows_open_client._SETUP_DIAGNOSTIC_MAX_BYTES
     assert b"token" not in payload
     assert b"Secret" not in payload
@@ -445,3 +445,15 @@ def test_setup_diagnostic_extracts_only_numeric_pywin32_error_code() -> None:
     invalid = error("5", "RegUnLoadKey", "secret path and token")
     assert windows_open_client._setup_error_code(invalid) == "internal-error"
     assert windows_open_client._setup_winerror(invalid) is None
+
+
+def test_setup_diagnostic_origin_uses_only_fixed_allowlisted_function_codes() -> None:
+    def _verify_profile_hive_support_file() -> None:
+        raise LookupError("secret path and token")
+
+    with pytest.raises(LookupError) as caught:
+        _verify_profile_hive_support_file()
+
+    assert windows_open_client._setup_error_origin(caught.value) == "hive-support-file"
+    assert "secret" not in windows_open_client._setup_error_origin(caught.value)
+    assert windows_open_client._setup_error_origin(LookupError("secret")) == "unknown"

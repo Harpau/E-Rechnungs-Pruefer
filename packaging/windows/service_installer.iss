@@ -463,9 +463,27 @@ begin
     end;
 end;
 
+function IsKnownSetupDiagnosticOrigin(Value: String): Boolean;
+begin
+  Result :=
+    (CompareText(Value, 'unknown') = 0) or
+    (CompareText(Value, 'clear-state') = 0) or
+    (CompareText(Value, 'hive-privileges') = 0) or
+    (CompareText(Value, 'locked-path') = 0) or
+    (CompareText(Value, 'state-inventory') = 0) or
+    (CompareText(Value, 'hive-mount-inventory') = 0) or
+    (CompareText(Value, 'profile-inventory') = 0) or
+    (CompareText(Value, 'hive-recovery') = 0) or
+    (CompareText(Value, 'hive-remove') = 0) or
+    (CompareText(Value, 'hive-recovery-tail') = 0) or
+    (CompareText(Value, 'hive-validate') = 0) or
+    (CompareText(Value, 'hive-support-file') = 0) or
+    (CompareText(Value, 'legacy-conflict-check') = 0);
+end;
+
 function ParseSetupDiagnostic(
   Value: String; var Stage: String; var ErrorCode: String;
-  var WinError: String): Boolean;
+  var Origin: String; var WinError: String): Boolean;
 var
   Remainder: String;
   Separator: Integer;
@@ -473,6 +491,7 @@ begin
   Result := False;
   Stage := '';
   ErrorCode := '';
+  Origin := '';
   WinError := '';
   if Pos(SetupDiagnosticHeader + '|stage=', Value) <> 1 then
     Exit;
@@ -483,16 +502,22 @@ begin
     Exit;
   Stage := Copy(Remainder, 1, Separator - 1);
   Delete(Remainder, 1, Separator + Length('|error=') - 1);
-  Separator := Pos('|winerror=', Remainder);
+  Separator := Pos('|origin=', Remainder);
   if Separator <= 1 then
     Exit;
   ErrorCode := Copy(Remainder, 1, Separator - 1);
+  Delete(Remainder, 1, Separator + Length('|origin=') - 1);
+  Separator := Pos('|winerror=', Remainder);
+  if Separator <= 1 then
+    Exit;
+  Origin := Copy(Remainder, 1, Separator - 1);
   WinError := Copy(
     Remainder, Separator + Length('|winerror='), Length(Remainder));
   Result :=
     (Pos('|', WinError) = 0) and
     IsKnownSetupDiagnosticStage(Stage) and
     IsKnownSetupDiagnosticError(ErrorCode) and
+    IsKnownSetupDiagnosticOrigin(Origin) and
     IsSetupDiagnosticWinError(WinError);
 end;
 
@@ -528,6 +553,7 @@ var
   DiagnosticSize: Integer;
   Stage: String;
   ErrorCode: String;
+  Origin: String;
   WinError: String;
 begin
   if (DiagnosticPath = '') or (not FileExists(DiagnosticPath)) then
@@ -540,10 +566,11 @@ begin
     else if LoadStringFromFile(DiagnosticPath, RawDiagnostic) then
     begin
       Diagnostic := String(RawDiagnostic);
-      if ParseSetupDiagnostic(Diagnostic, Stage, ErrorCode, WinError) then
+      if ParseSetupDiagnostic(Diagnostic, Stage, ErrorCode, Origin, WinError) then
         Log(
           Description + ': interne Diagnose Stufe=' + Stage +
-          ', Fehlerklasse=' + ErrorCode + ', Windows-Fehler=' + WinError + '.')
+          ', Fehlerklasse=' + ErrorCode + ', Herkunft=' + Origin +
+          ', Windows-Fehler=' + WinError + '.')
       else
         Log(Description + ': eine ungültige interne Diagnose wurde verworfen.');
     end
