@@ -4,6 +4,37 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+Vorgesehene Version: 1.4.0.
+
+### Windows-Dienst und Desktopbetrieb
+
+- zusätzlicher administrativer, systemweiter Windows-Dienst-Installer mit eigener App-ID; der vorhandene nicht privilegierte Desktop-/Tray-Installer und sein optionaler HKCU-Autostart bleiben als eigenständige Betriebsart erhalten
+- gemeinsamer UI-freier Loopback-Serverlebenszyklus für Desktop und Dienst; ein geschützter maschinenweiter Mutex und die feste Portreservierung verhindern parallele Backends und schlagen bei Konflikten geschlossen fehl
+- SCM-kompatibler Dienst unter `LocalService` mit dienstspezifischem SID, verzögertem automatischem oder manuellem Start, Recovery-Aktionen, geordnetem Stopp und begrenztem Beenden laufender KoSIT-Prozesse; ein vor dem ersten Java-Start geerbtes Kill-on-close-Job-Objekt, feste Ausgabe-/Berichtsbudgets sowie ein unter dem verifizierten privaten ProgramData-Elternpfad atomar service-spezifisch geschützter temporärer KoSIT-Baum für Rechnungs-XML und VARL härten den Prozesspfad gegen Lesen und Namensaustausch durch andere `LocalService`-Dienste
+- unveränderliche Dienstdateien unter `%ProgramFiles%` sowie streng validierte Maschinenkonfiguration, dauerhaft atomar verwaltetes API-Token und datensparsame, nach jeder Rotation erneut ACL-geschützte technische Logs unter dem per Windows-Known-Folder-API bestimmten `%ProgramData%`; IPC-Fehler protokollieren nur Phase, Exception-Typ und numerischen Windows-Fehler, niemals Anfrage, Browseradresse oder Token
+- explizite geschützte DACLs für `SYSTEM`, lokale Administratoren und den Service-SID; konkrete Node-RED-Identitäten können gezielt Leserechte erhalten, breite lokale Gruppen dagegen nicht
+- Dienststart und Neuinstallation tolerieren ausschließlich auf den beiden geschützten Dienstverzeichnissen genau einen von Windows Explorer erzeugten, expliziten Vollzugriffs-ACE für einen direkten Benutzer der lokalen Administratorgruppe; Dateien, Gruppen, abweichende Rechte und mehrere Zusatzidentitäten bleiben geschlossen abgewiesen, und Dienst beziehungsweise erhöhte Setup-Vorprüfung stellen vor dem Lesen des Maschinenzustands die kanonische DACL wieder her
+- interaktiver Öffnen-Client mit authentifizierter lokaler Named-Pipe-IPC, bestätigter Antwortübergabe und kurzlebigem, einmaligem Browserbootstrap; das dauerhafte Bearer-Token gelangt nicht in URL, Browser-Speicher, Pipe oder normale Logs, und harte Kapazitätsgrenzen begrenzen lokale Bootstrap- und Sitzungstabellen
+- kontrollierter Wechsel vom Desktop zum Dienst beendet die Tray-App, entfernt den exakten HKCU-Autostart, deaktiviert die alte Backend-EXE transaktional und übernimmt ein gültiges Desktop-Token nur nach ausdrücklicher Zustimmung und mit neuer Maschinen-DACL; laufende Altprozesse, Autostarts und weitere v1.3-Installationen werden sitzungs- beziehungsweise profilübergreifend einschließlich nicht geladener und Entra-ID-Profile erkannt und blockieren den Moduswechsel
+- der Dienst-Installer aktiviert seinen Assistenten nach dem UAC-Wechsel erst nach dem sichtbaren Einblenden einmalig; verweigert Windows die Fokusübernahme, hält ein eingabefreier, auf zehn Sekunden begrenzter Sichtbarkeitshinweis das Fenster vorübergehend über dem Ausgangsfenster; ein bestätigter Abbruch auf der Lizenzseite beendet das Setup vor jeder noch nicht initialisierten Installationspfad- oder Rollbackauswertung
+- ein interaktiver Direktstart der Dienst-EXE endet kontrolliert mit einem deutschen Hinweis auf den Öffnen-Client, während der normale SCM-Start und Session 0 weiterhin ohne interaktive Oberfläche arbeiten
+- Migrationsplan und optionale Tokenübergabe verwenden einen kurzlebigen, DACL-geschützten Transferbaum unter `%ProgramData%` statt des privaten Inno-Tempverzeichnisses; exakte Inventur, no-follow-/Hardlink-Prüfungen und nichtrekursive Bereinigung begrenzen den Austausch auf die erwarteten Objekte
+- Dienstupdates stoppen und deaktivieren den Dienst vor dem atomaren Austausch des vollständigen Bundlebaums, erhalten Konfiguration und Token, sichern SCM-Metadaten über die Dienst-APIs und starten nur einen zuvor laufenden Dienst neu; ein gemeinsamer systemweiter Vorgangsmutex serialisiert Setup, Update, Recovery und Deinstallation sitzungsübergreifend; die Deinstallation ist über einen getrennten atomaren SCM-/RUNNING-Beleg wiederaufnehmbar, entfernt den SCM-Dienst und löscht ProgramData nur nach klarer Benutzerentscheidung sowie erneuter, geschlossener Prüfung jedes bekannten Zustandsobjekts; exakt inventarisierte transiente KoSIT-Crashreste werden dagegen beim nächsten Dienststart und bei jeder Deinstallation unabhängig von der Aufbewahrungsentscheidung entfernt
+- Besitzer-, Reparse-Point-/Junction- und Hardlink-Prüfungen härten den Maschinenzustand vor Lesen, Schreiben und ACL-Änderungen; Log-DACLs unterdrücken die implizite Schreibberechtigung des dienstübergreifend geteilten `LocalService`-Besitzers, die erhöhte Profilinventur hält ausschließlich lokale Pfadkomponenten no-follow ohne Schreib-/Löschfreigabe und lädt Offline-Hives nur aus einer administrativen Momentaufnahme, und ein geschützter Phasenbeleg bindet Preflight, Commit und Rollback; unsichere Altzustände werden nicht durch Neuvergabe von ACLs übernommen
+
+### API und Automatisierung
+
+- lokaler Node-RED-Vertrag für Endpunkt, Bearer-Authentifizierung, Status, Retry und Fehler bleibt unverändert in Desktop- und Dienstmodus verfügbar
+- `EINVOICE_REQUIRE_KOSIT=false` sendet weiterhin `official=false` und überspringt KoSIT tatsächlich; PDF-Bericht, KoSIT-Seitenumbruch und bytegetreuer Original-XML-Export bleiben regressionsgeprüft
+- sichere Diensttoken-Provisionierung und -rotation für eine zuvor ermittelte Node-RED-Windows-Identität dokumentiert; für einen vollständigen Ablauf vor Benutzeranmeldung muss auch Node-RED als Dienst laufen
+
+### Windows-Build und Qualität
+
+- getrennte PyInstaller-Artefakte für Desktop, Dienst und Öffnen-Client sowie zwei eindeutig benannte Inno-Setup-Installer ergänzt
+- Authenticode-Signierung und nachgelagerte SHA-256-Prüfsummen decken alle drei eigenen EXEs und beide Installer ab; ein veröffentlichtes Bundle-ZIP macht die im Manifest genannten EXE-Pfade prüfbar
+- Windows-Integrationstests prüfen Desktop- und Dienstinstallation, API/PDF/XML, reale KoSIT-Ausführung, SCM/DACLs, Tokenpersistenz, laufende Updates, Deinstallation sowie die Migration vom veröffentlichten Desktopstand v1.3.0
+- Releaseprozess verlangt weiterhin einen signierten Vorab-Probelauf, eine manuelle Windows-11-Abnahme einschließlich echtem Neustart und Dienststart vor Anmeldung sowie ausdrückliche Freigabe vor Tag und öffentlicher Veröffentlichung
+
 ## 1.3.0 – 2026-07-22
 
 ### API und Automatisierung
