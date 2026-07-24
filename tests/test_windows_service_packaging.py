@@ -93,7 +93,7 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     assert "--service-snapshot" not in installer
     assert r"{tmp}\service-metadata" not in installer
     assert "--clear-service-metadata" in installer
-    assert installer.count("ALLOWELEVATEDTESTCONTEXT") == 1
+    assert installer.count("ALLOWELEVATEDTESTCONTEXT") == 2
     assert installer.count("ServiceBelongsToThisInstallation(ServiceObject)") >= 3
     assert "CompareText(String(ServiceObject.State), 'Stopped') <> 0" not in installer
     assert installer.count("ServiceWasRunning := CompareText(ServiceState, 'Running') = 0;") == 4
@@ -242,6 +242,72 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
         < preflight.rindex("--preflight-port")
         < preflight.index("PrepareServiceBundleTransaction")
     )
+
+
+def test_service_configuration_failures_abort_through_the_transactional_install_path() -> None:
+    installer = _read("packaging/windows/service_installer.iss")
+
+    files = installer[installer.index("[Files]") : installer.index("[Icons]")]
+    configured_bundle_entry = (
+        'Source: "{#ProjectRoot}\\THIRD_PARTY.md"; DestDir: "{app}\\service.new"; '
+        "Flags: ignoreversion uninsneveruninstall; AfterInstall: ConfigureInstalledService"
+    )
+    failure_sentinel_entry = (
+        'Source: "{#ProjectRoot}\\LICENSE"; '
+        'DestDir: "{code:PropagateServiceConfigurationFailure}"; '
+        "Flags: ignoreversion; Check: ServiceConfigurationHasFailed"
+    )
+    assert configured_bundle_entry in files
+    assert failure_sentinel_entry in files
+    assert files.index(configured_bundle_entry) < files.index(failure_sentinel_entry)
+
+    record_failure = installer[
+        installer.index("procedure RecordServiceConfigurationFailure") : installer.index(
+            "function ServiceConfigurationHasFailed"
+        )
+    ]
+    assert "ServiceConfigurationFailed := True;" in record_failure
+    assert "ServiceConfigurationFailureReason := Reason;" in record_failure
+    assert "Dienstkonfiguration wurde nicht vollständig abgeschlossen" in record_failure
+
+    propagate_failure = installer[
+        installer.index("function PropagateServiceConfigurationFailure") : installer.index(
+            "#ifdef AllowElevatedMigrationTestContext",
+            installer.index("function PropagateServiceConfigurationFailure"),
+        )
+    ]
+    assert "SuppressibleMsgBox(" in propagate_failure
+    assert "ServiceConfigurationFailureReason" in propagate_failure
+    assert "finally" in propagate_failure
+    assert "Abort;" in propagate_failure
+    assert "RaiseException(" not in propagate_failure
+
+    test_fault_start = installer.index(
+        "#ifdef AllowElevatedMigrationTestContext",
+        installer.index("procedure RecordServiceConfigurationFailure"),
+    )
+    test_fault = installer[test_fault_start : installer.index("#endif", test_fault_start)]
+    assert "{param:ALLOWELEVATEDTESTCONTEXT|0}" in test_fault
+    assert "{param:TESTFAILAFTERCONFIG|0}" in test_fault
+
+    configure = installer[
+        installer.index("procedure ConfigureInstalledService") : installer.index("procedure CurStepChanged")
+    ]
+    assert "try" in configure
+    assert "except" in configure
+    assert "RecordServiceConfigurationFailure(GetExceptionMessage);" in configure
+    injected_failure = configure.index("Absichtlich ausgelöster transaktionaler Installationstest.")
+    assert configure.rindex("RecordServiceConfigurationFailure(", 0, injected_failure) < injected_failure
+    assert injected_failure < configure.index("Exit;", injected_failure)
+    assert configure.index("Exit;", injected_failure) < configure.index("Sc('start")
+    assert "RaiseException('Absichtlich ausgelöster transaktionaler Installationstest.')" not in installer
+
+    custom_exit = installer[
+        installer.index("function GetCustomSetupExitCode") : installer.index("procedure DeinitializeSetup")
+    ]
+    assert "Result := 0;" in custom_exit
+    assert "if ServicePrepared and not InstallSucceeded then" in custom_exit
+    assert "Result := 4;" in custom_exit
 
 
 def test_service_installer_serializes_setup_and_uninstall_mutations() -> None:

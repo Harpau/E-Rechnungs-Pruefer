@@ -59,6 +59,7 @@ Source: "{#ServiceSourceDir}\*"; DestDir: "{app}\service.new"; Flags: ignorevers
 Source: "{#OpenClientFile}"; DestDir: "{app}\service.new"; Flags: ignoreversion uninsneveruninstall
 Source: "{#ProjectRoot}\LICENSE"; DestDir: "{app}\service.new"; Flags: ignoreversion uninsneveruninstall
 Source: "{#ProjectRoot}\THIRD_PARTY.md"; DestDir: "{app}\service.new"; Flags: ignoreversion uninsneveruninstall; AfterInstall: ConfigureInstalledService
+Source: "{#ProjectRoot}\LICENSE"; DestDir: "{code:PropagateServiceConfigurationFailure}"; Flags: ignoreversion; Check: ServiceConfigurationHasFailed
 
 [Icons]
 Name: "{group}\E-Rechnungs-Prüfer öffnen"; Filename: "{app}\service\{#OpenClientExeName}"; WorkingDir: "{app}\service"
@@ -122,6 +123,8 @@ var
   InitialWizardActivationTimer: UINT_PTR;
   InitialWizardFallbackTopMost: Boolean;
   InitialWizardFallbackCleanupTimer: UINT_PTR;
+  ServiceConfigurationFailed: Boolean;
+  ServiceConfigurationFailureReason: String;
 
 function CreateMutexW(
   SecurityAttributes: Integer; InitialOwner: BOOL; Name: String): Cardinal;
@@ -1466,83 +1469,134 @@ begin
   ServicePrepared := True;
 end;
 
+{ Inno Setup catches ordinary exceptions from AfterInstall callbacks. Preserve
+  the failure here and let the immediately following [Files] entry enter the
+  transactional ProcessFileEntry path. }
+procedure RecordServiceConfigurationFailure(Reason: String);
+begin
+  ServiceConfigurationFailed := True;
+  ServiceConfigurationFailureReason := Reason;
+  if ServiceConfigurationFailureReason = '' then
+    ServiceConfigurationFailureReason :=
+      'Die Dienstkonfiguration wurde nicht vollständig abgeschlossen.';
+  Log('Dienstkonfiguration fehlgeschlagen: ' + ServiceConfigurationFailureReason);
+end;
+
+function ServiceConfigurationHasFailed: Boolean;
+begin
+  Result := ServiceConfigurationFailed;
+end;
+
+function PropagateServiceConfigurationFailure(Param: String): String;
+begin
+  Result := '';
+  try
+    Log('Dienstkonfigurationsfehler wird an den transaktionalen Installationspfad weitergegeben.');
+    SuppressibleMsgBox(
+      ServiceConfigurationFailureReason, mbCriticalError, MB_OK, IDOK);
+  finally
+    { ProcessFileEntry always rethrows EAbort, so an interactive installation
+      cannot continue through Retry/Ignore after a configuration failure. }
+    Abort;
+  end;
+end;
+
+#ifdef AllowElevatedMigrationTestContext
+function TransactionalInstallFailureTestRequested: Boolean;
+begin
+  Result :=
+    (CompareText(ExpandConstant('{param:ALLOWELEVATEDTESTCONTEXT|0}'), '1') = 0) and
+    (CompareText(ExpandConstant('{param:TESTFAILAFTERCONFIG|0}'), '1') = 0);
+end;
+#endif
+
 procedure ConfigureInstalledService;
 var
   ServiceExe: String;
   InitializeParameters: String;
 begin
-  ActivateStagedServiceBundle;
-  ServiceExe := ExpandConstant('{app}\service\{#ServiceExeName}');
-  if not ServiceExistedBefore then
-  begin
+  try
+    ActivateStagedServiceBundle;
+    ServiceExe := ExpandConstant('{app}\service\{#ServiceExeName}');
+    if not ServiceExistedBefore then
+    begin
+      if not Sc(
+        'create "' + ServiceName + '" binPath= "\"' + ServiceExe + '\"" ' +
+        'start= disabled obj= "NT AUTHORITY\LocalService" DisplayName= "E-Rechnungs-Prüfer Dienst"',
+        'Windows-Dienst anlegen') then
+        RaiseException('Der Windows-Dienst konnte nicht angelegt werden.');
+      ServiceCreatedBySetup := True;
+    end
+    else if not Sc(
+      'config "' + ServiceName + '" binPath= "\"' + ServiceExe + '\"" ' +
+      'obj= "NT AUTHORITY\LocalService"', 'Dienstpfad und Dienstkonto aktualisieren') then
+      RaiseException('Der vorhandene Windows-Dienst konnte nicht aktualisiert werden.');
+
+    if not Sc('sidtype "' + ServiceName + '" unrestricted', 'Dienstspezifischen SID aktivieren') then
+      RaiseException('Der dienstspezifische Windows-SID konnte nicht aktiviert werden.');
     if not Sc(
-      'create "' + ServiceName + '" binPath= "\"' + ServiceExe + '\"" ' +
-      'start= disabled obj= "NT AUTHORITY\LocalService" DisplayName= "E-Rechnungs-Prüfer Dienst"',
-      'Windows-Dienst anlegen') then
-      RaiseException('Der Windows-Dienst konnte nicht angelegt werden.');
-    ServiceCreatedBySetup := True;
-  end
-  else if not Sc(
-    'config "' + ServiceName + '" binPath= "\"' + ServiceExe + '\"" ' +
-    'obj= "NT AUTHORITY\LocalService"', 'Dienstpfad und Dienstkonto aktualisieren') then
-    RaiseException('Der vorhandene Windows-Dienst konnte nicht aktualisiert werden.');
+      'description "' + ServiceName +
+      '" "Lokaler Prüf- und Berichtsdienst für strukturierte elektronische Rechnungen."',
+      'Dienstbeschreibung konfigurieren') then
+      RaiseException('Die Dienstbeschreibung konnte nicht konfiguriert werden.');
 
-  if not Sc('sidtype "' + ServiceName + '" unrestricted', 'Dienstspezifischen SID aktivieren') then
-    RaiseException('Der dienstspezifische Windows-SID konnte nicht aktiviert werden.');
-  if not Sc(
-    'description "' + ServiceName +
-    '" "Lokaler Prüf- und Berichtsdienst für strukturierte elektronische Rechnungen."',
-    'Dienstbeschreibung konfigurieren') then
-    RaiseException('Die Dienstbeschreibung konnte nicht konfiguriert werden.');
+    InitializeParameters := '--initialize';
+    if TokenMigrationPage.Values[0] then
+    begin
+      if not FileExists(ProtectedDesktopTokenFile) then
+        RaiseException('Das ausdrücklich ausgewählte Desktop-Token wurde nicht sicher übertragen.');
+      InitializeParameters := InitializeParameters + ' --import-token "' + ProtectedDesktopTokenFile +
+        '" --consent-token-import';
+    end;
+    if not ExecChecked(ServiceExe, InitializeParameters, 'Maschinenkonfiguration und Token initialisieren') then
+      RaiseException('Maschinenkonfiguration oder Token konnten nicht sicher initialisiert werden.');
+    if not ExecChecked(ServiceExe, '--verify-state', 'ProgramData-DACLs verifizieren') then
+      RaiseException('Die ProgramData-DACLs konnten nicht verifiziert werden.');
+    if not ExecChecked(ServiceExe, '--preflight-port', 'Konfiguration und lokalen Port prüfen') then
+      RaiseException('Die Dienstkonfiguration ist ungültig oder ihr lokaler Port ist bereits belegt.');
 
-  InitializeParameters := '--initialize';
-  if TokenMigrationPage.Values[0] then
-  begin
-    if not FileExists(ProtectedDesktopTokenFile) then
-      RaiseException('Das ausdrücklich ausgewählte Desktop-Token wurde nicht sicher übertragen.');
-    InitializeParameters := InitializeParameters + ' --import-token "' + ProtectedDesktopTokenFile +
-      '" --consent-token-import';
-  end;
-  if not ExecChecked(ServiceExe, InitializeParameters, 'Maschinenkonfiguration und Token initialisieren') then
-    RaiseException('Maschinenkonfiguration oder Token konnten nicht sicher initialisiert werden.');
-  if not ExecChecked(ServiceExe, '--verify-state', 'ProgramData-DACLs verifizieren') then
-    RaiseException('Die ProgramData-DACLs konnten nicht verifiziert werden.');
-  if not ExecChecked(ServiceExe, '--preflight-port', 'Konfiguration und lokalen Port prüfen') then
-    RaiseException('Die Dienstkonfiguration ist ungültig oder ihr lokaler Port ist bereits belegt.');
+    if not Sc(
+      'failure "' + ServiceName + '" reset= 86400 actions= restart/60000/restart/300000/""/0',
+      'Dienstwiederherstellung konfigurieren') then
+      RaiseException('Die Dienstwiederherstellung konnte nicht konfiguriert werden.');
+    if not Sc('failureflag "' + ServiceName + '" 1', 'Dienstfehleraktionen aktivieren') then
+      RaiseException('Die Dienstfehleraktionen konnten nicht aktiviert werden.');
 
-  if not Sc(
-    'failure "' + ServiceName + '" reset= 86400 actions= restart/60000/restart/300000/""/0',
-    'Dienstwiederherstellung konfigurieren') then
-    RaiseException('Die Dienstwiederherstellung konnte nicht konfiguriert werden.');
-  if not Sc('failureflag "' + ServiceName + '" 1', 'Dienstfehleraktionen aktivieren') then
-    RaiseException('Die Dienstfehleraktionen konnten nicht aktiviert werden.');
+    if WizardIsTaskSelected('systemstart') then
+    begin
+      if not Sc('config "' + ServiceName + '" start= delayed-auto', 'Verzögerten Systemstart aktivieren') then
+        RaiseException('Der verzögerte Systemstart konnte nicht aktiviert werden.');
+    end
+    else
+    begin
+      if not Sc('config "' + ServiceName + '" start= demand', 'Manuellen Dienststart aktivieren') then
+        RaiseException('Der manuelle Dienststart konnte nicht aktiviert werden.');
+      if not ExecChecked(
+        InternalOpenClient,
+        '--disable-service-delayed-start --expected-service-exe "' + ServiceExe + '"',
+        'Verzögerten Dienststart über den SCM deaktivieren') then
+        RaiseException('Der verzögerte Dienststart konnte nicht über den SCM deaktiviert werden.');
+    end;
 
-  if WizardIsTaskSelected('systemstart') then
-  begin
-    if not Sc('config "' + ServiceName + '" start= delayed-auto', 'Verzögerten Systemstart aktivieren') then
-      RaiseException('Der verzögerte Systemstart konnte nicht aktiviert werden.');
-  end
-  else
-  begin
-    if not Sc('config "' + ServiceName + '" start= demand', 'Manuellen Dienststart aktivieren') then
-      RaiseException('Der manuelle Dienststart konnte nicht aktiviert werden.');
-    if not ExecChecked(
-      InternalOpenClient,
-      '--disable-service-delayed-start --expected-service-exe "' + ServiceExe + '"',
-      'Verzögerten Dienststart über den SCM deaktivieren') then
-      RaiseException('Der verzögerte Dienststart konnte nicht über den SCM deaktiviert werden.');
-  end;
+    #ifdef AllowElevatedMigrationTestContext
+    if TransactionalInstallFailureTestRequested then
+    begin
+      RecordServiceConfigurationFailure(
+        'Absichtlich ausgelöster transaktionaler Installationstest.');
+      Exit;
+    end;
+    #endif
 
-  if CompareText(ExpandConstant('{param:TESTFAILAFTERCONFIG|0}'), '1') = 0 then
-    RaiseException('Absichtlich ausgelöster transaktionaler Installationstest.');
-
-  if (not ServiceExistedBefore) or ServiceWasRunning then
-  begin
-    if not Sc('start "' + ServiceName + '"', 'Dienst starten') or
-       not WaitForServiceState('Running', ServiceWaitMilliseconds) then
-      RaiseException('Der installierte Dienst wurde nicht betriebsbereit.');
-    if not ExecChecked(ServiceExe, '--health-check', 'Loopback-Healthcheck des Dienstes prüfen') then
-      RaiseException('Der Dienst meldet trotz SCM-Start keine betriebsbereite lokale API.');
+    if (not ServiceExistedBefore) or ServiceWasRunning then
+    begin
+      if not Sc('start "' + ServiceName + '"', 'Dienst starten') or
+         not WaitForServiceState('Running', ServiceWaitMilliseconds) then
+        RaiseException('Der installierte Dienst wurde nicht betriebsbereit.');
+      if not ExecChecked(ServiceExe, '--health-check', 'Loopback-Healthcheck des Dienstes prüfen') then
+        RaiseException('Der Dienst meldet trotz SCM-Start keine betriebsbereite lokale API.');
+    end;
+  except
+    RecordServiceConfigurationFailure(GetExceptionMessage);
   end;
 end;
 
@@ -1720,6 +1774,15 @@ begin
     WizardForm.OnActivate := @InitialWizardActivated;
     WizardForm.OnShow := @ScheduleInitialWizardActivation;
   end;
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  Result := 0;
+  { CurStepChanged exceptions are reported but do not replace Inno's success
+    exit code. Make every prepared but unfinished transaction non-successful. }
+  if ServicePrepared and not InstallSucceeded then
+    Result := 4;
 end;
 
 procedure DeinitializeSetup;

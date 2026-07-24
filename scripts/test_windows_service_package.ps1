@@ -127,7 +127,12 @@ function Invoke-ServiceInstallerExpectedFailure {
         throw "Der absichtlich fehlschlagende Dienst-Installer überschritt das Zeitlimit."
     }
     if ($Process.ExitCode -eq 0) {
-        throw "Der erwartete Installer-Fehler wurde nicht ausgelöst: $ExpectedLogReason"
+        $LogTail = if (Test-Path -LiteralPath $LogPath) {
+            (Get-Content -LiteralPath $LogPath -Tail 80) -join "`n"
+        } else {
+            "Kein Inno-Setup-Log vorhanden: $LogPath"
+        }
+        throw "Der erwartete Installer-Fehler wurde nicht ausgelöst: $ExpectedLogReason`n$LogTail"
     }
     if (-not (Test-Path -LiteralPath $LogPath)) {
         throw "Der fehlgeschlagene Dienst-Installer erzeugte keinen Inno-Setup-Log: $LogPath"
