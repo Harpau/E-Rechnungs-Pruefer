@@ -86,7 +86,12 @@ function Invoke-ServiceInstaller {
         throw "Der Dienst-Installer überschritt das Zeitlimit."
     }
     if ($Process.ExitCode -ne 0) {
-        throw "Der Dienst-Installer schlug mit Exitcode $($Process.ExitCode) fehl."
+        $LogTail = if (Test-Path -LiteralPath $LogPath) {
+            (Get-Content -LiteralPath $LogPath -Tail 80) -join "`n"
+        } else {
+            "Der angeforderte Inno-Setup-Log wurde nicht erzeugt: $LogPath"
+        }
+        throw "Der Dienst-Installer schlug mit Exitcode $($Process.ExitCode) fehl.`n$LogTail"
     }
 }
 
