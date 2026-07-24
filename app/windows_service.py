@@ -424,8 +424,11 @@ def _manage_service(options: argparse.Namespace) -> None:
     paths = ServicePaths.from_environment()
     if options.import_token is not None and not options.consent_token_import:
         raise RuntimeError("Die Tokenübernahme benötigt eine ausdrückliche Zustimmung.")
-    acl = WindowsServiceAcl(administrative=True)
-    acl.verify_existing_service_paths(paths)
+    acl = WindowsServiceAcl(administrative=not options.verify_state)
+    if options.verify_state:
+        acl.repair_explorer_directory_aces(paths)
+    else:
+        acl.verify_existing_service_paths(paths)
     stopped_required = bool(options.initialize or options.rotate_token or options.preflight_port)
     if stopped_required and not _service_is_stopped():
         raise RuntimeError("Dieser Verwaltungsbefehl ist nur bei gestopptem Dienst zulässig.")

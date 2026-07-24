@@ -631,6 +631,9 @@ def test_service_management_commands(
 
     windows_service._manage_service(options)
 
+    windows_service.WindowsServiceAcl.assert_called_once_with(  # type: ignore[attr-defined]
+        administrative=not options.verify_state
+    )
     method = getattr(store, expected_method)
     if expected_method == "import_value":
         method.assert_called_once_with(*expected_arguments, consent=True)
@@ -640,8 +643,12 @@ def test_service_management_commands(
     if options.grant_token_read:
         acl.grant_token_reader.assert_called_once_with(paths.token, options.grant_token_read)
     if options.verify_state:
+        acl.repair_explorer_directory_aces.assert_called_once_with(paths)
         acl.verify_service_paths.assert_called_once_with(paths)
-    acl.verify_existing_service_paths.assert_called_once_with(paths)
+        acl.verify_existing_service_paths.assert_not_called()
+    else:
+        acl.repair_explorer_directory_aces.assert_not_called()
+        acl.verify_existing_service_paths.assert_called_once_with(paths)
     if options.initialize:
         windows_service.load_or_create_configuration.assert_called_once_with(  # type: ignore[attr-defined]
             paths.configuration,
@@ -651,6 +658,43 @@ def test_service_management_commands(
     else:
         windows_service.load_service_configuration.assert_called_once_with(paths.configuration)  # type: ignore[attr-defined]
         windows_service.load_or_create_configuration.assert_not_called()  # type: ignore[attr-defined]
+
+
+def test_verify_state_repairs_supported_directory_aces_before_reading_machine_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, acl, store, _factory, _configuration = _mock_management_dependencies(monkeypatch, tmp_path)
+    operations = Mock()
+    operations.attach_mock(acl.repair_explorer_directory_aces, "repair")
+    operations.attach_mock(windows_service.load_service_configuration, "load_configuration")
+    operations.attach_mock(store.load, "load_token")
+    operations.attach_mock(acl.verify_service_paths, "verify")
+
+    windows_service._manage_service(_management_options(verify_state=True))
+
+    assert operations.mock_calls == [
+        call.repair(paths),
+        call.load_configuration(paths.configuration),
+        call.load_token(),
+        call.verify(paths),
+    ]
+    acl.verify_existing_service_paths.assert_not_called()
+
+
+def test_verify_state_never_reads_machine_content_after_failed_directory_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, acl, store, _factory, _configuration = _mock_management_dependencies(monkeypatch, tmp_path)
+    acl.repair_explorer_directory_aces.side_effect = RuntimeError("unsicherer Explorer-ACE")
+
+    with pytest.raises(RuntimeError, match="unsicherer Explorer-ACE"):
+        windows_service._manage_service(_management_options(verify_state=True))
+
+    windows_service.load_service_configuration.assert_not_called()  # type: ignore[attr-defined]
+    store.load.assert_not_called()
+    acl.verify_service_paths.assert_not_called()
 
 
 @pytest.mark.parametrize(
