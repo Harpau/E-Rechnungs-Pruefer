@@ -24,9 +24,17 @@ from .desktop_security import (
     API_TOKEN_ENV,
     DESKTOP_PORT_ENV,
     DESKTOP_TOKEN_ENV,
+    SERVICE_MODE_ENV,
     desktop_bootstrap_url,
     validate_api_token,
 )
+from .server_runtime import (
+    DIRECT_HTTP_OPENER,
+    LoopbackServer,
+    health_is_ready,
+    reserve_loopback_socket,
+)
+from .windows_sync import BackendMutex, create_backend_mutex
 
 APP_DIRECTORY_NAME = "E-Rechnungs-Pruefer"
 RUNTIME_FILE_NAME = "runtime.json"
@@ -41,7 +49,8 @@ WAIT_FAILED = 0xFFFFFFFF
 SHUTDOWN_EVENT_POLL_MILLISECONDS = 250
 SERVER_READY_TIMEOUT_SECONDS = 20.0
 NO_DIALOG_ENV = "EINVOICE_DESKTOP_NO_DIALOG"
-_DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+KOSIT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+_DIRECT_HTTP_OPENER: urllib.request.OpenerDirector = DIRECT_HTTP_OPENER
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,25 +186,11 @@ def _read_runtime_record(path: Path) -> RuntimeRecord | None:
 
 
 def _reserve_loopback_socket(port: int) -> tuple[socket.socket, int]:
-    if not 1 <= port <= 65535:
-        raise ValueError("Der lokale API-Port muss zwischen 1 und 65535 liegen.")
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        listener.bind(("127.0.0.1", port))
-        listener.setblocking(False)
-        port = int(listener.getsockname()[1])
-        return listener, port
-    except Exception:
-        listener.close()
-        raise
+    return reserve_loopback_socket(port)
 
 
 def _health_is_ready(port: int, timeout: float = 0.5) -> bool:
-    try:
-        with _DIRECT_HTTP_OPENER.open(f"http://127.0.0.1:{port}/api/health", timeout=timeout) as response:
-            return response.status == 200
-    except (OSError, urllib.error.URLError):
-        return False
+    return health_is_ready(port, timeout=timeout)
 
 
 def _open_existing_instance(path: Path, timeout: float = 5.0) -> bool:
@@ -221,6 +216,22 @@ def _create_windows_mutex() -> WindowsMutex:
         handle=int(handle),
         already_exists=last_error == ERROR_ALREADY_EXISTS,
     )
+
+
+def _create_backend_mutex() -> BackendMutex:
+    return create_backend_mutex()
+
+
+def _allow_kosit_processes() -> None:
+    from .validators.kosit import allow_kosit_process_starts
+
+    allow_kosit_process_starts()
+
+
+def _cancel_kosit_processes(timeout: float) -> int:
+    from .validators.kosit import cancel_running_kosit_processes
+
+    return cancel_running_kosit_processes(timeout)
 
 
 def _create_windows_shutdown_event() -> WindowsShutdownEvent:
@@ -249,33 +260,26 @@ class DesktopServer:
         self.listener, self.port = _reserve_loopback_socket(_configured_port())
         self.token = secrets.token_urlsafe(32)
         self.api_token = api_token
+        self._runtime = LoopbackServer(
+            port=self.port,
+            environment={
+                DESKTOP_TOKEN_ENV: self.token,
+                DESKTOP_PORT_ENV: str(self.port),
+                API_TOKEN_ENV: self.api_token,
+            },
+            socket_reserver=lambda _port: (self.listener, self.port),
+            health_probe=_health_is_ready,
+            config_factory=uvicorn.Config,
+            server_factory=uvicorn.Server,
+            daemon_thread=True,
+        )
         self.server: uvicorn.Server | None = None
         self.thread: Thread | None = None
 
     def start(self) -> None:
-        os.environ[DESKTOP_TOKEN_ENV] = self.token
-        os.environ[DESKTOP_PORT_ENV] = str(self.port)
-        os.environ[API_TOKEN_ENV] = self.api_token
-
-        # Import only after the environment has activated the desktop middleware.
-        from .main import app
-
-        config = uvicorn.Config(
-            app,
-            host="127.0.0.1",
-            port=self.port,
-            access_log=False,
-            log_config=None,
-            log_level="warning",
-        )
-        self.server = uvicorn.Server(config)
-        self.thread = Thread(
-            target=self.server.run,
-            kwargs={"sockets": [self.listener]},
-            name="E-Rechnungs-Pruefer-Webserver",
-        )
-        self.thread.start()
-        self._wait_until_ready()
+        self._runtime.start()
+        self.server = self._runtime.server
+        self.thread = self._runtime.thread
         _write_runtime_record(
             self.runtime_file,
             RuntimeRecord(pid=os.getpid(), port=self.port, token=self.token),
@@ -295,23 +299,30 @@ class DesktopServer:
         return webbrowser.open(desktop_bootstrap_url(self.port, self.token))
 
     def wait(self) -> None:
-        if self.thread is not None:
-            self.thread.join()
+        self._runtime.wait()
 
     def request_stop(self) -> None:
-        if self.server is not None:
+        if hasattr(self, "_runtime"):
+            self._runtime.request_stop()
+        elif self.server is not None:
             self.server.should_exit = True
 
     def stop(self) -> None:
-        self.request_stop()
-        if self.thread is not None and self.thread.is_alive():
-            self.thread.join(timeout=10)
-        if self.thread is not None and self.thread.is_alive():
-            raise RuntimeError("Der lokale Webserver konnte nicht innerhalb von 10 Sekunden beendet werden.")
-        self.listener.close()
-        record = _read_runtime_record(self.runtime_file)
-        if record is not None and record.token == self.token:
-            self.runtime_file.unlink(missing_ok=True)
+        try:
+            if hasattr(self, "_runtime"):
+                self._runtime.stop(timeout=10)
+            else:
+                self.request_stop()
+                if self.thread is not None and self.thread.is_alive():
+                    self.thread.join(timeout=10)
+                if self.thread is not None and self.thread.is_alive():
+                    raise RuntimeError("Der lokale Webserver konnte nicht innerhalb von 10 Sekunden beendet werden.")
+                self.listener.close()
+        finally:
+            if hasattr(self, "runtime_file") and hasattr(self, "token"):
+                record = _read_runtime_record(self.runtime_file)
+                if record is not None and record.token == self.token:
+                    self.runtime_file.unlink(missing_ok=True)
 
 
 def _tray_image() -> Any:
@@ -386,16 +397,19 @@ def _watch_for_shutdown(
             return
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     options = _parse_arguments(sys.argv[1:] if argv is None else argv)
     if sys.platform != "win32":
         raise SystemExit("Der Desktop-Launcher ist ausschließlich für Windows vorgesehen.")
 
     mutex: WindowsMutex | None = None
+    backend_mutex: BackendMutex | None = None
     shutdown_event: WindowsShutdownEvent | None = None
     shutdown_watcher: Thread | None = None
     shutdown_watcher_stop = Event()
     server: DesktopServer | None = None
+    exit_code = 0
+    primary_error: Exception | None = None
     startup_error_file = _startup_error_file()
     try:
         startup_error_file.unlink(missing_ok=True)
@@ -404,7 +418,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         if mutex.already_exists:
             if not options.background and not _open_existing_instance(runtime_file):
                 _show_windows_message("Die Anwendung läuft bereits, konnte aber nicht geöffnet werden.", error=True)
-            return
+                exit_code = 1
+            return exit_code
+
+        backend_mutex = _create_backend_mutex()
+        if backend_mutex.already_exists:
+            raise RuntimeError(
+                "Eine andere Betriebsart des E-Rechnungs-Prüfers läuft bereits. "
+                "Desktop-App und Windows-Dienst dürfen nicht gleichzeitig gestartet werden."
+            )
 
         # Create the manual-reset event before starting the server. A shutdown
         # request received during startup therefore remains signalled until the
@@ -412,6 +434,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         shutdown_event = _create_windows_shutdown_event()
         runtime_file.unlink(missing_ok=True)
         api_token = _load_or_create_api_token(_api_token_file())
+        # The desktop executable owns this process environment. Never let an
+        # inherited service-mode flag alter middleware or capture later browser
+        # children in the service-only KoSIT Job Object.
+        os.environ.pop(SERVICE_MODE_ENV, None)
+        _allow_kosit_processes()
         server = DesktopServer(runtime_file, api_token)
         server.start()
         shutdown_watcher = Thread(
@@ -423,6 +450,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         shutdown_watcher.start()
         _run_tray(server, open_browser_on_start=not options.background)
     except Exception as exc:
+        primary_error = exc
+        exit_code = 1
         try:
             _write_startup_error(startup_error_file, exc)
         except OSError:
@@ -430,16 +459,54 @@ def main(argv: Sequence[str] | None = None) -> None:
         if not os.getenv(NO_DIALOG_ENV):
             _show_windows_message(f"Die Anwendung konnte nicht gestartet werden:\n\n{exc}", error=True)
     finally:
+        cleanup_error: Exception | None = None
         shutdown_watcher_stop.set()
         if shutdown_watcher is not None:
-            shutdown_watcher.join(timeout=2)
+            try:
+                shutdown_watcher.join(timeout=2)
+            except Exception as exc:
+                cleanup_error = exc
         if server is not None:
-            server.stop()
-        if shutdown_event is not None and (shutdown_watcher is None or not shutdown_watcher.is_alive()):
-            shutdown_event.close()
+            try:
+                _cancel_kosit_processes(KOSIT_SHUTDOWN_TIMEOUT_SECONDS)
+            except Exception as exc:
+                cleanup_error = cleanup_error or exc
+            try:
+                server.stop()
+            except Exception as exc:
+                cleanup_error = cleanup_error or exc
+        try:
+            if shutdown_event is not None and (shutdown_watcher is None or not shutdown_watcher.is_alive()):
+                shutdown_event.close()
+        except Exception as exc:
+            cleanup_error = cleanup_error or exc
+        if backend_mutex is not None:
+            try:
+                backend_mutex.close()
+            except Exception as exc:
+                cleanup_error = cleanup_error or exc
         if mutex is not None:
-            mutex.close()
+            try:
+                mutex.close()
+            except Exception as exc:
+                cleanup_error = cleanup_error or exc
+        if cleanup_error is not None:
+            exit_code = 1
+            if primary_error is None:
+                try:
+                    _write_startup_error(startup_error_file, cleanup_error)
+                except OSError:
+                    pass
+                if not os.getenv(NO_DIALOG_ENV):
+                    try:
+                        _show_windows_message(
+                            f"Die Anwendung konnte nicht vollständig beendet werden:\n\n{cleanup_error}",
+                            error=True,
+                        )
+                    except OSError:
+                        pass
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

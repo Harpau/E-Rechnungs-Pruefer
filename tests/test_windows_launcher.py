@@ -481,13 +481,16 @@ def test_background_start_does_not_open_existing_windows_instance(
 
 def test_main_starts_and_stops_first_windows_instance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     mutex = SimpleNamespace(already_exists=False, close=Mock())
+    backend_mutex = SimpleNamespace(already_exists=False, close=Mock())
     shutdown_event = Mock()
     shutdown_event.wait.return_value = True
     server = Mock()
     runtime_file = tmp_path / "runtime.json"
     runtime_file.write_text("alt", encoding="utf-8")
     monkeypatch.setattr(windows_launcher.sys, "platform", "win32")
+    monkeypatch.setenv(windows_launcher.SERVICE_MODE_ENV, "1")
     monkeypatch.setattr(windows_launcher, "_create_windows_mutex", Mock(return_value=mutex))
+    monkeypatch.setattr(windows_launcher, "_create_backend_mutex", Mock(return_value=backend_mutex))
     monkeypatch.setattr(windows_launcher, "_create_windows_shutdown_event", Mock(return_value=shutdown_event))
     monkeypatch.setattr(windows_launcher, "_runtime_file", lambda: runtime_file)
     monkeypatch.setattr(windows_launcher, "_api_token_file", lambda: tmp_path / "api-token.txt")
@@ -500,22 +503,26 @@ def test_main_starts_and_stops_first_windows_instance(tmp_path: Path, monkeypatc
 
     windows_launcher.main([])
 
+    assert windows_launcher.SERVICE_MODE_ENV not in os.environ
     server_factory.assert_called_once_with(runtime_file, "a" * 32)
     server.start.assert_called_once_with()
     run_tray.assert_called_once_with(server, open_browser_on_start=True)
     server.stop.assert_called_once_with()
     shutdown_event.close.assert_called_once_with()
+    backend_mutex.close.assert_called_once_with()
     mutex.close.assert_called_once_with()
 
 
 def test_main_starts_first_windows_instance_in_background(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     mutex = SimpleNamespace(already_exists=False, close=Mock())
+    backend_mutex = SimpleNamespace(already_exists=False, close=Mock())
     shutdown_event = Mock()
     shutdown_event.wait.return_value = True
     server = Mock()
     runtime_file = tmp_path / "runtime.json"
     monkeypatch.setattr(windows_launcher.sys, "platform", "win32")
     monkeypatch.setattr(windows_launcher, "_create_windows_mutex", Mock(return_value=mutex))
+    monkeypatch.setattr(windows_launcher, "_create_backend_mutex", Mock(return_value=backend_mutex))
     monkeypatch.setattr(windows_launcher, "_create_windows_shutdown_event", Mock(return_value=shutdown_event))
     monkeypatch.setattr(windows_launcher, "_runtime_file", lambda: runtime_file)
     monkeypatch.setattr(windows_launcher, "_api_token_file", lambda: tmp_path / "api-token.txt")
@@ -531,6 +538,78 @@ def test_main_starts_first_windows_instance_in_background(tmp_path: Path, monkey
     run_tray.assert_called_once_with(server, open_browser_on_start=False)
     server.stop.assert_called_once_with()
     shutdown_event.close.assert_called_once_with()
+    backend_mutex.close.assert_called_once_with()
+    mutex.close.assert_called_once_with()
+
+
+def test_main_releases_all_handles_when_server_stop_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mutex = SimpleNamespace(already_exists=False, close=Mock())
+    backend_mutex = SimpleNamespace(already_exists=False, close=Mock())
+    shutdown_event = Mock()
+    shutdown_event.wait.return_value = True
+    server = Mock()
+    server.stop.side_effect = RuntimeError("Webserver hängt")
+    startup_error_file = tmp_path / "startup-error.log"
+    monkeypatch.setattr(windows_launcher.sys, "platform", "win32")
+    monkeypatch.setenv(windows_launcher.NO_DIALOG_ENV, "1")
+    monkeypatch.setattr(windows_launcher, "_create_windows_mutex", Mock(return_value=mutex))
+    monkeypatch.setattr(windows_launcher, "_create_backend_mutex", Mock(return_value=backend_mutex))
+    monkeypatch.setattr(windows_launcher, "_create_windows_shutdown_event", Mock(return_value=shutdown_event))
+    monkeypatch.setattr(windows_launcher, "_runtime_file", lambda: tmp_path / "runtime.json")
+    monkeypatch.setattr(windows_launcher, "_api_token_file", lambda: tmp_path / "api-token.txt")
+    monkeypatch.setattr(windows_launcher, "_load_or_create_api_token", Mock(return_value="a" * 32))
+    monkeypatch.setattr(windows_launcher, "_startup_error_file", lambda: startup_error_file)
+    monkeypatch.setattr(windows_launcher, "_allow_kosit_processes", Mock())
+    cancel_kosit = Mock(return_value=1)
+    monkeypatch.setattr(windows_launcher, "_cancel_kosit_processes", cancel_kosit)
+    monkeypatch.setattr(windows_launcher, "DesktopServer", Mock(return_value=server))
+    monkeypatch.setattr(windows_launcher, "_run_tray", Mock())
+
+    assert windows_launcher.main([]) == 1
+
+    cancel_kosit.assert_called_once_with(windows_launcher.KOSIT_SHUTDOWN_TIMEOUT_SECONDS)
+    server.stop.assert_called_once_with()
+    shutdown_event.close.assert_called_once_with()
+    backend_mutex.close.assert_called_once_with()
+    mutex.close.assert_called_once_with()
+    assert "RuntimeError: Webserver hängt" in startup_error_file.read_text(encoding="utf-8")
+
+
+def test_main_stops_server_and_releases_handles_when_kosit_cancellation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mutex = SimpleNamespace(already_exists=False, close=Mock())
+    backend_mutex = SimpleNamespace(already_exists=False, close=Mock())
+    shutdown_event = Mock()
+    shutdown_event.wait.return_value = True
+    server = Mock()
+    monkeypatch.setattr(windows_launcher.sys, "platform", "win32")
+    monkeypatch.setenv(windows_launcher.NO_DIALOG_ENV, "1")
+    monkeypatch.setattr(windows_launcher, "_create_windows_mutex", Mock(return_value=mutex))
+    monkeypatch.setattr(windows_launcher, "_create_backend_mutex", Mock(return_value=backend_mutex))
+    monkeypatch.setattr(windows_launcher, "_create_windows_shutdown_event", Mock(return_value=shutdown_event))
+    monkeypatch.setattr(windows_launcher, "_runtime_file", lambda: tmp_path / "runtime.json")
+    monkeypatch.setattr(windows_launcher, "_api_token_file", lambda: tmp_path / "api-token.txt")
+    monkeypatch.setattr(windows_launcher, "_load_or_create_api_token", Mock(return_value="a" * 32))
+    monkeypatch.setattr(windows_launcher, "_startup_error_file", lambda: tmp_path / "startup-error.log")
+    monkeypatch.setattr(windows_launcher, "_allow_kosit_processes", Mock())
+    monkeypatch.setattr(
+        windows_launcher,
+        "_cancel_kosit_processes",
+        Mock(side_effect=RuntimeError("KoSIT-Abbruch hängt")),
+    )
+    monkeypatch.setattr(windows_launcher, "DesktopServer", Mock(return_value=server))
+    monkeypatch.setattr(windows_launcher, "_run_tray", Mock())
+
+    assert windows_launcher.main([]) == 1
+
+    server.stop.assert_called_once_with()
+    shutdown_event.close.assert_called_once_with()
+    backend_mutex.close.assert_called_once_with()
     mutex.close.assert_called_once_with()
 
 
@@ -539,10 +618,12 @@ def test_main_records_settings_load_error_after_windows_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mutex = SimpleNamespace(already_exists=False, close=Mock())
+    backend_mutex = SimpleNamespace(already_exists=False, close=Mock())
     shutdown_event = Mock()
     startup_error_file = tmp_path / "startup-error.log"
     monkeypatch.setattr(windows_launcher.sys, "platform", "win32")
     monkeypatch.setattr(windows_launcher, "_create_windows_mutex", Mock(return_value=mutex))
+    monkeypatch.setattr(windows_launcher, "_create_backend_mutex", Mock(return_value=backend_mutex))
     monkeypatch.setattr(windows_launcher, "_create_windows_shutdown_event", Mock(return_value=shutdown_event))
     monkeypatch.setattr(windows_launcher, "_runtime_file", lambda: tmp_path / "runtime.json")
     monkeypatch.setattr(windows_launcher, "_api_token_file", lambda: tmp_path / "api-token.txt")
@@ -560,6 +641,7 @@ def test_main_records_settings_load_error_after_windows_start(
         error=True,
     )
     shutdown_event.close.assert_called_once_with()
+    backend_mutex.close.assert_called_once_with()
     mutex.close.assert_called_once_with()
 
 
@@ -570,13 +652,33 @@ def test_main_reports_windows_start_error(tmp_path: Path, monkeypatch: pytest.Mo
     show_message = Mock()
     monkeypatch.setattr(windows_launcher, "_show_windows_message", show_message)
 
-    windows_launcher.main([])
+    result = windows_launcher.main([])
 
+    assert result == 1
     show_message.assert_called_once_with(
         "Die Anwendung konnte nicht gestartet werden:\n\nkaputt",
         error=True,
     )
     assert "RuntimeError: kaputt" in (tmp_path / "startup-error.log").read_text(encoding="utf-8")
+
+
+def test_main_returns_failure_when_service_owns_global_backend_mutex(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mutex = SimpleNamespace(already_exists=False, close=Mock())
+    backend_mutex = SimpleNamespace(already_exists=True, close=Mock())
+    monkeypatch.setattr(windows_launcher.sys, "platform", "win32")
+    monkeypatch.setenv(windows_launcher.NO_DIALOG_ENV, "1")
+    monkeypatch.setattr(windows_launcher, "_startup_error_file", lambda: tmp_path / "startup-error.log")
+    monkeypatch.setattr(windows_launcher, "_runtime_file", lambda: tmp_path / "runtime.json")
+    monkeypatch.setattr(windows_launcher, "_create_windows_mutex", Mock(return_value=mutex))
+    monkeypatch.setattr(windows_launcher, "_create_backend_mutex", Mock(return_value=backend_mutex))
+
+    assert windows_launcher.main(["--background"]) == 1
+    assert "andere Betriebsart" in (tmp_path / "startup-error.log").read_text(encoding="utf-8")
+    backend_mutex.close.assert_called_once_with()
+    mutex.close.assert_called_once_with()
 
 
 def test_main_rejects_non_windows_platform(monkeypatch: pytest.MonkeyPatch) -> None:

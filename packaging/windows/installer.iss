@@ -78,6 +78,7 @@ Type: dirifempty; Name: "{localappdata}\E-Rechnungs-Pruefer"
 [Code]
 const
   AppMutexName = 'Local\E-Rechnungs-Pruefer-Desktop';
+  BackendMutexName = 'Global\E-Rechnungs-Pruefer-Backend';
   ShutdownEventName = 'Local\E-Rechnungs-Pruefer-Desktop-Shutdown';
   EventModifyState = $0002;
   ShutdownTimeoutMilliseconds = 30000;
@@ -167,6 +168,22 @@ begin
   if ShutdownPrepared then
   begin
     Result := '';
+    Exit;
+  end;
+
+  if RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Services\ERechnungsPrueferService') then
+  begin
+    Result :=
+      'Der systemweite E-Rechnungs-Prüfer-Dienst ist installiert. Desktop- und Dienstmodus sind alternative ' +
+      'Betriebsarten. Deinstallieren Sie den Dienst oder verwenden Sie dessen Öffnen-Client.';
+    Exit;
+  end;
+
+  if CheckForMutexes(BackendMutexName) and not CheckForMutexes(AppMutexName) then
+  begin
+    Result :=
+      'Der E-Rechnungs-Prüfer-Dienst läuft bereits. Desktop- und Dienstmodus dürfen nicht parallel ' +
+      'betrieben werden. Stoppen Sie den Dienst oder verwenden Sie den Dienst-Installer.';
     Exit;
   end;
 
