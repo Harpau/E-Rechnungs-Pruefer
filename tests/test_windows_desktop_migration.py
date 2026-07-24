@@ -2736,6 +2736,39 @@ def test_windows_private_write_flushes_and_removes_partial_file_on_failure(
 
 
 @pytest.mark.parametrize(
+    "error_code",
+    [migration.ERROR_FILE_EXISTS, migration.ERROR_ALREADY_EXISTS],
+)
+def test_windows_private_write_normalizes_existing_file_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_code: int,
+) -> None:
+    target = tmp_path / "token.txt"
+    target.write_bytes(b"sealed")
+    error = OSError(error_code, "CreateFile", "The file exists.")
+    error.winerror = error_code  # type: ignore[attr-defined]
+    win32file = SimpleNamespace(CreateFile=Mock(side_effect=error))
+    win32con = SimpleNamespace(
+        GENERIC_WRITE=1,
+        CREATE_NEW=2,
+        FILE_ATTRIBUTE_TEMPORARY=4,
+    )
+    monkeypatch.setattr(migration.sys, "platform", "win32")
+    monkeypatch.setattr(
+        migration,
+        "_transfer_security_attributes",
+        Mock(return_value=(win32con, win32file, object(), object())),
+    )
+
+    with pytest.raises(FileExistsError) as exc_info:
+        migration._write_private(target, b"overwrite")
+
+    assert exc_info.value.filename == str(target)
+    assert target.read_bytes() == b"sealed"
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         b"not-json",

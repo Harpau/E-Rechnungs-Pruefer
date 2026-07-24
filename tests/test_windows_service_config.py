@@ -157,7 +157,11 @@ def test_token_migration_requires_explicit_consent_and_preserves_target_on_failu
     target = tmp_path / "service" / TOKEN_FILE_NAME
     target.parent.mkdir()
     target.write_text("a" * 43 + "\n", encoding="ascii")
-    store = TokenStore(target)
+    store = TokenStore(
+        target,
+        protect_directory=lambda _candidate: None,
+        protect_file=lambda _candidate: None,
+    )
 
     with pytest.raises(RuntimeError, match="ausdrückliche Zustimmung"):
         store.import_value("m" * 43, consent=False)

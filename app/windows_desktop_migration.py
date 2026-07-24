@@ -42,6 +42,8 @@ EVENT_MODIFY_STATE = 0x0002
 ERROR_FILE_NOT_FOUND = 2
 ERROR_PATH_NOT_FOUND = 3
 ERROR_NO_MORE_FILES = 18
+ERROR_FILE_EXISTS = 80
+ERROR_ALREADY_EXISTS = 183
 ERROR_NO_MORE_ITEMS = 259
 MIGRATION_TIMEOUT_MILLISECONDS = 30_000
 TH32CS_SNAPPROCESS = 0x00000002
@@ -2078,15 +2080,23 @@ def _write_private(path: Path, payload: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform == "win32":
         win32con, win32file, attributes, _descriptor = _transfer_security_attributes()
-        handle = win32file.CreateFile(
-            str(path),
-            win32con.GENERIC_WRITE,
-            0,
-            attributes,
-            win32con.CREATE_NEW,
-            win32con.FILE_ATTRIBUTE_TEMPORARY,
-            None,
-        )
+        try:
+            handle = win32file.CreateFile(
+                str(path),
+                win32con.GENERIC_WRITE,
+                0,
+                attributes,
+                win32con.CREATE_NEW,
+                win32con.FILE_ATTRIBUTE_TEMPORARY,
+                None,
+            )
+        except Exception as exc:
+            error_code = getattr(exc, "winerror", None)
+            if error_code is None and exc.args and isinstance(exc.args[0], int):
+                error_code = exc.args[0]
+            if error_code in {ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS}:
+                raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(path)) from exc
+            raise
         try:
             try:
                 win32file.WriteFile(handle, payload)
@@ -2106,6 +2116,9 @@ def _write_private(path: Path, payload: bytes) -> None:
             os.fsync(handle.fileno())
         path.chmod(0o600)
     except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+            descriptor = -1
         path.unlink(missing_ok=True)
         raise
     finally:

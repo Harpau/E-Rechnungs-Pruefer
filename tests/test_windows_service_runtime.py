@@ -4,6 +4,7 @@ import os
 import sys
 from argparse import Namespace
 from pathlib import Path
+from threading import Event
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, Mock, call
 
@@ -14,6 +15,17 @@ from app.windows_service import ERechnungsPrueferService, WindowsServiceHost
 from app.windows_service_config import ServiceConfiguration
 from app.windows_service_ipc import IpcServerDiagnostic
 from app.windows_sync import BACKEND_MUTEX_NAME, BACKEND_MUTEX_SECURITY_SDDL
+
+
+def _service_adapter_without_scm_registration() -> ERechnungsPrueferService:
+    """Create the thin SCM adapter without registering it with the real SCM."""
+
+    service = object.__new__(ERechnungsPrueferService)
+    service._stop_event = Event()
+    service._host = None
+    service._current_status = "start-pending"
+    service._current_wait_hint = windows_service.START_WAIT_HINT_MILLISECONDS
+    return service
 
 
 def test_loopback_server_applies_environment_before_import_and_never_changes_port(
@@ -180,7 +192,7 @@ def test_service_module_cannot_open_interactive_ui() -> None:
 
 
 def test_scm_adapter_does_not_report_running_before_host_readiness() -> None:
-    service = ERechnungsPrueferService(["test"])
+    service = _service_adapter_without_scm_registration()
     service.SvcDoRun = Mock()  # type: ignore[method-assign]
     service.ReportServiceStatus = Mock()  # type: ignore[method-assign]
 
@@ -191,7 +203,7 @@ def test_scm_adapter_does_not_report_running_before_host_readiness() -> None:
 
 
 def test_scm_shutdown_uses_the_same_orderly_stop_path() -> None:
-    service = ERechnungsPrueferService(["test"])
+    service = _service_adapter_without_scm_registration()
     service.SvcStop = Mock()  # type: ignore[method-assign]
 
     service.SvcShutdown()
@@ -263,7 +275,7 @@ def test_service_logging_acl_postconditions_hold_before_running_status(
     monkeypatch.setattr(windows_service, "WindowsServiceAcl", Mock(return_value=acl))
     monkeypatch.setattr(windows_service, "ensure_service_import_order", Mock())
 
-    service = ERechnungsPrueferService(["test"])
+    service = _service_adapter_without_scm_registration()
     service._report_status = lambda status, wait_hint=None: events.append((status, wait_hint))  # type: ignore[method-assign]
 
     def create_host(status_reporter, _stop_event, **_kwargs):
@@ -512,7 +524,7 @@ def test_scm_status_mapping_and_stop_before_host_exists(monkeypatch: pytest.Monk
         SERVICE_STOPPED=4,
     )
     monkeypatch.setattr(windows_service, "win32service", fake_win32service)
-    service = ERechnungsPrueferService(["test"])
+    service = _service_adapter_without_scm_registration()
     service.ReportServiceStatus = Mock()  # type: ignore[method-assign]
     service._stop_event = Mock()
 
@@ -832,6 +844,7 @@ def test_management_argument_contract_and_windows_entrypoint(monkeypatch: pytest
     with pytest.raises(SystemExit):
         windows_service._parse_management_arguments(["--initialize", "--consent-token-import"])
 
+    monkeypatch.setattr(windows_service.sys, "platform", "linux")
     with pytest.raises(SystemExit, match="ausschließlich für Windows"):
         windows_service.main(["--health-check"])
 
