@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import os
 import sys
 import webbrowser
 from collections.abc import Sequence
 from pathlib import Path
 
+from . import windows_desktop_migration as _desktop_migration
 from .windows_desktop_migration import (
     apply_desktop_migration,
     clear_desktop_migration_seal,
@@ -41,6 +43,39 @@ from .windows_service_preflight import (
     preflight_machine,
     purge_machine_state,
     purge_runtime_state,
+)
+
+_SETUP_DIAGNOSTIC_FILE_NAME = "setup-action-diagnostic-v1.txt"
+_SETUP_DIAGNOSTIC_HEADER = "ERP_SETUP_DIAGNOSTIC_V1"
+_SETUP_DIAGNOSTIC_MAX_BYTES = 256
+_INTERNAL_ACTION_STAGES = (
+    ("prepare_desktop_migration_transfer", "prepare-transfer"),
+    ("clear_desktop_migration_transfer", "clear-transfer"),
+    ("plan_desktop_migration", "plan-migration"),
+    ("seal_desktop_migration", "seal-migration"),
+    ("apply_desktop_migration", "apply-migration"),
+    ("verify_applied_desktop_migration", "verify-applied-migration"),
+    ("verify_desktop_migration_owner", "verify-migration-owner"),
+    ("rollback_desktop_migration", "rollback-migration"),
+    ("commit_desktop_migration", "commit-migration"),
+    ("clear_desktop_migration_seal", "clear-migration-seal"),
+    ("begin_service_transition", "begin-service-transition"),
+    ("mark_service_rollback_complete", "mark-service-rollback"),
+    ("mark_service_committed", "mark-service-committed"),
+    ("prepare_install_reconcile", "prepare-install-reconcile"),
+    ("finish_install_reconcile", "finish-install-reconcile"),
+    ("probe", "probe-service"),
+    ("preflight_machine", "preflight-machine"),
+    ("preflight_port", "preflight-port"),
+    ("snapshot_service_metadata", "snapshot-service-metadata"),
+    ("restore_service_metadata", "restore-service-metadata"),
+    ("clear_service_metadata", "clear-service-metadata"),
+    ("reconcile_service_uninstall", "reconcile-service-uninstall"),
+    ("assert_no_pending_service_uninstall", "assert-no-pending-uninstall"),
+    ("disable_service_delayed_start", "disable-delayed-start"),
+    ("verify_migration_context", "verify-migration-context"),
+    ("purge_runtime_state", "purge-runtime-state"),
+    ("purge_machine_state", "purge-machine-state"),
 )
 
 
@@ -90,6 +125,7 @@ def _parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--expected-service-exe", help=argparse.SUPPRESS)
     parser.add_argument("--target-service-running", choices=("0", "1"), help=argparse.SUPPRESS)
     parser.add_argument("--token-transfer-consent", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--setup-diagnostic", help=argparse.SUPPRESS)
     options = parser.parse_args(argv)
     receipt_action = options.plan_desktop_migration or options.seal_desktop_migration
     if receipt_action and not options.receipt:
@@ -141,6 +177,8 @@ def _parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("--target-service-running ist nur beim Beginn der Diensttransaktion zulässig.")
     if options.token_transfer_consent and not options.begin_service_transition:
         parser.error("--token-transfer-consent ist nur beim Beginn der Diensttransaktion zulässig.")
+    if options.setup_diagnostic and not _is_internal_action(options):
+        parser.error("--setup-diagnostic ist nur für interne Setup-Aktionen zulässig.")
     return options
 
 
@@ -167,36 +205,96 @@ def verify_administrative_context() -> None:
         raise RuntimeError("Die interne Maschinenoperation benötigt Administratorrechte.")
 
 
+def _internal_action_stage(options: argparse.Namespace) -> str | None:
+    for attribute, stage in _INTERNAL_ACTION_STAGES:
+        if getattr(options, attribute):
+            return stage
+    return None
+
+
 def _is_internal_action(options: argparse.Namespace) -> bool:
-    return bool(
-        options.prepare_desktop_migration_transfer
-        or options.clear_desktop_migration_transfer
-        or options.plan_desktop_migration
-        or options.seal_desktop_migration
-        or options.apply_desktop_migration
-        or options.verify_applied_desktop_migration
-        or options.verify_desktop_migration_owner
-        or options.rollback_desktop_migration
-        or options.commit_desktop_migration
-        or options.clear_desktop_migration_seal
-        or options.begin_service_transition
-        or options.mark_service_rollback_complete
-        or options.mark_service_committed
-        or options.prepare_install_reconcile
-        or options.finish_install_reconcile
-        or options.probe
-        or options.preflight_machine
-        or options.preflight_port
-        or options.snapshot_service_metadata
-        or options.restore_service_metadata
-        or options.clear_service_metadata
-        or options.reconcile_service_uninstall
-        or options.assert_no_pending_service_uninstall
-        or options.disable_service_delayed_start
-        or options.verify_migration_context
-        or options.purge_runtime_state
-        or options.purge_machine_state
+    return _internal_action_stage(options) is not None
+
+
+def _validated_setup_diagnostic_path(value: str) -> Path:
+    path = Path(value)
+    root = _desktop_migration._desktop_migration_transfer_root()
+    parent = path.parent
+    if (
+        path.name != _SETUP_DIAGNOSTIC_FILE_NAME
+        or any(part in {".", ".."} for part in path.parts)
+        or not path.is_absolute()
+        or _desktop_migration._transfer_path_key(parent.parent) != _desktop_migration._transfer_path_key(root)
+    ):
+        raise RuntimeError("Das interne Setup-Diagnoseziel liegt nicht am erwarteten Transferpfad.")
+    _desktop_migration._validate_transfer_component(
+        parent.name,
+        description="Das Desktop-Migrationstransferverzeichnis",
     )
+    _desktop_migration._verify_transfer_staging_path(root, directory=True, kind="root")
+    _desktop_migration._verify_transfer_staging_path(parent, directory=True, kind="leaf")
+    if _desktop_migration.validate_machine_path(path, directory=False):
+        raise RuntimeError("Das interne Setup-Diagnoseziel ist bereits vorhanden.")
+    return path
+
+
+def _setup_error_code(exc: BaseException) -> str:
+    if isinstance(exc, PermissionError):
+        return "permission-error"
+    if isinstance(exc, FileExistsError):
+        return "file-exists"
+    if isinstance(exc, FileNotFoundError):
+        return "file-not-found"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, OSError):
+        return "os-error"
+    if isinstance(exc, ValueError):
+        return "value-error"
+    if isinstance(exc, RuntimeError):
+        return "runtime-error"
+    return "internal-error"
+
+
+def _setup_winerror(exc: BaseException) -> int | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        try:
+            value = getattr(current, "winerror", None)
+        except Exception:
+            value = None
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFFFF:
+            return value
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return None
+
+
+def _write_setup_diagnostic(value: str, *, stage: str, exc: BaseException) -> None:
+    try:
+        path = _validated_setup_diagnostic_path(value)
+        winerror = _setup_winerror(exc)
+        payload = (
+            f"{_SETUP_DIAGNOSTIC_HEADER}|stage={stage}|error={_setup_error_code(exc)}"
+            f"|winerror={winerror if winerror is not None else 'none'}"
+        ).encode("ascii")
+        if len(payload) > _SETUP_DIAGNOSTIC_MAX_BYTES:
+            return
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as handle:
+                handle.write(payload)
+                handle.flush()
+        finally:
+            os.close(descriptor)
+    except Exception:
+        # Diagnostics must never replace the original setup exit status, display
+        # a second UI, or write outside the validated protected transfer leaf.
+        return
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -326,7 +424,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not webbrowser.open(url):
             raise RuntimeError("Der Standardbrowser konnte nicht geöffnet werden.")
     except Exception as exc:
-        if _is_internal_action(options):
+        stage = _internal_action_stage(options)
+        if stage is not None:
+            if options.setup_diagnostic:
+                _write_setup_diagnostic(options.setup_diagnostic, stage=stage, exc=exc)
             return 1
         _show_message(f"Die lokale Browseroberfläche konnte nicht geöffnet werden:\n\n{exc}", error=True)
         return 1

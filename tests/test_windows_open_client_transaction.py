@@ -319,8 +319,114 @@ def test_open_client_transaction_arguments_are_strict() -> None:
         ["--preflight-machine", "--expected-service-exe", EXPECTED_SERVICE_EXE],
         ["--mark-service-committed", "--token-transfer-consent"],
         ["--rollback-desktop-migration", "--require-seal"],
+        ["--setup-diagnostic", "setup-action-diagnostic-v1.txt"],
     ]
 
     for arguments in invalid:
         with pytest.raises(SystemExit):
             windows_open_client._parse_arguments(arguments)
+
+
+def test_internal_setup_failure_writes_only_bounded_sanitized_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SecretWinError(OSError):
+        def __init__(self) -> None:
+            super().__init__(5, "token=must-never-be-written C:\\Secret\\invoice.xml")
+            self.winerror = 5
+
+    target = tmp_path / windows_open_client._SETUP_DIAGNOSTIC_FILE_NAME
+    message = Mock()
+    monkeypatch.setattr(windows_open_client.sys, "platform", "win32")
+    monkeypatch.setattr(
+        windows_open_client,
+        "_validated_setup_diagnostic_path",
+        Mock(return_value=target),
+    )
+    monkeypatch.setattr(
+        windows_open_client,
+        "preflight_loopback_port",
+        Mock(side_effect=_SecretWinError()),
+    )
+    monkeypatch.setattr(windows_open_client, "_show_message", message)
+
+    assert (
+        windows_open_client.main(
+            [
+                "--preflight-port",
+                "--setup-diagnostic",
+                str(target),
+            ]
+        )
+        == 1
+    )
+
+    payload = target.read_bytes()
+    assert payload == (b"ERP_SETUP_DIAGNOSTIC_V1|stage=preflight-port|error=os-error|winerror=5")
+    assert len(payload) <= windows_open_client._SETUP_DIAGNOSTIC_MAX_BYTES
+    assert b"token" not in payload
+    assert b"Secret" not in payload
+    assert b"invoice" not in payload
+    message.assert_not_called()
+
+
+def test_setup_diagnostic_target_is_exactly_bound_to_protected_transfer_leaf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "ProgramData" / "E-Rechnungs-Pruefer-Installer-Transfer"
+    leaf = root / "is-ABCD.tmp"
+    target = leaf / windows_open_client._SETUP_DIAGNOSTIC_FILE_NAME
+    verify = Mock()
+    monkeypatch.setattr(
+        windows_open_client._desktop_migration,
+        "_desktop_migration_transfer_root",
+        Mock(return_value=root),
+    )
+    monkeypatch.setattr(
+        windows_open_client._desktop_migration,
+        "_verify_transfer_staging_path",
+        verify,
+    )
+    monkeypatch.setattr(
+        windows_open_client._desktop_migration,
+        "validate_machine_path",
+        Mock(return_value=False),
+    )
+
+    assert windows_open_client._validated_setup_diagnostic_path(str(target)) == target
+    assert verify.call_args_list == [
+        ((root,), {"directory": True, "kind": "root"}),
+        ((leaf,), {"directory": True, "kind": "leaf"}),
+    ]
+
+    for invalid in (
+        root / windows_open_client._SETUP_DIAGNOSTIC_FILE_NAME,
+        leaf / "other.txt",
+        root.parent / "foreign" / windows_open_client._SETUP_DIAGNOSTIC_FILE_NAME,
+        leaf / ".." / windows_open_client._SETUP_DIAGNOSTIC_FILE_NAME,
+    ):
+        with pytest.raises(RuntimeError):
+            windows_open_client._validated_setup_diagnostic_path(str(invalid))
+
+
+def test_setup_diagnostic_never_overwrites_an_existing_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / windows_open_client._SETUP_DIAGNOSTIC_FILE_NAME
+    target.write_bytes(b"preexisting")
+    monkeypatch.setattr(
+        windows_open_client,
+        "_validated_setup_diagnostic_path",
+        Mock(return_value=target),
+    )
+
+    windows_open_client._write_setup_diagnostic(
+        str(target),
+        stage="preflight-port",
+        exc=RuntimeError("secret"),
+    )
+
+    assert target.read_bytes() == b"preexisting"

@@ -77,6 +77,8 @@ const
   ServiceQueryError = -1;
   ServiceAbsent = 0;
   ServicePresent = 1;
+  SetupDiagnosticFileName = 'setup-action-diagnostic-v1.txt';
+  SetupDiagnosticHeader = 'ERP_SETUP_DIAGNOSTIC_V1';
   ReconcileNone = 0;
   ReconcileRollback = 10;
   ReconcileCommit = 11;
@@ -397,23 +399,192 @@ begin
   Result := QueryService(ServiceObject) = ServiceAbsent;
 end;
 
+function IsKnownSetupDiagnosticStage(Value: String): Boolean;
+begin
+  Result :=
+    (CompareText(Value, 'prepare-transfer') = 0) or
+    (CompareText(Value, 'clear-transfer') = 0) or
+    (CompareText(Value, 'plan-migration') = 0) or
+    (CompareText(Value, 'seal-migration') = 0) or
+    (CompareText(Value, 'apply-migration') = 0) or
+    (CompareText(Value, 'verify-applied-migration') = 0) or
+    (CompareText(Value, 'verify-migration-owner') = 0) or
+    (CompareText(Value, 'rollback-migration') = 0) or
+    (CompareText(Value, 'commit-migration') = 0) or
+    (CompareText(Value, 'clear-migration-seal') = 0) or
+    (CompareText(Value, 'begin-service-transition') = 0) or
+    (CompareText(Value, 'mark-service-rollback') = 0) or
+    (CompareText(Value, 'mark-service-committed') = 0) or
+    (CompareText(Value, 'prepare-install-reconcile') = 0) or
+    (CompareText(Value, 'finish-install-reconcile') = 0) or
+    (CompareText(Value, 'probe-service') = 0) or
+    (CompareText(Value, 'preflight-machine') = 0) or
+    (CompareText(Value, 'preflight-port') = 0) or
+    (CompareText(Value, 'snapshot-service-metadata') = 0) or
+    (CompareText(Value, 'restore-service-metadata') = 0) or
+    (CompareText(Value, 'clear-service-metadata') = 0) or
+    (CompareText(Value, 'reconcile-service-uninstall') = 0) or
+    (CompareText(Value, 'assert-no-pending-uninstall') = 0) or
+    (CompareText(Value, 'disable-delayed-start') = 0) or
+    (CompareText(Value, 'verify-migration-context') = 0) or
+    (CompareText(Value, 'purge-runtime-state') = 0) or
+    (CompareText(Value, 'purge-machine-state') = 0);
+end;
+
+function IsKnownSetupDiagnosticError(Value: String): Boolean;
+begin
+  Result :=
+    (CompareText(Value, 'permission-error') = 0) or
+    (CompareText(Value, 'file-exists') = 0) or
+    (CompareText(Value, 'file-not-found') = 0) or
+    (CompareText(Value, 'timeout') = 0) or
+    (CompareText(Value, 'os-error') = 0) or
+    (CompareText(Value, 'value-error') = 0) or
+    (CompareText(Value, 'runtime-error') = 0) or
+    (CompareText(Value, 'internal-error') = 0);
+end;
+
+function IsSetupDiagnosticWinError(Value: String): Boolean;
+var
+  Index: Integer;
+begin
+  Result := CompareText(Value, 'none') = 0;
+  if Result then
+    Exit;
+  Result := (Length(Value) >= 1) and (Length(Value) <= 10);
+  if not Result then
+    Exit;
+  for Index := 1 to Length(Value) do
+    if (Value[Index] < '0') or (Value[Index] > '9') then
+    begin
+      Result := False;
+      Exit;
+    end;
+end;
+
+function ParseSetupDiagnostic(
+  Value: String; var Stage: String; var ErrorCode: String;
+  var WinError: String): Boolean;
+var
+  Remainder: String;
+  Separator: Integer;
+begin
+  Result := False;
+  Stage := '';
+  ErrorCode := '';
+  WinError := '';
+  if Pos(SetupDiagnosticHeader + '|stage=', Value) <> 1 then
+    Exit;
+  Remainder := Copy(
+    Value, Length(SetupDiagnosticHeader + '|stage=') + 1, Length(Value));
+  Separator := Pos('|error=', Remainder);
+  if Separator <= 1 then
+    Exit;
+  Stage := Copy(Remainder, 1, Separator - 1);
+  Delete(Remainder, 1, Separator + Length('|error=') - 1);
+  Separator := Pos('|winerror=', Remainder);
+  if Separator <= 1 then
+    Exit;
+  ErrorCode := Copy(Remainder, 1, Separator - 1);
+  WinError := Copy(
+    Remainder, Separator + Length('|winerror='), Length(Remainder));
+  Result :=
+    (Pos('|', WinError) = 0) and
+    IsKnownSetupDiagnosticStage(Stage) and
+    IsKnownSetupDiagnosticError(ErrorCode) and
+    IsSetupDiagnosticWinError(WinError);
+end;
+
+function AddSetupDiagnosticParameter(
+  FileName: String; Parameters: String; var DiagnosticPath: String): String;
+begin
+  DiagnosticPath := '';
+  Result := Parameters;
+  #ifdef AllowElevatedMigrationTestContext
+  if (MigrationTransferDirectory = '') or
+    (not DirExists(MigrationTransferDirectory)) then
+    Exit;
+  if CompareText(FileName, InternalOpenClient) <> 0 then
+    Exit;
+  DiagnosticPath :=
+    MigrationTransferDirectory + '\' + SetupDiagnosticFileName;
+  if FileExists(DiagnosticPath) and not DeleteFile(DiagnosticPath) then
+  begin
+    DiagnosticPath := '';
+    Log('Eine vorherige interne Setup-Diagnose konnte nicht sicher verworfen werden.');
+    Exit;
+  end;
+  Result :=
+    Parameters + ' --setup-diagnostic "' + DiagnosticPath + '"';
+  #endif
+end;
+
+procedure ConsumeSetupDiagnostic(
+  DiagnosticPath: String; Description: String; LogContents: Boolean);
+var
+  RawDiagnostic: AnsiString;
+  Diagnostic: String;
+  DiagnosticSize: Integer;
+  Stage: String;
+  ErrorCode: String;
+  WinError: String;
+begin
+  if (DiagnosticPath = '') or (not FileExists(DiagnosticPath)) then
+    Exit;
+  if LogContents then
+  begin
+    if (not FileSize(DiagnosticPath, DiagnosticSize)) or
+      (DiagnosticSize < 1) or (DiagnosticSize > 256) then
+      Log(Description + ': eine ungültig große interne Diagnose wurde verworfen.')
+    else if LoadStringFromFile(DiagnosticPath, RawDiagnostic) then
+    begin
+      Diagnostic := String(RawDiagnostic);
+      if ParseSetupDiagnostic(Diagnostic, Stage, ErrorCode, WinError) then
+        Log(
+          Description + ': interne Diagnose Stufe=' + Stage +
+          ', Fehlerklasse=' + ErrorCode + ', Windows-Fehler=' + WinError + '.')
+      else
+        Log(Description + ': eine ungültige interne Diagnose wurde verworfen.');
+    end
+    else
+      Log(Description + ': die interne Diagnose konnte nicht sicher gelesen werden.');
+  end;
+  if not DeleteFile(DiagnosticPath) then
+    Log('Die interne Setup-Diagnose konnte nicht sicher entfernt werden.');
+end;
+
 function ExecChecked(FileName: String; Parameters: String; Description: String): Boolean;
 var
+  DiagnosticParameters: String;
+  DiagnosticPath: String;
   ExitCode: Integer;
 begin
+  ExitCode := -1;
+  DiagnosticParameters :=
+    AddSetupDiagnosticParameter(FileName, Parameters, DiagnosticPath);
   Log(Description + ': ' + FileName);
-  Result := Exec(FileName, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) and (ExitCode = 0);
+  Result := Exec(
+    FileName, DiagnosticParameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode);
+  if Result then
+    Result := ExitCode = 0;
+  ConsumeSetupDiagnostic(DiagnosticPath, Description, ExitCode = 1);
   if not Result then
     Log(Description + ' ist fehlgeschlagen (Exitcode ' + IntToStr(ExitCode) + ').');
 end;
 
 function ExecWithExitCode(
   FileName: String; Parameters: String; Description: String; var ExitCode: Integer): Boolean;
+var
+  DiagnosticParameters: String;
+  DiagnosticPath: String;
 begin
   ExitCode := -1;
+  DiagnosticParameters :=
+    AddSetupDiagnosticParameter(FileName, Parameters, DiagnosticPath);
   Log(Description + ': ' + FileName);
   Result := Exec(
-    FileName, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode);
+    FileName, DiagnosticParameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode);
+  ConsumeSetupDiagnostic(DiagnosticPath, Description, ExitCode = 1);
   if not Result then
     Log(Description + ' konnte nicht ausgeführt werden.');
 end;

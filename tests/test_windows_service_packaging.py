@@ -506,6 +506,60 @@ def test_service_installer_stages_every_original_user_call_in_a_unique_programda
     assert installer.count("OriginalUserOpenClientPath") >= 5
 
 
+def test_test_installer_logs_only_allowlisted_internal_open_client_diagnostics() -> None:
+    installer = _read("packaging/windows/service_installer.iss")
+    diagnostic_support = installer[
+        installer.index("function IsKnownSetupDiagnosticStage") : installer.index("function ExecChecked")
+    ]
+
+    assert "#ifdef AllowElevatedMigrationTestContext" in diagnostic_support
+    assert "setup-action-diagnostic-v1.txt" in installer
+    assert "ERP_SETUP_DIAGNOSTIC_V1" in installer
+    assert '--setup-diagnostic "' + "' + DiagnosticPath + '" in diagnostic_support
+    assert "MigrationTransferDirectory + '\\' + SetupDiagnosticFileName" in diagnostic_support
+    assert "CompareText(FileName, InternalOpenClient)" in diagnostic_support
+    assert "CompareText(FileName, OriginalUserOpenClientPath)" not in diagnostic_support
+    assert "FileSize(DiagnosticPath, DiagnosticSize)" in diagnostic_support
+    assert "DiagnosticSize > 256" in diagnostic_support
+    assert "LoadStringFromFile(DiagnosticPath, RawDiagnostic)" in diagnostic_support
+    assert "ParseSetupDiagnostic(Diagnostic, Stage, ErrorCode, WinError)" in diagnostic_support
+    assert "IsKnownSetupDiagnosticStage(Stage)" in diagnostic_support
+    assert "IsKnownSetupDiagnosticError(ErrorCode)" in diagnostic_support
+    assert "IsSetupDiagnosticWinError(WinError)" in diagnostic_support
+    assert "DeleteFile(DiagnosticPath)" in diagnostic_support
+    assert "GetExceptionMessage" not in diagnostic_support
+    diagnostic_consumer = diagnostic_support[diagnostic_support.index("procedure ConsumeSetupDiagnostic") :]
+    assert "+ DiagnosticPath" not in diagnostic_consumer
+    assert "+ Diagnostic" not in diagnostic_consumer
+
+    for safe_code in (
+        "preflight-machine",
+        "preflight-port",
+        "plan-migration",
+        "apply-migration",
+        "runtime-error",
+        "os-error",
+        "internal-error",
+    ):
+        assert safe_code in diagnostic_support
+
+    exec_checked = installer[installer.index("function ExecChecked") : installer.index("function ExecWithExitCode")]
+    exec_with_exit_code = installer[
+        installer.index("function ExecWithExitCode") : installer.index("function PrepareOriginalUserTransfer")
+    ]
+    for helper in (exec_checked, exec_with_exit_code):
+        assert "AddSetupDiagnosticParameter" in helper
+        assert "ConsumeSetupDiagnostic" in helper
+        assert "ExitCode = 1" in helper
+    original_exec = installer[
+        installer.index("function ExecOriginalWithExitCode") : installer.index(
+            "function CaptureOriginalServiceMetadata"
+        )
+    ]
+    assert "AddSetupDiagnosticParameter" not in original_exec
+    assert "ConsumeSetupDiagnostic" not in original_exec
+
+
 def test_service_installer_orders_durable_migration_recovery_around_the_commit_point() -> None:
     installer = _read("packaging/windows/service_installer.iss")
 
