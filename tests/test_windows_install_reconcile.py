@@ -30,7 +30,7 @@ def _desktop_binding(
         transaction_id=TRANSACTION_ID,
         reader_sid=READER_SID,
         seal_sha256=seal_sha256,
-        token_sha256=None,
+        token_scrypt=None,
         receipt=RECEIPT,
         phase=phase,
     )
@@ -261,7 +261,7 @@ def test_begin_rejects_dual_running_or_token_consent_mismatch_before_prepare(
         base.transaction_id,
         base.reader_sid,
         base.seal_sha256,
-        base.token_sha256,
+        base.token_scrypt,
         running_receipt,
         base.phase,
     )

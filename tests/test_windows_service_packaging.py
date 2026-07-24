@@ -232,7 +232,9 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     assert "--preflight-port" in post_stop
     assert "ServiceWasRunning" not in post_stop
     assert (
-        preflight.index("PrepareDesktopMigration")
+        preflight.index("(not ServiceWasRunning) and CheckForMutexes(BackendMutexName)")
+        < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
+        < preflight.index("PrepareDesktopMigration")
         < preflight.index("ForceDirectories(ExpandConstant('{app}'))")
         < preflight.index("BeginServiceTransition")
         < preflight.index("StopExistingServiceForUpdate")
@@ -528,6 +530,8 @@ def test_service_installer_orders_durable_migration_recovery_around_the_commit_p
         preflight.index("ExtractTemporaryFile")
         < preflight.index("ReconcilePendingInstall")
         < preflight.index("--preflight-machine")
+        < preflight.index("(not ServiceWasRunning) and CheckForMutexes(BackendMutexName)")
+        < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
         < preflight.index("PrepareDesktopMigration")
         < preflight.index("ForceDirectories(ExpandConstant('{app}'))")
         < preflight.index("BeginServiceTransition")
@@ -739,6 +743,11 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
         "Get-FileHash",
         "Get-AuthenticodeSignature",
         "Invoke-ServiceInstaller",
+        "ExpectedLogReason",
+        "Assert-NoEarlyInstallerState",
+        "E-Rechnungs-Pruefer-Installer-State",
+        "E-Rechnungs-Pruefer-Installer-Transfer",
+        ".installer-state",
         "Assert-TokenReaderAcl",
         "Assert-ProtectedLogAcl",
         "Add-ExplorerAdministratorDirectoryAce",
@@ -787,6 +796,15 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
 
     assert script.count('"/ALLOWELEVATEDTESTCONTEXT=1"') == 3
     assert script.count("if ($AllowElevatedMigrationTestContext)") == 4
+    assert script.count("-ExpectedLogReason") == 4
+    assert script.count("Assert-NoEarlyInstallerState -Scenario") == 3
+    for expected_reason in (
+        "Die ursprüngliche interaktive Benutzeridentität konnte nicht sicher bestätigt werden.",
+        "Der vorhandene Maschinenzustand ist unvollständig, unsicher oder ungültig.",
+        "Der konfigurierte lokale Dienstport ist belegt oder nicht exklusiv reservierbar.",
+        "Absichtlich ausgelöster transaktionaler Installationstest.",
+    ):
+        assert expected_reason in script
     assert script.count("Add-ExplorerAdministratorDirectoryAce -Path") == 4
     assert script.count("Invoke-WindowedExecutable -Path $ServiceExe") == 3
     first_repair = script.index("Add-ExplorerAdministratorDirectoryAce -Path $DataDir")
@@ -817,6 +835,8 @@ def test_migration_test_uses_published_130_desktop_installer() -> None:
         "DesktopHardKillRecovery",
         "Invoke-DesktopCheckpointHardKill",
         "desktop-migration-phase.json",
+        "token_scrypt",
+        "hashlib.scrypt",
         "rollbackable",
         "Stop-VerifiedSetupProcessTree",
     ):

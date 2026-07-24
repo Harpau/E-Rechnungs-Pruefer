@@ -26,6 +26,19 @@ function Invoke-SetupExpectedFailure {
     if ($Process.ExitCode -eq 0) { throw "Der angeforderte transaktionale Setupfehler blieb aus: $Path" }
 }
 
+function Get-TokenScryptVerifier {
+    param([string]$Path, [string]$TransactionId)
+    $Verifier = & python -c (
+        "import hashlib,pathlib,sys; " +
+        "print(hashlib.scrypt(pathlib.Path(sys.argv[1]).read_bytes(), " +
+        "salt=bytes.fromhex(sys.argv[2]), n=2**14, r=8, p=1, dklen=32).hex())"
+    ) $Path $TransactionId
+    if ($LASTEXITCODE -ne 0 -or $Verifier -notmatch "^[0-9a-f]{64}$") {
+        throw "Der scrypt-Token-Verifier konnte nicht unabhängig berechnet werden."
+    }
+    return [string]$Verifier
+}
+
 function Assert-CanonicalJsonElement {
     param([Text.Json.JsonElement]$Element, [string]$Path)
     if ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Object) {
@@ -194,20 +207,24 @@ function Invoke-DesktopCheckpointHardKill {
             -not (Test-Path -LiteralPath $ServicePreparedPath) -and
             -not (Get-Service -Name $ExpectedServiceName -ErrorAction SilentlyContinue)) {
             $Seal = Read-StrictJsonMarker -Path $SealPath -ExpectedProperties @(
-                "reader_sid", "receipt", "schema_version", "token_sha256", "transaction_id"
+                "reader_sid", "receipt", "schema_version", "token_scrypt", "transaction_id"
             )
             $Phase = Read-StrictJsonMarker -Path $PhasePath -ExpectedProperties @(
                 "generation", "phase", "schema_version", "transaction_id"
             )
-            if ($Seal.schema_version -ne 1 -or $Phase.schema_version -ne 1 -or
+            $ObservedTokenScrypt = if (Test-Path -LiteralPath $ProtectedTokenPath) {
+                Get-TokenScryptVerifier -Path $ProtectedTokenPath -TransactionId ([string]$Seal.transaction_id)
+            } else {
+                ""
+            }
+            if ($Seal.schema_version -ne 2 -or $Phase.schema_version -ne 1 -or
                 $Phase.generation -ne 0 -or $Phase.phase -ne "rollbackable" -or
                 $Seal.reader_sid -ne $ExpectedReaderSid -or
                 $Seal.transaction_id -notmatch "^[0-9a-f]{32}$" -or
                 $Phase.transaction_id -ne $Seal.transaction_id -or
-                $Seal.token_sha256 -notmatch "^[0-9a-f]{64}$" -or
+                $Seal.token_scrypt -notmatch "^[0-9a-f]{64}$" -or
                 -not (Test-Path -LiteralPath $ProtectedTokenPath) -or
-                (Get-FileHash -LiteralPath $ProtectedTokenPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne
-                $Seal.token_sha256 -or
+                $ObservedTokenScrypt -ne $Seal.token_scrypt -or
                 -not $Seal.receipt.was_running -or
                 -not [string]::Equals(
                     [string]$Seal.receipt.executable,

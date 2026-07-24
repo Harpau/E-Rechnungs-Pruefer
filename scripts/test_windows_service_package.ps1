@@ -108,7 +108,13 @@ function Get-TreeFingerprint {
 }
 
 function Invoke-ServiceInstallerExpectedFailure {
-    param([string]$Path, [string]$LogPath, [string[]]$ExtraArguments)
+    param(
+        [string]$Path,
+        [string]$LogPath,
+        [string[]]$ExtraArguments,
+        [ValidateNotNullOrEmpty()]
+        [string]$ExpectedLogReason
+    )
     $Arguments = @(
         "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
         "/TASKS=`"systemstart`"", "/LOG=`"$LogPath`""
@@ -121,7 +127,28 @@ function Invoke-ServiceInstallerExpectedFailure {
         throw "Der absichtlich fehlschlagende Dienst-Installer überschritt das Zeitlimit."
     }
     if ($Process.ExitCode -eq 0) {
-        throw "Der angeforderte transaktionale Fehler wurde vom Dienst-Installer nicht ausgelöst."
+        throw "Der erwartete Installer-Fehler wurde nicht ausgelöst: $ExpectedLogReason"
+    }
+    if (-not (Test-Path -LiteralPath $LogPath)) {
+        throw "Der fehlgeschlagene Dienst-Installer erzeugte keinen Inno-Setup-Log: $LogPath"
+    }
+    $Log = Get-Content -LiteralPath $LogPath -Raw
+    if ($Log.IndexOf($ExpectedLogReason, [StringComparison]::Ordinal) -lt 0) {
+        $LogTail = (Get-Content -LiteralPath $LogPath -Tail 80) -join "`n"
+        throw "Der Dienst-Installer schlug aus einem unerwarteten Grund fehl. " +
+            "Erwartet: $ExpectedLogReason`n$LogTail"
+    }
+}
+
+function Assert-NoEarlyInstallerState {
+    param(
+        [string]$Scenario,
+        [string[]]$Paths
+    )
+    foreach ($Path in $Paths) {
+        if (Test-Path -LiteralPath $Path) {
+            throw "$Scenario ließ unerwarteten Installer- oder Transferzustand zurück: $Path"
+        }
     }
 }
 
@@ -631,6 +658,14 @@ $LogDir = Join-Path $DataDir "logs"
 $LogFile = Join-Path $LogDir "service.log"
 $ServiceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
 $UninstallKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{8824D15C-7F4E-4CB2-B957-FBC26B923363}_is1"
+$DesktopMigrationStateDir = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-State"
+$DesktopMigrationTransferRoot = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-Transfer"
+$ServiceInstallerStateDir = Join-Path $InstallDir ".installer-state"
+$EarlyInstallerStatePaths = @(
+    $DesktopMigrationStateDir,
+    $DesktopMigrationTransferRoot,
+    $ServiceInstallerStateDir
+)
 
 $DesktopDir = Join-Path $env:LOCALAPPDATA "Programs\E-Rechnungs-Pruefer"
 $DesktopData = Join-Path $env:LOCALAPPDATA "E-Rechnungs-Pruefer"
@@ -696,12 +731,14 @@ if ($AllowElevatedMigrationTestContext) {
     }
     Assert-ValidSignature $ProductionSetup
     Invoke-ServiceInstallerExpectedFailure -Path $ProductionSetup `
-        -LogPath (Join-Path $TestRoot "production-context-guard.log") -ExtraArguments @()
+        -LogPath (Join-Path $TestRoot "production-context-guard.log") -ExtraArguments @() `
+        -ExpectedLogReason "Die ursprüngliche interaktive Benutzeridentität konnte nicht sicher bestätigt werden."
     if ((Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -or
         (Test-Path -LiteralPath $InstallDir) -or (Test-Path -LiteralPath $DataDir) -or
         (Test-Path -LiteralPath $UninstallKey)) {
         throw "Der produktive Dienst-Installer akzeptierte den erhöhten internen Testkontext."
     }
+    Assert-NoEarlyInstallerState -Scenario "Produktiver Testkontext-Schutz" -Paths $EarlyInstallerStatePaths
 }
 $JunctionTarget = Join-Path $TestRoot "programdata-junction-target"
 $JunctionSentinel = Join-Path $JunctionTarget "sentinel.txt"
@@ -710,7 +747,8 @@ Set-Content -LiteralPath $JunctionSentinel -Value "darf nicht verändert werden"
 New-Item -ItemType Junction -Path $DataDir -Target $JunctionTarget | Out-Null
 try {
     Invoke-ServiceInstallerExpectedFailure -Path $Setup -LogPath (Join-Path $TestRoot "junction-preflight.log") `
-        -ExtraArguments @()
+        -ExtraArguments @() `
+        -ExpectedLogReason "Der vorhandene Maschinenzustand ist unvollständig, unsicher oder ungültig."
     if ((Get-Content -LiteralPath $JunctionSentinel -Raw).Trim() -ne "darf nicht verändert werden") {
         throw "Unsicherer ProgramData-Junction-Zielinhalt wurde verändert."
     }
@@ -720,11 +758,13 @@ try {
 } finally {
     Remove-Item -LiteralPath $DataDir -Force
 }
+Assert-NoEarlyInstallerState -Scenario "ProgramData-Junction-Preflight" -Paths $EarlyInstallerStatePaths
 $PortBlocker = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 8080)
 try {
     $PortBlocker.Server.ExclusiveAddressUse = $true
     $PortBlocker.Start()
-    Invoke-ServiceInstallerExpectedFailure -Path $Setup -LogPath $PortConflictLog -ExtraArguments @()
+    Invoke-ServiceInstallerExpectedFailure -Path $Setup -LogPath $PortConflictLog -ExtraArguments @() `
+        -ExpectedLogReason "Der konfigurierte lokale Dienstport ist belegt oder nicht exklusiv reservierbar."
 } finally {
     $PortBlocker.Stop()
 }
@@ -736,6 +776,7 @@ foreach ($Unexpected in @($InstallDir, $DataDir)) {
         throw "Port-Preflight veränderte vor dem Abbruch den Produktzustand: $Unexpected"
     }
 }
+Assert-NoEarlyInstallerState -Scenario "Port-Preflight" -Paths $EarlyInstallerStatePaths
 Invoke-ServiceInstaller -Path $Setup -LogPath $InstallLog
 Wait-ServiceState -Name $ServiceName -State "Running"
 
@@ -952,7 +993,7 @@ $ServiceConfigScmBeforeFailedUpdate = (& sc.exe qc $ServiceName) | Out-String
 if ($LASTEXITCODE -ne 0) { throw "Dienstkonfiguration konnte vor dem Rollback-Test nicht gelesen werden." }
 Invoke-ServiceInstallerExpectedFailure -Path $Setup -LogPath $FailedUpdateLog -ExtraArguments @(
     "/TESTFAILAFTERCONFIG=1"
-)
+) -ExpectedLogReason "Absichtlich ausgelöster transaktionaler Installationstest."
 Wait-ServiceState -Name $ServiceName -State "Running"
 if ((Get-Content $TokenFile -Raw).Trim() -ne $TokenBeforeUpdate) { throw "Fehlgeschlagenes Update änderte das Token." }
 if ((Get-FileHash $ServiceExe -Algorithm SHA256).Hash -ne $HashBeforeFailedUpdate) {

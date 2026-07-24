@@ -1147,22 +1147,14 @@ begin
       Exit;
     end;
   end;
-  Result := PrepareDesktopMigration;
-  if Result <> '' then
-  begin
-    if MigrationPrepared and not RollbackPreparedInstall then
-      Result := Result + ' Der geschützte Recovery-Zustand bleibt für den nächsten Setup-Lauf erhalten.';
-    Exit;
-  end;
   { A running, exactly owned service legitimately holds both resources. For
-    stopped/absent baselines this early check still rejects foreign owners. }
+    stopped/absent baselines these checks must reject foreign owners before
+    the Desktop migration creates protected transaction state. }
   if (not ServiceWasRunning) and CheckForMutexes(BackendMutexName) then
   begin
     Result :=
       'Ein fremder Prozess hält die maschinenweite Backend-Sperre. ' +
       'Die Installation wird ohne Dateiänderung abgebrochen.';
-    if not RollbackPreparedInstall then
-      Result := Result + ' Der geschützte Recovery-Zustand bleibt für den nächsten Setup-Lauf erhalten.';
     Exit;
   end;
   if (not ServiceWasRunning) and not ExecChecked(
@@ -1172,7 +1164,12 @@ begin
     Result :=
       'Der konfigurierte lokale Dienstport ist belegt oder nicht exklusiv reservierbar. ' +
       'Die Installation wird vor dem Ersetzen von Binärdateien abgebrochen.';
-    if not RollbackPreparedInstall then
+    Exit;
+  end;
+  Result := PrepareDesktopMigration;
+  if Result <> '' then
+  begin
+    if MigrationPrepared and not RollbackPreparedInstall then
       Result := Result + ' Der geschützte Recovery-Zustand bleibt für den nächsten Setup-Lauf erhalten.';
     Exit;
   end;

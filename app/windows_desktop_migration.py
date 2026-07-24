@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import hashlib
+import hmac
 import json
 import ntpath
 import os
@@ -74,8 +75,12 @@ MIGRATION_TOKEN_TEMP_FILE_PREFIX = "desktop-api-token-"
 DESKTOP_MIGRATION_TRANSFER_ROOT_NAME = "E-Rechnungs-Pruefer-Installer-Transfer"
 DESKTOP_MIGRATION_TRANSFER_RECEIPT_NAME = "desktop-migration-receipt.json"
 DESKTOP_MIGRATION_TRANSFER_TOKEN_NAME = "desktop-api-token-transfer.txt"
-MIGRATION_SCHEMA_VERSION = 1
+MIGRATION_SCHEMA_VERSION = 2
 MIGRATION_PHASE_SCHEMA_VERSION = 1
+MIGRATION_TOKEN_SCRYPT_N = 2**14
+MIGRATION_TOKEN_SCRYPT_R = 8
+MIGRATION_TOKEN_SCRYPT_P = 1
+MIGRATION_TOKEN_SCRYPT_DKLEN = 32
 PROFILE_HIVE_SNAPSHOT_DIRECTORY_PREFIX = "profile-hive-"
 PROFILE_HIVE_SNAPSHOT_FILE_NAME = "NTUSER.DAT"
 PROFILE_AUDIT_MOUNT_PREFIX = "ERechnungsPrueferAudit_"
@@ -136,7 +141,7 @@ class MigrationSeal:
     schema_version: int
     transaction_id: str
     reader_sid: str
-    token_sha256: str | None
+    token_scrypt: str | None
     receipt: MigrationReceipt
 
 
@@ -153,7 +158,7 @@ class DesktopMigrationBinding:
     transaction_id: str
     reader_sid: str
     seal_sha256: str
-    token_sha256: str | None
+    token_scrypt: str | None
     receipt: MigrationReceipt
     phase: MigrationPhase
 
@@ -2352,8 +2357,9 @@ def seal_desktop_migration(*, receipt_path: Path, token_transfer_path: Path | No
         _validate_receipt_paths(receipt, bind_to_current_registration=False)
         _validate_sealed_receipt_semantics(receipt)
 
+        transaction_id = secrets.token_hex(16)
         token_payload: bytes | None = None
-        token_sha256: str | None = None
+        token_scrypt: str | None = None
         if token_transfer_path is not None:
             if _receipt_owner_sid(token_transfer_path) != reader_sid:
                 raise RuntimeError("Der Token-Transfer gehört einer anderen Benutzeridentität als der Migrationsplan.")
@@ -2361,13 +2367,17 @@ def seal_desktop_migration(*, receipt_path: Path, token_transfer_path: Path | No
             if _receipt_owner_sid(token_transfer_path) != reader_sid:
                 raise RuntimeError("Der Token-Transfer wechselte während der geschützten Übernahme den Eigentümer.")
             token_payload = (token + "\n").encode("ascii")
-            token_sha256 = hashlib.sha256(token_payload).hexdigest()
+            token_scrypt = _derive_migration_token_verifier(
+                token_payload,
+                transaction_id=transaction_id,
+            )
 
         seal = _store_migration_seal(
             seal_path,
             receipt,
             reader_sid=reader_sid,
-            token_sha256=token_sha256,
+            transaction_id=transaction_id,
+            token_scrypt=token_scrypt,
         )
         if token_payload is not None:
             _store_migration_token(
@@ -2412,7 +2422,7 @@ def _valid_reader_sid(value: object) -> bool:
     )
 
 
-def _valid_sha256(value: object) -> bool:
+def _valid_token_scrypt(value: object) -> bool:
     return (
         isinstance(value, str)
         and len(value) == 64
@@ -2421,18 +2431,33 @@ def _valid_sha256(value: object) -> bool:
     )
 
 
+def _derive_migration_token_verifier(token_payload: bytes, *, transaction_id: str) -> str:
+    """Derive a transaction-specific verifier without persisting a raw token digest."""
+
+    if not _valid_transaction_id(transaction_id):
+        raise RuntimeError("Der Token-Verifier besitzt keine gültige Transaktionsbindung.")
+    return hashlib.scrypt(
+        token_payload,
+        salt=bytes.fromhex(transaction_id),
+        n=MIGRATION_TOKEN_SCRYPT_N,
+        r=MIGRATION_TOKEN_SCRYPT_R,
+        p=MIGRATION_TOKEN_SCRYPT_P,
+        dklen=MIGRATION_TOKEN_SCRYPT_DKLEN,
+    ).hex()
+
+
 def _decode_migration_seal(serialized: bytes) -> MigrationSeal:
     try:
         payload = json.loads(serialized.decode("utf-8"), object_pairs_hook=_unique_json_object)
         if (
             not isinstance(payload, dict)
-            or set(payload) != {"schema_version", "transaction_id", "reader_sid", "token_sha256", "receipt"}
+            or set(payload) != {"schema_version", "transaction_id", "reader_sid", "token_scrypt", "receipt"}
             or type(payload["schema_version"]) is not int
             or payload["schema_version"] != MIGRATION_SCHEMA_VERSION
             or not _valid_transaction_id(payload["transaction_id"])
             or not _valid_reader_sid(payload["reader_sid"])
-            or payload["token_sha256"] is not None
-            and not _valid_sha256(payload["token_sha256"])
+            or payload["token_scrypt"] is not None
+            and not _valid_token_scrypt(payload["token_scrypt"])
             or not isinstance(payload["receipt"], dict)
         ):
             raise TypeError
@@ -2447,7 +2472,7 @@ def _decode_migration_seal(serialized: bytes) -> MigrationSeal:
             schema_version=payload["schema_version"],
             transaction_id=payload["transaction_id"],
             reader_sid=payload["reader_sid"],
-            token_sha256=payload["token_sha256"],
+            token_scrypt=payload["token_scrypt"],
             receipt=receipt,
         )
     except (UnicodeError, KeyError, TypeError, ValueError) as exc:
@@ -2590,13 +2615,13 @@ def _store_migration_seal(
     *,
     reader_sid: str,
     transaction_id: str | None = None,
-    token_sha256: str | None = None,
+    token_scrypt: str | None = None,
 ) -> MigrationSeal:
     seal = MigrationSeal(
         schema_version=MIGRATION_SCHEMA_VERSION,
         transaction_id=transaction_id or secrets.token_hex(16),
         reader_sid=reader_sid,
-        token_sha256=token_sha256,
+        token_scrypt=token_scrypt,
         receipt=receipt,
     )
     serialized = _encode_migration_seal(seal)
@@ -2703,7 +2728,7 @@ def _load_migration_seal_envelope(*, require_current_user: bool) -> MigrationSea
 
 def _validate_sealed_migration_token(state_directory: Path, seal: MigrationSeal) -> None:
     token_path = _migration_token_path(state_directory)
-    if seal.token_sha256 is None:
+    if seal.token_scrypt is None:
         return
     _verify_migration_state_path(
         token_path,
@@ -2720,7 +2745,11 @@ def _validate_sealed_migration_token(state_directory: Path, seal: MigrationSeal)
         directory=False,
         reader_required=False,
     )
-    if hashlib.sha256(token_payload).hexdigest() != seal.token_sha256:
+    derived = _derive_migration_token_verifier(
+        token_payload,
+        transaction_id=seal.transaction_id,
+    )
+    if not hmac.compare_digest(derived, seal.token_scrypt):
         raise RuntimeError("Das geschützte Desktop-API-Token gehört nicht zum Migrationsbeleg.")
     try:
         validate_api_token(
@@ -2809,7 +2838,7 @@ def _load_migration_transaction(
         raise RuntimeError("Desktop-Migrationsbeleg und -phase gehören zu verschiedenen Transaktionen.")
 
     token_present = MIGRATION_TOKEN_FILE_NAME in entry_names
-    if seal.token_sha256 is not None:
+    if seal.token_scrypt is not None:
         if token_present:
             _validate_sealed_migration_token(state_directory, seal)
             expected_entries.add(MIGRATION_TOKEN_FILE_NAME)
@@ -2897,7 +2926,7 @@ def load_desktop_migration_binding(
         transaction_id=seal.transaction_id,
         reader_sid=seal.reader_sid,
         seal_sha256=hashlib.sha256(_encode_migration_seal(seal)).hexdigest(),
-        token_sha256=seal.token_sha256,
+        token_scrypt=seal.token_scrypt,
         receipt=seal.receipt,
         phase=phase.phase,
     )
@@ -2988,13 +3017,13 @@ def _partial_migration_state_inventory(
         raise RuntimeError("Der partielle Desktop-Migrationszustand enthält unerwartete Einträge.")
     if len(token_temporaries) > 1 or len(phase_temporaries) > 1:
         raise RuntimeError("Der partielle Desktop-Migrationszustand enthält mehrdeutige Scratchdateien.")
-    if seal.token_sha256 is None and (fixed_token_present or token_temporaries):
+    if seal.token_scrypt is None and (fixed_token_present or token_temporaries):
         raise RuntimeError("Ein unerwarteter Tokenzustand begleitet den partiellen Desktop-Migrationsbeleg.")
     if fixed_token_present and token_temporaries:
         raise RuntimeError("Fester und temporärer Tokenzustand dürfen nicht gleichzeitig vorhanden sein.")
     if token_temporaries and phase_temporaries:
         raise RuntimeError("Die initiale Phase darf nicht vor atomarem Publish des Tokens geschrieben werden.")
-    if seal.token_sha256 is not None:
+    if seal.token_scrypt is not None:
         if fixed_token_present:
             _validate_sealed_migration_token(state_directory, seal)
         elif phase_temporaries:
@@ -3036,7 +3065,7 @@ def protected_desktop_migration_token_path() -> Path | None:
     binding = load_desktop_migration_binding(require_current_user=False)
     if binding is None:
         raise RuntimeError("Für die Tokenübernahme fehlt ein geschützter Desktop-Migrationsbeleg.")
-    if binding.token_sha256 is None:
+    if binding.token_scrypt is None:
         return None
     state_directory, _seal_path = _migration_state_paths()
     token_path = _migration_token_path(state_directory)
@@ -3231,7 +3260,7 @@ def _clear_migration_state(*, expected_reader_sid: str, require_current_user: bo
     snapshot_paths: list[Path] = []
     transaction_id = seal.transaction_id if seal is not None else None
     expected_regular = {MIGRATION_SEAL_FILE_NAME, MIGRATION_PHASE_FILE_NAME}
-    if seal is not None and seal.token_sha256 is not None:
+    if seal is not None and seal.token_scrypt is not None:
         expected_regular.add(MIGRATION_TOKEN_FILE_NAME)
     for name, path in entry_paths.items():
         if name in expected_regular:
@@ -3297,18 +3326,22 @@ def _clear_migration_state(*, expected_reader_sid: str, require_current_user: bo
                 current=stored_phase.phase,
             )
         if name == MIGRATION_TOKEN_FILE_NAME:
-            assert seal is not None and seal.token_sha256 is not None
+            assert seal is not None and seal.token_scrypt is not None
             payload = _read_locked_bytes(
                 path,
                 maximum_bytes=MAXIMUM_MIGRATION_TOKEN_BYTES,
                 description="Das geschützte Desktop-API-Token",
             )
-            if hashlib.sha256(payload).hexdigest() != seal.token_sha256:
+            derived = _derive_migration_token_verifier(
+                payload,
+                transaction_id=seal.transaction_id,
+            )
+            if not hmac.compare_digest(derived, seal.token_scrypt):
                 raise RuntimeError("Das geschützte Desktop-API-Token gehört nicht zum Migrationsbeleg.")
 
     if (
         seal is not None
-        and seal.token_sha256 is not None
+        and seal.token_scrypt is not None
         and MIGRATION_TOKEN_FILE_NAME not in regular_names
         and (
             stored_phase is None

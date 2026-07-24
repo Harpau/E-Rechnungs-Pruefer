@@ -193,7 +193,7 @@ def _transaction(
             schema_version=migration.MIGRATION_SCHEMA_VERSION,
             transaction_id=transaction_id,
             reader_sid=reader_sid,
-            token_sha256=None,
+            token_scrypt=None,
             receipt=receipt,
         ),
         migration.MigrationPhaseRecord(
@@ -663,7 +663,10 @@ def test_protected_migration_seal_binds_transaction_reader_token_and_initial_pha
     assert loaded_seal.receipt == receipt
     assert loaded_seal.reader_sid == reader_sid
     assert loaded_seal.transaction_id == "a" * 32
-    assert loaded_seal.token_sha256 == migration.hashlib.sha256(("t" * 43 + "\n").encode("ascii")).hexdigest()
+    assert loaded_seal.token_scrypt == migration._derive_migration_token_verifier(
+        ("t" * 43 + "\n").encode("ascii"),
+        transaction_id="a" * 32,
+    )
     assert loaded_phase == migration.MigrationPhaseRecord(
         schema_version=migration.MIGRATION_PHASE_SCHEMA_VERSION,
         transaction_id="a" * 32,
@@ -680,6 +683,54 @@ def test_protected_migration_seal_binds_transaction_reader_token_and_initial_pha
     migration.clear_desktop_migration_seal()
 
     assert not state_directory.exists()
+
+
+def test_token_verifier_uses_transaction_salted_scrypt_and_constant_time_comparison(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction_id = "12" * 16
+    token_payload = ("t" * 43 + "\n").encode("ascii")
+    derive = Mock(return_value=b"\xab" * migration.MIGRATION_TOKEN_SCRYPT_DKLEN)
+    monkeypatch.setattr(migration.hashlib, "scrypt", derive)
+
+    verifier = migration._derive_migration_token_verifier(
+        token_payload,
+        transaction_id=transaction_id,
+    )
+
+    assert verifier == "ab" * migration.MIGRATION_TOKEN_SCRYPT_DKLEN
+    derive.assert_called_once_with(
+        token_payload,
+        salt=bytes.fromhex(transaction_id),
+        n=migration.MIGRATION_TOKEN_SCRYPT_N,
+        r=migration.MIGRATION_TOKEN_SCRYPT_R,
+        p=migration.MIGRATION_TOKEN_SCRYPT_P,
+        dklen=migration.MIGRATION_TOKEN_SCRYPT_DKLEN,
+    )
+    with pytest.raises(RuntimeError, match="Transaktionsbindung"):
+        migration._derive_migration_token_verifier(token_payload, transaction_id="ungültig")
+
+    state_directory = tmp_path / "state"
+    seal = migration.MigrationSeal(
+        schema_version=migration.MIGRATION_SCHEMA_VERSION,
+        transaction_id=transaction_id,
+        reader_sid="S-1-5-21-test",
+        token_scrypt="cd" * migration.MIGRATION_TOKEN_SCRYPT_DKLEN,
+        receipt=migration.MigrationReceipt(None, False, r"C:\App\E-Rechnungs-Pruefer.exe", None),
+    )
+    monkeypatch.setattr(migration, "_verify_migration_state_path", Mock())
+    monkeypatch.setattr(migration, "_read_locked_bytes", Mock(return_value=token_payload))
+    compare_digest = Mock(return_value=False)
+    monkeypatch.setattr(migration.hmac, "compare_digest", compare_digest)
+
+    with pytest.raises(RuntimeError, match="gehört nicht zum Migrationsbeleg"):
+        migration._validate_sealed_migration_token(state_directory, seal)
+
+    compare_digest.assert_called_once_with(
+        "ab" * migration.MIGRATION_TOKEN_SCRYPT_DKLEN,
+        seal.token_scrypt,
+    )
 
 
 def test_receipt_parser_rejects_duplicate_fields_and_seal_rejects_wrong_reader(
@@ -816,7 +867,7 @@ def test_public_desktop_binding_is_canonical_optional_and_token_verified(
         schema_version=base_seal.schema_version,
         transaction_id=base_seal.transaction_id,
         reader_sid=base_seal.reader_sid,
-        token_sha256="b" * 64,
+        token_scrypt="b" * 64,
         receipt=base_seal.receipt,
     )
     monkeypatch.setattr(migration, "_migration_state_paths", lambda: (state_directory, seal_path))
@@ -834,7 +885,7 @@ def test_public_desktop_binding_is_canonical_optional_and_token_verified(
         transaction_id=seal.transaction_id,
         reader_sid=seal.reader_sid,
         seal_sha256=migration.hashlib.sha256(migration._encode_migration_seal(seal)).hexdigest(),
-        token_sha256=seal.token_sha256,
+        token_scrypt=seal.token_scrypt,
         receipt=receipt,
         phase=migration.MigrationPhase.ROLLBACKABLE,
     )
@@ -862,7 +913,7 @@ def test_partial_seal_detection_accepts_only_valid_prephase_state(
         schema_version=base_seal.schema_version,
         transaction_id=base_seal.transaction_id,
         reader_sid=base_seal.reader_sid,
-        token_sha256="b" * 64,
+        token_scrypt="b" * 64,
         receipt=base_seal.receipt,
     )
     monkeypatch.setattr(migration, "_migration_state_paths", lambda: (state_directory, seal_path))
@@ -939,7 +990,7 @@ def test_partial_detection_accepts_interrupted_token_and_phase_scratch_only_befo
         schema_version=base_seal.schema_version,
         transaction_id=base_seal.transaction_id,
         reader_sid=base_seal.reader_sid,
-        token_sha256="b" * 64,
+        token_scrypt="b" * 64,
         receipt=base_seal.receipt,
     )
     seal_path.write_bytes(migration._encode_migration_seal(seal))
@@ -969,7 +1020,10 @@ def test_partial_detection_accepts_interrupted_token_and_phase_scratch_only_befo
         schema_version=seal.schema_version,
         transaction_id=seal.transaction_id,
         reader_sid=seal.reader_sid,
-        token_sha256=migration.hashlib.sha256(token_payload).hexdigest(),
+        token_scrypt=migration._derive_migration_token_verifier(
+            token_payload,
+            transaction_id=seal.transaction_id,
+        ),
         receipt=seal.receipt,
     )
     seal_path.write_bytes(migration._encode_migration_seal(seal))
@@ -1114,7 +1168,7 @@ def test_terminal_transaction_and_cleanup_tolerate_already_removed_sealed_token(
         schema_version=base_seal.schema_version,
         transaction_id=base_seal.transaction_id,
         reader_sid=base_seal.reader_sid,
-        token_sha256="b" * 64,
+        token_scrypt="b" * 64,
         receipt=base_seal.receipt,
     )
     seal_path.write_bytes(migration._encode_migration_seal(seal))
@@ -1166,7 +1220,7 @@ def test_nonterminal_transaction_missing_sealed_token_remains_fail_closed(
         schema_version=base_seal.schema_version,
         transaction_id=base_seal.transaction_id,
         reader_sid=base_seal.reader_sid,
-        token_sha256="b" * 64,
+        token_scrypt="b" * 64,
         receipt=base_seal.receipt,
     )
     seal_path.write_bytes(migration._encode_migration_seal(seal))
@@ -3357,7 +3411,7 @@ def test_token_path_api_distinguishes_missing_binding_and_tokenless_binding(
         transaction_id="a" * 32,
         reader_sid="S-1-5-21-test",
         seal_sha256="b" * 64,
-        token_sha256=None,
+        token_scrypt=None,
         receipt=receipt,
         phase=migration.MigrationPhase.ROLLBACKABLE,
     )
@@ -3378,7 +3432,7 @@ def test_decoders_and_encoders_reject_structurally_valid_but_invalid_records(
         "schema_version": migration.MIGRATION_SCHEMA_VERSION,
         "transaction_id": "INVALID",
         "reader_sid": "S-1-5-21-test",
-        "token_sha256": None,
+        "token_scrypt": None,
         "receipt": {
             "autostart_command": None,
             "was_running": False,
@@ -3388,6 +3442,16 @@ def test_decoders_and_encoders_reject_structurally_valid_but_invalid_records(
     }
     with pytest.raises(RuntimeError, match="Migrationsbeleg ist ungültig"):
         migration._decode_migration_seal(json.dumps(bad_seal).encode())
+
+    legacy_seal = {
+        "schema_version": 1,
+        "transaction_id": "a" * 32,
+        "reader_sid": "S-1-5-21-test",
+        "token_sha256": "b" * 64,
+        "receipt": bad_seal["receipt"],
+    }
+    with pytest.raises(RuntimeError, match="Migrationsbeleg ist ungültig"):
+        migration._decode_migration_seal(json.dumps(legacy_seal).encode())
 
     bad_phase = {
         "schema_version": migration.MIGRATION_PHASE_SCHEMA_VERSION,
