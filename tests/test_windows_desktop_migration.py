@@ -1335,17 +1335,50 @@ def test_profile_audit_mount_inventory_is_read_only_and_rejects_foreign_names() 
     fake_winreg = SimpleNamespace(
         HKEY_USERS=hku,
         EnumKey=Mock(side_effect=["S-1-5-21-1000", expected_mount, no_more_items()]),
-        UnloadKey=Mock(),
     )
 
     assert migration._profile_audit_mounts(transaction_id, _winreg=fake_winreg) == (expected_mount,)
-    fake_winreg.UnloadKey.assert_not_called()
+    assert not hasattr(fake_winreg, "UnloadKey")
 
     foreign_mount = f"{migration.PROFILE_AUDIT_MOUNT_PREFIX}{'c' * 32}_{'d' * 24}"
     fake_winreg.EnumKey = Mock(side_effect=[foreign_mount, no_more_items()])
     with pytest.raises(RuntimeError, match="fremder oder ungültiger"):
         migration._profile_audit_mounts(transaction_id, _winreg=fake_winreg)
-    fake_winreg.UnloadKey.assert_not_called()
+
+
+def test_profile_audit_unload_uses_pywin32_and_validates_binding_before_native_call() -> None:
+    transaction_id = "a" * 32
+    mount = f"{migration.PROFILE_AUDIT_MOUNT_PREFIX}{transaction_id}_{'b' * 24}"
+    hku = object()
+    fake_winreg = SimpleNamespace(HKEY_USERS=hku)
+    reg_unload_key = Mock()
+    fake_win32api = SimpleNamespace(RegUnLoadKey=reg_unload_key)
+
+    assert not hasattr(fake_winreg, "UnloadKey")
+    migration._unload_profile_audit_mount(
+        mount,
+        transaction_id=transaction_id,
+        winreg=fake_winreg,
+        _win32api=fake_win32api,
+    )
+    reg_unload_key.assert_called_once_with(hku, mount)
+
+    foreign_mount = f"{migration.PROFILE_AUDIT_MOUNT_PREFIX}{'c' * 32}_{'d' * 24}"
+    with pytest.raises(RuntimeError, match="Transaktionsbindung"):
+        migration._unload_profile_audit_mount(
+            foreign_mount,
+            transaction_id=transaction_id,
+            winreg=fake_winreg,
+            _win32api=fake_win32api,
+        )
+    with pytest.raises(RuntimeError, match="Transaktionsbindung"):
+        migration._unload_profile_audit_mount(
+            mount,
+            transaction_id="invalid",
+            winreg=fake_winreg,
+            _win32api=fake_win32api,
+        )
+    assert reg_unload_key.call_count == 1
 
 
 def test_mutating_profile_audit_recovery_unloads_bound_mount_before_snapshot_cleanup(
@@ -1374,8 +1407,9 @@ def test_mutating_profile_audit_recovery_unloads_bound_mount_before_snapshot_cle
     fake_winreg = SimpleNamespace(
         HKEY_USERS=hku,
         EnumKey=Mock(side_effect=[mount, no_more_items()]),
-        UnloadKey=Mock(side_effect=lambda _root, _name: events.append("unload")),
     )
+    reg_unload_key = Mock(side_effect=lambda _root, _name: events.append("unload"))
+    monkeypatch.setitem(sys.modules, "win32api", SimpleNamespace(RegUnLoadKey=reg_unload_key))
     monkeypatch.setattr(
         migration,
         "validate_machine_path",
@@ -1410,12 +1444,12 @@ def test_mutating_profile_audit_recovery_unloads_bound_mount_before_snapshot_cle
         "validate-files",
         "remove",
     ]
-    fake_winreg.UnloadKey.assert_called_once_with(hku, mount)
+    reg_unload_key.assert_called_once_with(hku, mount)
     remove.assert_called_once_with(snapshot, expected_transaction_id=transaction_id)
 
     unknown = state_directory / "fremd.txt"
     unknown.write_bytes(b"keep")
-    fake_winreg.UnloadKey.reset_mock()
+    reg_unload_key.reset_mock()
     remove.reset_mock()
     with pytest.raises(RuntimeError, match="unerwartete Einträge"):
         migration._recover_orphaned_profile_audit_state(
@@ -1423,7 +1457,7 @@ def test_mutating_profile_audit_recovery_unloads_bound_mount_before_snapshot_cle
             transaction_id=transaction_id,
             winreg=fake_winreg,
         )
-    fake_winreg.UnloadKey.assert_not_called()
+    reg_unload_key.assert_not_called()
     remove.assert_not_called()
     assert unknown.read_bytes() == b"keep"
 
@@ -1679,18 +1713,28 @@ def test_state_cleanup_accepts_only_transaction_bound_protected_hive_snapshot(
     modules[3].CloseHandle(handle)
     mount = f"{migration.PROFILE_AUDIT_MOUNT_PREFIX}{transaction_id}_{'a' * 24}"
     hku = object()
-    unload = Mock()
-    fake_winreg = SimpleNamespace(HKEY_USERS=hku, UnloadKey=unload)
+    events: list[str] = []
+    reg_unload_key = Mock(side_effect=lambda _root, _name: events.append("unload"))
+    fake_winreg = SimpleNamespace(HKEY_USERS=hku)
     monkeypatch.setattr(migration, "_profile_audit_mounts", lambda _transaction_id: (mount,))
-    enable_privileges = Mock()
+    enable_privileges = Mock(side_effect=lambda: events.append("privileges"))
     monkeypatch.setattr(migration, "_enable_registry_hive_privileges", enable_privileges)
     monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    monkeypatch.setitem(sys.modules, "win32api", SimpleNamespace(RegUnLoadKey=reg_unload_key))
+    remove_snapshot = migration._remove_profile_hive_snapshot
+
+    def ordered_remove(*args, **kwargs) -> None:
+        events.append("remove")
+        remove_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(migration, "_remove_profile_hive_snapshot", ordered_remove)
 
     migration.clear_desktop_migration_seal()
 
     assert not state_directory.exists()
+    assert events == ["privileges", "unload", "remove"]
     enable_privileges.assert_called_once_with()
-    unload.assert_called_once_with(hku, mount)
+    reg_unload_key.assert_called_once_with(hku, mount)
 
 
 def test_offline_hive_is_copied_under_component_locks_before_registry_loading(
@@ -2481,11 +2525,11 @@ def test_profile_inventory_loads_and_releases_an_offline_entra_hive(
         EnumKey=Mock(side_effect=[sid, no_more_items()]),
         QueryValueEx=Mock(side_effect=query_value),
         LoadKey=Mock(side_effect=load_key),
-        UnloadKey=Mock(),
     )
     monkeypatch.setattr(migration.sys, "platform", "win32")
     operation_order: list[str] = []
     enable_privileges = Mock(side_effect=lambda: operation_order.append("privileges"))
+    reg_unload_key = Mock(side_effect=lambda _root, _name: operation_order.append("unload"))
 
     def snapshot_hive(*_args, **_kwargs):
         operation_order.append("snapshot")
@@ -2493,9 +2537,10 @@ def test_profile_inventory_loads_and_releases_an_offline_entra_hive(
 
     monkeypatch.setattr(migration, "_enable_registry_hive_privileges", enable_privileges)
     monkeypatch.setattr(migration, "_snapshot_profile_hive", Mock(side_effect=snapshot_hive))
-    remove_snapshot = Mock()
+    remove_snapshot = Mock(side_effect=lambda *_args, **_kwargs: operation_order.append("remove"))
     monkeypatch.setattr(migration, "_remove_profile_hive_snapshot", remove_snapshot)
     monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    monkeypatch.setitem(sys.modules, "win32api", SimpleNamespace(RegUnLoadKey=reg_unload_key))
 
     assert migration._profile_installation_candidates(
         snapshot_directory=snapshot_directory,
@@ -2509,10 +2554,29 @@ def test_profile_inventory_loads_and_releases_an_offline_entra_hive(
         / migration.DESKTOP_EXECUTABLE_NAME,
     )
     fake_winreg.LoadKey.assert_called_once()
-    fake_winreg.UnloadKey.assert_called_once_with(hku, loaded_mounts[0])
+    reg_unload_key.assert_called_once_with(hku, loaded_mounts[0])
     remove_snapshot.assert_called_once_with(snapshot, expected_transaction_id="0" * 32)
-    assert operation_order[:2] == ["privileges", "snapshot"]
+    assert operation_order == ["privileges", "snapshot", "unload", "remove"]
     assert loaded_mounts[0].startswith("ERechnungsPrueferAudit_")
+
+    operation_order.clear()
+    loaded_mounts.clear()
+    fake_winreg.EnumKey = Mock(side_effect=[sid, no_more_items()])
+    remove_snapshot.reset_mock()
+
+    def fail_unload(_root, _name) -> None:
+        operation_order.append("unload-failed")
+        raise Exception("pywin32-style failure")
+
+    reg_unload_key.side_effect = fail_unload
+    with pytest.raises(RuntimeError, match="konnte nicht sicher freigegeben"):
+        migration._profile_installation_candidates(
+            snapshot_directory=snapshot_directory,
+            state_reader_sid="S-1-5-21-test",
+        )
+    assert operation_order == ["privileges", "snapshot", "unload-failed"]
+    remove_snapshot.assert_not_called()
+    assert snapshot.read_bytes() == b"protected synthetic registry hive"
 
 
 def test_profile_inventory_fails_closed_without_a_loadable_user_hive(
@@ -3153,10 +3217,9 @@ def test_orphaned_profile_recovery_keeps_snapshot_when_bound_mount_cannot_unload
     )
     snapshot_directory.mkdir(parents=True)
     mount = f"{migration.PROFILE_AUDIT_MOUNT_PREFIX}{transaction_id}_{'8' * 24}"
-    fake_winreg = SimpleNamespace(
-        HKEY_USERS=object(),
-        UnloadKey=Mock(side_effect=OSError("busy")),
-    )
+    fake_winreg = SimpleNamespace(HKEY_USERS=object())
+    reg_unload_key = Mock(side_effect=Exception("pywin32-style failure"))
+    monkeypatch.setitem(sys.modules, "win32api", SimpleNamespace(RegUnLoadKey=reg_unload_key))
     monkeypatch.setattr(
         migration,
         "validate_machine_path",
@@ -3177,7 +3240,7 @@ def test_orphaned_profile_recovery_keeps_snapshot_when_bound_mount_cannot_unload
         )
 
     enable.assert_called_once_with()
-    fake_winreg.UnloadKey.assert_called_once_with(fake_winreg.HKEY_USERS, mount)
+    reg_unload_key.assert_called_once_with(fake_winreg.HKEY_USERS, mount)
     remove.assert_not_called()
 
 

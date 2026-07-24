@@ -874,6 +874,35 @@ def _profile_audit_mounts(
     return tuple(mounts)
 
 
+def _unload_profile_audit_mount(
+    mounted_name: str,
+    *,
+    transaction_id: str,
+    winreg: Any,
+    _win32api: Any | None = None,
+) -> None:
+    """Unload one strictly transaction-bound HKU audit mount via pywin32."""
+
+    if (
+        not _valid_transaction_id(transaction_id)
+        or not isinstance(mounted_name, str)
+        or not _is_profile_audit_mount_name(mounted_name, transaction_id=transaction_id)
+    ):
+        raise RuntimeError("Der Registry-Audit-Mount besitzt keine gültige Transaktionsbindung.")
+    if _win32api is None:
+        try:
+            import win32api as native_win32api
+        except ImportError as exc:
+            raise RuntimeError("pywin32 fehlt für das sichere Entladen des Registry-Audit-Mounts.") from exc
+        win32api = native_win32api
+    else:
+        win32api = _win32api
+    reg_unload_key = getattr(win32api, "RegUnLoadKey", None)
+    if not callable(reg_unload_key):
+        raise RuntimeError("pywin32 stellt das sichere Entladen des Registry-Audit-Mounts nicht bereit.")
+    reg_unload_key(winreg.HKEY_USERS, mounted_name)
+
+
 def _temporary_transaction_id(name: str, *, prefix: str) -> str | None:
     suffix = name[len(prefix) :] if name.startswith(prefix) and name.endswith(".tmp") else ""
     body = suffix[:-4] if suffix.endswith(".tmp") else ""
@@ -1219,8 +1248,12 @@ def _recover_orphaned_profile_audit_state(
         _enable_registry_hive_privileges()
         for mounted_name in mounts:
             try:
-                winreg.UnloadKey(winreg.HKEY_USERS, mounted_name)
-            except OSError as exc:
+                _unload_profile_audit_mount(
+                    mounted_name,
+                    transaction_id=transaction_id,
+                    winreg=winreg,
+                )
+            except Exception as exc:
                 raise RuntimeError(
                     "Ein verwaister, transaktionsgebundener Registry-Audit-Mount konnte nicht entladen werden."
                 ) from exc
@@ -1325,16 +1358,20 @@ def _profile_installation_candidates(
                 )
         finally:
             cleanup_error: RuntimeError | None = None
-            cleanup_cause: OSError | None = None
+            cleanup_cause: Exception | None = None
             if loaded_by_us and mounted_name is not None:
                 try:
-                    winreg.UnloadKey(winreg.HKEY_USERS, mounted_name)
-                except OSError as exc:
+                    _unload_profile_audit_mount(
+                        mounted_name,
+                        transaction_id=transaction_id,
+                        winreg=winreg,
+                    )
+                except Exception as exc:
                     cleanup_error = RuntimeError(
                         f"Das temporär geladene Benutzerprofil {sid} konnte nicht sicher freigegeben werden."
                     )
                     cleanup_cause = exc
-            if hive_snapshot is not None:
+            if hive_snapshot is not None and cleanup_error is None:
                 try:
                     _remove_profile_hive_snapshot(
                         hive_snapshot,
@@ -3371,8 +3408,12 @@ def _clear_migration_state(*, expected_reader_sid: str, require_current_user: bo
         _enable_registry_hive_privileges()
         for mounted_name in orphan_mounts:
             try:
-                winreg.UnloadKey(winreg.HKEY_USERS, mounted_name)
-            except OSError as exc:
+                _unload_profile_audit_mount(
+                    mounted_name,
+                    transaction_id=transaction_id,
+                    winreg=winreg,
+                )
+            except Exception as exc:
                 raise RuntimeError(
                     "Ein verwaister, transaktionsgebundener Registry-Audit-Mount konnte nicht entladen werden."
                 ) from exc
