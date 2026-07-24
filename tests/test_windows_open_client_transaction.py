@@ -448,6 +448,18 @@ def test_setup_diagnostic_extracts_only_numeric_pywin32_error_code() -> None:
 
 
 def test_setup_diagnostic_origin_uses_only_fixed_allowlisted_function_codes() -> None:
+    expected_origins = {
+        "_canonicalize_profile_hive_recovery_tail": "hive-canonicalize-tail",
+        "_canonicalize_profile_hive_support_file": "hive-canonicalize-file",
+        "_validate_profile_hive_recovery_directory": "hive-recovery-directory",
+        "_wait_for_profile_hive_recovery_tail_empty": "hive-wait-empty",
+        "_wait_for_profile_hive_snapshot_absent": "hive-wait-absent",
+    }
+    assert {
+        function_name: windows_open_client._SETUP_DIAGNOSTIC_ORIGINS[function_name]
+        for function_name in expected_origins
+    } == expected_origins
+
     def _verify_profile_hive_support_file() -> None:
         raise LookupError("secret path and token")
 

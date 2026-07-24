@@ -84,6 +84,8 @@ MIGRATION_TOKEN_SCRYPT_DKLEN = 32
 PROFILE_HIVE_SNAPSHOT_DIRECTORY_PREFIX = "profile-hive-"
 PROFILE_HIVE_SNAPSHOT_FILE_NAME = "NTUSER.DAT"
 PROFILE_AUDIT_MOUNT_PREFIX = "ERechnungsPrueferAudit_"
+PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS = 20
+PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS = 0.05
 SYSTEM_SID = "S-1-5-18"
 ADMINISTRATORS_SID = "S-1-5-32-544"
 INTERACTIVE_SID = "S-1-5-4"
@@ -1301,6 +1303,50 @@ def _validate_profile_hive_recovery_tail(
     return entries
 
 
+def _wait_for_profile_hive_recovery_tail_empty(snapshot_directory: Path) -> None:
+    """Observe delayed namespace deletion without touching late or residual entries."""
+
+    last_error: OSError | None = None
+    for attempt in range(PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS):
+        try:
+            empty = not any(snapshot_directory.iterdir())
+        except OSError as exc:
+            last_error = exc
+        else:
+            last_error = None
+            if empty:
+                return
+        if attempt + 1 < PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS:
+            time.sleep(PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS)
+    if last_error is not None:
+        raise RuntimeError(
+            "Das geschützte NTUSER-Hive-Verzeichnis konnte nicht auf verzögerte Löschungen geprüft werden."
+        ) from last_error
+    raise RuntimeError("Das geschützte NTUSER-Hive-Verzeichnis enthält nach Ablauf der Löschfrist weiterhin Einträge.")
+
+
+def _wait_for_profile_hive_snapshot_absent(snapshot_directory: Path) -> None:
+    """Observe a successful rmdir until its delete-pending namespace entry is absent."""
+
+    last_error: OSError | None = None
+    for attempt in range(PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS):
+        try:
+            snapshot_directory.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+        else:
+            last_error = None
+        if attempt + 1 < PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS:
+            time.sleep(PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS)
+    if last_error is not None:
+        raise RuntimeError(
+            "Das entfernte NTUSER-Hive-Verzeichnis konnte nicht sicher auf Abwesenheit geprüft werden."
+        ) from last_error
+    raise RuntimeError("Das entfernte NTUSER-Hive-Verzeichnis ist nach Ablauf der Löschfrist weiterhin vorhanden.")
+
+
 def _remove_profile_hive_snapshot(
     snapshot: Path,
     *,
@@ -1321,16 +1367,12 @@ def _remove_profile_hive_snapshot(
             entry.unlink()
         except OSError as exc:
             raise RuntimeError("Eine geschützte Registry-Supportdatei konnte nicht gelöscht werden.") from exc
+    _wait_for_profile_hive_recovery_tail_empty(snapshot_directory)
     try:
-        if any(snapshot_directory.iterdir()):
-            raise RuntimeError("Das geschützte NTUSER-Hive-Verzeichnis ist nach der Bereinigung nicht leer.")
         snapshot_directory.rmdir()
-    except RuntimeError:
-        raise
     except OSError as exc:
         raise RuntimeError("Das geschützte NTUSER-Hive-Verzeichnis konnte nicht gelöscht werden.") from exc
-    if validate_machine_path(snapshot_directory, directory=True):
-        raise RuntimeError("Das geschützte NTUSER-Hive-Verzeichnis wurde nicht vollständig entfernt.")
+    _wait_for_profile_hive_snapshot_absent(snapshot_directory)
 
 
 def _recover_orphaned_profile_audit_state(

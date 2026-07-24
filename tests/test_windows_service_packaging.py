@@ -542,8 +542,13 @@ def test_test_installer_logs_only_allowlisted_internal_open_client_diagnostics()
         "windows-api-error",
         "os-error",
         "internal-error",
+        "hive-canonicalize-file",
+        "hive-canonicalize-tail",
+        "hive-recovery-directory",
         "hive-support-file",
         "hive-remove",
+        "hive-wait-empty",
+        "hive-wait-absent",
         "locked-path",
     ):
         assert safe_code in diagnostic_support

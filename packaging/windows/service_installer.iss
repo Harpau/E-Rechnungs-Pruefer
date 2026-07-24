@@ -475,9 +475,14 @@ begin
     (CompareText(Value, 'profile-inventory') = 0) or
     (CompareText(Value, 'hive-recovery') = 0) or
     (CompareText(Value, 'hive-remove') = 0) or
+    (CompareText(Value, 'hive-canonicalize-file') = 0) or
+    (CompareText(Value, 'hive-canonicalize-tail') = 0) or
+    (CompareText(Value, 'hive-recovery-directory') = 0) or
     (CompareText(Value, 'hive-recovery-tail') = 0) or
     (CompareText(Value, 'hive-validate') = 0) or
     (CompareText(Value, 'hive-support-file') = 0) or
+    (CompareText(Value, 'hive-wait-empty') = 0) or
+    (CompareText(Value, 'hive-wait-absent') = 0) or
     (CompareText(Value, 'legacy-conflict-check') = 0);
 end;
 

@@ -1324,6 +1324,113 @@ def test_profile_hive_recovery_tail_allows_secured_registry_support_files(
     }
 
 
+def test_profile_hive_recovery_tail_wait_accepts_delayed_delete_pending_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_directory = tmp_path / "snapshot"
+    pending = snapshot_directory / "NTUSER.DAT.LOG1"
+    inventories = iter(((pending,), (pending,), ()))
+    inventory_calls: list[Path] = []
+
+    def delayed_iterdir(path: Path):
+        inventory_calls.append(path)
+        return iter(next(inventories))
+
+    sleep = Mock()
+    monkeypatch.setattr(Path, "iterdir", delayed_iterdir)
+    monkeypatch.setattr(migration.time, "sleep", sleep)
+
+    migration._wait_for_profile_hive_recovery_tail_empty(snapshot_directory)
+
+    assert inventory_calls == [snapshot_directory] * 3
+    assert sleep.call_args_list == [
+        call(migration.PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS),
+        call(migration.PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS),
+    ]
+
+
+def test_profile_hive_recovery_tail_wait_rejects_persistent_residue_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_directory = tmp_path / "snapshot"
+    residue = snapshot_directory / "NTUSER.DAT.LOG1"
+    inventory_calls: list[Path] = []
+
+    def persistent_iterdir(path: Path):
+        inventory_calls.append(path)
+        return iter((residue,))
+
+    sleep = Mock()
+    unlink = Mock()
+    monkeypatch.setattr(Path, "iterdir", persistent_iterdir)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(migration.time, "sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="weiterhin Einträge"):
+        migration._wait_for_profile_hive_recovery_tail_empty(snapshot_directory)
+
+    assert inventory_calls == [snapshot_directory] * migration.PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS
+    assert sleep.call_count == migration.PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS - 1
+    assert all(
+        candidate == call(migration.PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS) for candidate in sleep.call_args_list
+    )
+    unlink.assert_not_called()
+
+
+def test_profile_hive_snapshot_absence_wait_accepts_delayed_rmdir_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_directory = tmp_path / "snapshot"
+    observations = iter(("present", "present", "absent"))
+    lstat_calls: list[Path] = []
+
+    def delayed_lstat(path: Path):
+        lstat_calls.append(path)
+        if next(observations) == "absent":
+            raise FileNotFoundError
+        return object()
+
+    sleep = Mock()
+    monkeypatch.setattr(Path, "lstat", delayed_lstat)
+    monkeypatch.setattr(migration.time, "sleep", sleep)
+
+    migration._wait_for_profile_hive_snapshot_absent(snapshot_directory)
+
+    assert lstat_calls == [snapshot_directory] * 3
+    assert sleep.call_args_list == [
+        call(migration.PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS),
+        call(migration.PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS),
+    ]
+
+
+def test_profile_hive_snapshot_absence_wait_rejects_persistent_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_directory = tmp_path / "snapshot"
+    lstat_calls: list[Path] = []
+
+    def persistent_lstat(path: Path):
+        lstat_calls.append(path)
+        return object()
+
+    sleep = Mock()
+    monkeypatch.setattr(Path, "lstat", persistent_lstat)
+    monkeypatch.setattr(migration.time, "sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="weiterhin vorhanden"):
+        migration._wait_for_profile_hive_snapshot_absent(snapshot_directory)
+
+    assert lstat_calls == [snapshot_directory] * migration.PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS
+    assert sleep.call_count == migration.PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS - 1
+    assert all(
+        candidate == call(migration.PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS) for candidate in sleep.call_args_list
+    )
+
+
 @pytest.mark.parametrize(
     "aces",
     [
@@ -2105,8 +2212,39 @@ def test_offline_hive_is_copied_under_component_locks_before_registry_loading(
 
     monkeypatch.setattr(Path, "unlink", ordered_unlink)
     snapshot_directory = snapshot.parent
+    wait_empty = migration._wait_for_profile_hive_recovery_tail_empty
+
+    def ordered_wait_empty(path: Path) -> None:
+        events.append("wait-empty")
+        wait_empty(path)
+
+    monkeypatch.setattr(migration, "_wait_for_profile_hive_recovery_tail_empty", ordered_wait_empty)
+    rmdir = Path.rmdir
+
+    def ordered_rmdir(path: Path, *args, **kwargs) -> None:
+        if path == snapshot_directory:
+            events.append("rmdir")
+        rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rmdir", ordered_rmdir)
+    wait_absent = migration._wait_for_profile_hive_snapshot_absent
+
+    def ordered_wait_absent(path: Path) -> None:
+        events.append("wait-absent")
+        wait_absent(path)
+
+    monkeypatch.setattr(migration, "_wait_for_profile_hive_snapshot_absent", ordered_wait_absent)
     migration._remove_profile_hive_snapshot(snapshot, expected_transaction_id=transaction_id)
-    assert events == ["verify", "set", "verify", "verify", "unlink"]
+    assert events == [
+        "verify",
+        "set",
+        "verify",
+        "verify",
+        "unlink",
+        "wait-empty",
+        "rmdir",
+        "wait-absent",
+    ]
     assert len(support_set_arguments) == 1
     _kind, information, owner, _group, canonical_dacl, _sacl = support_set_arguments[0]
     assert owner == migration.ADMINISTRATORS_SID

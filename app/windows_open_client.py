@@ -79,6 +79,8 @@ _INTERNAL_ACTION_STAGES = (
 )
 _SETUP_DIAGNOSTIC_ORIGINS = {
     "_clear_migration_state": "clear-state",
+    "_canonicalize_profile_hive_recovery_tail": "hive-canonicalize-tail",
+    "_canonicalize_profile_hive_support_file": "hive-canonicalize-file",
     "_enable_registry_hive_privileges": "hive-privileges",
     "_locked_local_path": "locked-path",
     "_migration_state_entries": "state-inventory",
@@ -86,9 +88,12 @@ _SETUP_DIAGNOSTIC_ORIGINS = {
     "_profile_installation_candidates": "profile-inventory",
     "_recover_orphaned_profile_audit_state": "hive-recovery",
     "_remove_profile_hive_snapshot": "hive-remove",
+    "_validate_profile_hive_recovery_directory": "hive-recovery-directory",
     "_validate_profile_hive_recovery_tail": "hive-recovery-tail",
     "_validate_profile_hive_snapshot": "hive-validate",
     "_verify_profile_hive_support_file": "hive-support-file",
+    "_wait_for_profile_hive_recovery_tail_empty": "hive-wait-empty",
+    "_wait_for_profile_hive_snapshot_absent": "hive-wait-absent",
     "verify_no_legacy_desktop_conflicts": "legacy-conflict-check",
 }
 
