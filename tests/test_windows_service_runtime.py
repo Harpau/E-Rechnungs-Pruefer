@@ -363,7 +363,9 @@ def test_service_logging_reprotects_new_active_file_after_rollover(
     acl = Mock()
     log_path = tmp_path / "logs" / "service.log"
     acl.protect_directory.side_effect = lambda path, **_kwargs: path.mkdir(parents=True)
-    monkeypatch.setattr(windows_service, "SERVICE_LOG_MAX_BYTES", 32)
+    # Keep the first formatted record below the limit and make the second one
+    # trigger exactly one rollover on every supported Python version.
+    monkeypatch.setattr(windows_service, "SERVICE_LOG_MAX_BYTES", 128)
 
     logger = windows_service.configure_service_logging(log_path, acl)
     logger.info("x" * 64)
