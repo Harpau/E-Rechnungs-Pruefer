@@ -3,9 +3,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -81,7 +83,7 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
         "workflow_dispatch:",
         "environment: release",
         "id-token: write",
-        "uses: azure/login@v3",
+        "uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43",
         "client-id: ${{ secrets.AZURE_CLIENT_ID }}",
         "tenant-id: ${{ secrets.AZURE_TENANT_ID }}",
         "subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}",
@@ -90,7 +92,13 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
         "AZURE_CODE_SIGNING_CERTIFICATE",
         "test_windows_package.ps1 -RequireSignature -ConfirmIsolatedEnvironment",
         "git merge-base --is-ancestor $env:GITHUB_SHA origin/main",
+        "git cat-file -t $env:GITHUB_REF_NAME",
+        "Der Release-Tag muss annotiert sein.",
         "Manuelle Signiertests dürfen nur auf main gestartet werden.",
+        'python-version: "3.13.14"',
+        "python -m pip install --require-hashes --only-binary=:all:",
+        "-r packaging/windows/requirements-release.txt",
+        "python -m pip install --no-deps --no-build-isolation -e .",
     ):
         assert expected in workflow
 
@@ -100,6 +108,18 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
     assert "creds:" not in workflow
     assert "azure/login@v2" not in workflow
     assert "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow
+    early_gate = workflow.index("Verify release ref before running repository code", workflow.index("windows-release:"))
+    dependency_install = workflow.index("Install application and Windows build dependencies")
+    azure_login = workflow.index("Authenticate to Azure with OIDC")
+    assert early_gate < dependency_install < azure_login
+    assert 'Get-Content -LiteralPath "VERSION" -Raw' in workflow[early_gate:dependency_install]
+    assert "persist-credentials: false" in workflow
+    draft_create = workflow.index('gh release create "${GITHUB_REF_NAME}"')
+    asset_upload = workflow.index('gh release upload "${GITHUB_REF_NAME}"')
+    draft_publish = workflow.index('gh release edit "${GITHUB_REF_NAME}" --draft=false')
+    assert draft_create < asset_upload < draft_publish
+    assert "--draft" in workflow[draft_create:asset_upload]
+    assert "--verify-tag" in workflow[draft_create:asset_upload]
 
     for expected in (
         "EINVOICE_AZURE_SIGN_TOOL",
@@ -107,8 +127,45 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
         "EINVOICE_AZURE_KEY_VAULT_CERTIFICATE",
         "--azure-key-vault-managed-identity",
         "--timestamp-rfc3161",
+        "verify /pa /all /tw",
+        "$Signature.TimeStamperCertificate",
     ):
         assert expected in build_script
+    assert "$signature.TimeStamperCertificate" in workflow
+
+
+def test_windows_release_dependencies_are_exactly_pinned_and_hashed() -> None:
+    lock_path = PROJECT_ROOT / "packaging/windows/requirements-release.txt"
+    requirement = re.compile(
+        r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[^\s]+) "
+        r"--hash=sha256:(?P<digest>[0-9a-f]{64})"
+    )
+    locked: dict[str, str] = {}
+
+    for line in lock_path.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        match = requirement.fullmatch(line)
+        assert match is not None, line
+        name = match.group("name").lower().replace("_", "-")
+        assert name not in locked
+        locked[name] = match.group("version")
+
+    assert len(locked) >= 40
+    project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    runtime_names = {
+        re.split(r"[\[<>=!~; ]", dependency, maxsplit=1)[0].lower().replace("_", "-")
+        for dependency in project["project"]["dependencies"]
+    }
+    assert runtime_names <= locked.keys()
+
+    build_requirements = (PROJECT_ROOT / "packaging/windows/requirements-build.txt").read_text(encoding="utf-8")
+    for line in build_requirements.splitlines():
+        name, version = line.split("==", maxsplit=1)
+        assert locked[name.lower().replace("_", "-")] == version
+
+    for expected in ("pip", "pytest", "httpx", "httpx2", "setuptools", "wheel"):
+        assert expected in locked
 
 
 def test_windows_installer_offers_removable_per_user_autostart() -> None:

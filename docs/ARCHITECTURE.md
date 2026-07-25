@@ -94,6 +94,35 @@ begrenzt, sodass Healthchecks und weitere lokale Requests während längerer Pr�
 beide Plätze belegt, antwortet die API sofort mit `503` und einem begrenzten `Retry-After`, statt weitere Arbeit
 hinter möglicherweise bereits abgebrochenen Clientanfragen aufzustauen.
 
+### Windows-Betriebsarten
+
+Die Windows-Paketierung stellt denselben Anwendungs- und Prüfcode über zwei alternative Hosts bereit:
+
+```mermaid
+flowchart LR
+    D["Desktop-/Tray-Host<br/>Benutzeranmeldung"] --> R["Gemeinsamer Loopback-Server<br/>127.0.0.1, fester Port"]
+    S["SCM-Diensthost<br/>LocalService"] --> R
+    R --> A["FastAPI / Analyse / Berichte"]
+    C["Interaktiver Öffnen-Client"] -->|"authentifizierte Named Pipe<br/>Einmal-Bootstrap"| S
+    N["Node-RED"] -->|"Bearer-Token /api/*"| R
+```
+
+`app/server_runtime.py` kapselt Socketreservierung, Healthcheck und Uvicorn-Lebenszyklus ohne UI-Abhängigkeit.
+`app/windows_launcher.py` ergänzt für den Desktopmodus Tray, Benutzer-Mutex, Browserstart und HKCU-kompatiblen
+Hintergrundbetrieb. `app/windows_service.py` bildet den SCM-Lebenszyklus ab, aktiviert die Maschinenkonfiguration
+vor dem Import von `app.main` und öffnet in Session 0 keine interaktive Oberfläche.
+
+Beide Hosts konkurrieren um denselben geschützten maschinenweiten Backend-Mutex und denselben festen
+Loopback-Port; es kann daher genau eine Betriebsart aktiv sein. Der Dienst läuft als `LocalService` mit eigenem
+Service-SID. Maschinenkonfiguration, API-Token und technische Logs liegen mit geschützten DACLs unter
+`%ProgramData%`, während unveränderliche Binärdateien unter `%ProgramFiles%` installiert werden.
+
+Der Öffnen-Client erhält über lokale Named-Pipe-IPC ausschließlich einen kurzlebigen, einmaligen Browserbootstrap.
+Das persistente API-Bearer-Token ist davon getrennt und schützt nur `/api/*`. Dadurch bleiben Browserbedienung und
+Node-RED-API in beiden Hosts verfügbar, ohne das dauerhafte Token in Browser-URLs oder Browser-Speicher zu geben.
+Die Architekturentscheidung ist in [`adr/0001-windows-service-mode.md`](adr/0001-windows-service-mode.md)
+dokumentiert.
+
 ## Erweiterungspunkte
 
 ### Neues Feld in CII oder UBL

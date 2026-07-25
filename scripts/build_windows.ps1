@@ -7,7 +7,8 @@ param(
     [string]$AzureKeyVaultUrl = $env:EINVOICE_AZURE_KEY_VAULT_URL,
     [string]$AzureKeyVaultCertificate = $env:EINVOICE_AZURE_KEY_VAULT_CERTIFICATE,
     [string]$TimestampUrl = "http://timestamp.acs.microsoft.com",
-    [switch]$WithoutOfficialValidation
+    [switch]$WithoutOfficialValidation,
+    [switch]$BuildElevatedMigrationTestInstaller
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,13 +16,23 @@ Set-StrictMode -Version Latest
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Version = (Get-Content (Join-Path $ProjectRoot "VERSION") -Raw).Trim()
-$SpecFile = Join-Path $ProjectRoot "packaging\windows\e_rechnungs_pruefer.spec"
-$InstallerFile = Join-Path $ProjectRoot "packaging\windows\installer.iss"
+$DesktopSpecFile = Join-Path $ProjectRoot "packaging\windows\e_rechnungs_pruefer.spec"
+$ServiceSpecFile = Join-Path $ProjectRoot "packaging\windows\e_rechnungs_pruefer_service.spec"
+$OpenClientSpecFile = Join-Path $ProjectRoot "packaging\windows\e_rechnungs_pruefer_open_client.spec"
+$DesktopInstallerFile = Join-Path $ProjectRoot "packaging\windows\installer.iss"
+$ServiceInstallerFile = Join-Path $ProjectRoot "packaging\windows\service_installer.iss"
 $BuildRoot = Join-Path $ProjectRoot "build\windows"
 $BundleRoot = Join-Path $BuildRoot "bundle"
 $WorkRoot = Join-Path $BuildRoot "pyinstaller"
-$AppBundle = Join-Path $BundleRoot "E-Rechnungs-Pruefer"
+$DesktopWorkRoot = Join-Path $WorkRoot "desktop"
+$ServiceWorkRoot = Join-Path $WorkRoot "service"
+$OpenClientWorkRoot = Join-Path $WorkRoot "open-client"
+$DesktopBundle = Join-Path $BundleRoot "E-Rechnungs-Pruefer"
+$ServiceBundle = Join-Path $BundleRoot "E-Rechnungs-Pruefer-Dienst"
+$OpenClient = Join-Path $BundleRoot "E-Rechnungs-Pruefer-Oeffnen.exe"
 $DistRoot = Join-Path $ProjectRoot "dist"
+$PublishBundleRoot = Join-Path $BuildRoot "publish-bundle"
+$TestInstallerRoot = Join-Path $BuildRoot "test-installer"
 
 if (-not $IsWindows) {
     throw "Das Windows-Paket kann nur unter Windows gebaut werden."
@@ -61,13 +72,38 @@ New-Item $DistRoot -ItemType Directory -Force | Out-Null
     --clean `
     --noconfirm `
     --distpath $BundleRoot `
-    --workpath $WorkRoot `
-    $SpecFile
+    --workpath $DesktopWorkRoot `
+    $DesktopSpecFile
 if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller ist fehlgeschlagen."
+    throw "PyInstaller ist für den Desktopmodus fehlgeschlagen."
 }
-if (-not (Test-Path (Join-Path $AppBundle "E-Rechnungs-Pruefer.exe"))) {
-    throw "Das erwartete PyInstaller-Artefakt wurde nicht erzeugt."
+
+& $Python -m PyInstaller `
+    --clean `
+    --noconfirm `
+    --distpath $BundleRoot `
+    --workpath $ServiceWorkRoot `
+    $ServiceSpecFile
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller ist für den Dienstmodus fehlgeschlagen."
+}
+
+& $Python -m PyInstaller `
+    --clean `
+    --noconfirm `
+    --distpath $BundleRoot `
+    --workpath $OpenClientWorkRoot `
+    $OpenClientSpecFile
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller ist für den Öffnen-Client fehlgeschlagen."
+}
+
+$DesktopExecutable = Join-Path $DesktopBundle "E-Rechnungs-Pruefer.exe"
+$ServiceExecutable = Join-Path $ServiceBundle "E-Rechnungs-Pruefer-Dienst.exe"
+foreach ($ExpectedExecutable in @($DesktopExecutable, $ServiceExecutable, $OpenClient)) {
+    if (-not (Test-Path -LiteralPath $ExpectedExecutable)) {
+        throw "Das erwartete PyInstaller-Artefakt wurde nicht erzeugt: $ExpectedExecutable"
+    }
 }
 
 function Resolve-SignTool {
@@ -128,21 +164,134 @@ function Sign-File([string]$Path) {
     if (-not $VerificationTool) {
         throw "SignTool für die Signaturprüfung wurde nicht gefunden."
     }
-    & $VerificationTool verify /pa /all $Path
+    & $VerificationTool verify /pa /all /tw $Path
     if ($LASTEXITCODE -ne 0) {
         throw "Die Signaturprüfung ist fehlgeschlagen: $Path"
+    }
+    $Signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($Signature.Status -ne "Valid" -or $null -eq $Signature.TimeStamperCertificate) {
+        throw "Die Authenticode-Signatur oder ihr RFC-3161-Zeitstempel ist ungültig: $Path"
+    }
+}
+
+function Test-PublishedWindowsArtifacts {
+    param(
+        [string]$Archive,
+        [string]$DesktopInstaller,
+        [string]$ServiceInstaller,
+        [string]$Manifest,
+        [string[]]$ExpectedPaths,
+        [string]$VerificationRoot
+    )
+
+    if ($ExpectedPaths.Count -ne 6) {
+        throw "Die Veröffentlichungsprüfung erwartet genau sechs Artefaktpfade."
+    }
+
+    $ExpectedPathSet = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($ExpectedPath in $ExpectedPaths) {
+        if (-not $ExpectedPathSet.Add($ExpectedPath)) {
+            throw "Die Veröffentlichungsprüfung enthält einen doppelten erwarteten Pfad: $ExpectedPath"
+        }
+    }
+
+    if (Test-Path -LiteralPath $VerificationRoot) {
+        throw "Der temporäre Veröffentlichungsprüfpfad ist nicht frisch: $VerificationRoot"
+    }
+
+    New-Item $VerificationRoot -ItemType Directory | Out-Null
+    try {
+        Expand-Archive -LiteralPath $Archive -DestinationPath $VerificationRoot
+        Copy-Item -LiteralPath $DesktopInstaller -Destination $VerificationRoot
+        Copy-Item -LiteralPath $ServiceInstaller -Destination $VerificationRoot
+        Copy-Item -LiteralPath $Archive -Destination $VerificationRoot
+
+        $ManifestLines = @([System.IO.File]::ReadAllLines($Manifest))
+        if ($ManifestLines.Count -ne 6) {
+            throw "Das SHA256-Manifest muss genau sechs Zeilen enthalten."
+        }
+
+        $VerifiedPathSet = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::Ordinal
+        )
+        $VerificationRootFullPath = [System.IO.Path]::GetFullPath($VerificationRoot)
+        $VerificationRootPrefix = $VerificationRootFullPath + [System.IO.Path]::DirectorySeparatorChar
+        foreach ($ManifestLine in $ManifestLines) {
+            if ($ManifestLine -notmatch '^(?<Digest>[0-9A-Fa-f]{64})  (?<RelativePath>[^\s]+)$') {
+                throw "Ungültige Zeile im SHA256-Manifest: $ManifestLine"
+            }
+
+            $ExpectedDigest = $Matches.Digest
+            $RelativePath = $Matches.RelativePath
+            if ([System.IO.Path]::IsPathRooted($RelativePath) -or $RelativePath.Contains('\')) {
+                throw "Unzulässiger Pfad im SHA256-Manifest: $RelativePath"
+            }
+
+            $PathSegments = @($RelativePath.Split('/'))
+            if ($PathSegments.Count -eq 0 -or @($PathSegments | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) {
+                throw "Traversaler oder leerer Pfad im SHA256-Manifest: $RelativePath"
+            }
+            if (-not $ExpectedPathSet.Contains($RelativePath)) {
+                throw "Unbekannter Pfad im SHA256-Manifest: $RelativePath"
+            }
+            if (-not $VerifiedPathSet.Add($RelativePath)) {
+                throw "Doppelter Pfad im SHA256-Manifest: $RelativePath"
+            }
+
+            $PlatformRelativePath = [string]::Join(
+                [string][System.IO.Path]::DirectorySeparatorChar,
+                [string[]]$PathSegments
+            )
+            $ArtifactPath = [System.IO.Path]::GetFullPath(
+                (Join-Path $VerificationRootFullPath $PlatformRelativePath)
+            )
+            if (-not $ArtifactPath.StartsWith(
+                    $VerificationRootPrefix,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                throw "Der Manifestpfad verlässt den Veröffentlichungsprüfpfad: $RelativePath"
+            }
+            if (-not (Test-Path -LiteralPath $ArtifactPath -PathType Leaf)) {
+                throw "Das im SHA256-Manifest genannte Artefakt fehlt: $RelativePath"
+            }
+
+            $ActualDigest = (Get-FileHash -LiteralPath $ArtifactPath -Algorithm SHA256).Hash
+            if (-not [string]::Equals(
+                    $ActualDigest,
+                    $ExpectedDigest,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                throw "SHA256-Prüfung fehlgeschlagen: $RelativePath"
+            }
+        }
+
+        foreach ($ExpectedPath in $ExpectedPathSet) {
+            if (-not $VerifiedPathSet.Contains($ExpectedPath)) {
+                throw "Erwarteter Pfad fehlt im SHA256-Manifest: $ExpectedPath"
+            }
+        }
+    } finally {
+        Remove-Item -LiteralPath $VerificationRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
 if ($SigningEnabled) {
-    Sign-File (Join-Path $AppBundle "E-Rechnungs-Pruefer.exe")
+    Sign-File (Join-Path $DesktopBundle "E-Rechnungs-Pruefer.exe")
+    Sign-File (Join-Path $ServiceBundle "E-Rechnungs-Pruefer-Dienst.exe")
+    Sign-File $OpenClient
 } else {
-    Write-Warning "Keine Signierkonfiguration gesetzt; das Paket wird für Tests unsigniert gebaut."
+    Write-Warning "Keine Signierkonfiguration gesetzt; die Pakete werden für Tests unsigniert gebaut."
 }
 
 $IsccCandidates = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 7\ISCC.exe"
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe"
 )
 $IsccCommand = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
 if ($IsccCommand) {
@@ -156,24 +305,110 @@ if (-not $Iscc) {
 
 & $Iscc `
     "/DAppVersion=$Version" `
-    "/DSourceDir=$AppBundle" `
+    "/DSourceDir=$DesktopBundle" `
     "/DOutputDir=$DistRoot" `
     "/DProjectRoot=$ProjectRoot" `
-    $InstallerFile
+    $DesktopInstallerFile
 if ($LASTEXITCODE -ne 0) {
-    throw "Inno Setup ist fehlgeschlagen."
+    throw "Inno Setup ist für den Desktopinstaller fehlgeschlagen."
 }
 
-$Setup = Join-Path $DistRoot "E-Rechnungs-Pruefer-$Version-Windows-x64-Setup.exe"
-if (-not (Test-Path $Setup)) {
-    throw "Der erwartete Installer wurde nicht erzeugt."
+& $Iscc `
+    "/DAppVersion=$Version" `
+    "/DServiceSourceDir=$ServiceBundle" `
+    "/DOpenClientFile=$OpenClient" `
+    "/DOutputDir=$DistRoot" `
+    "/DProjectRoot=$ProjectRoot" `
+    $ServiceInstallerFile
+if ($LASTEXITCODE -ne 0) {
+    throw "Inno Setup ist für den Dienstinstaller fehlgeschlagen."
 }
-Sign-File $Setup
 
-$Digest = (Get-FileHash $Setup -Algorithm SHA256).Hash.ToLowerInvariant()
-$ChecksumFile = Join-Path $DistRoot "E-Rechnungs-Pruefer-$Version-Windows-x64-SHA256.txt"
-Set-Content $ChecksumFile "$Digest  $(Split-Path -Leaf $Setup)" -Encoding utf8NoBOM
+if ($BuildElevatedMigrationTestInstaller) {
+    New-Item $TestInstallerRoot -ItemType Directory -Force | Out-Null
+    & $Iscc `
+        "/DAppVersion=$Version" `
+        "/DServiceSourceDir=$ServiceBundle" `
+        "/DOpenClientFile=$OpenClient" `
+        "/DOutputDir=$TestInstallerRoot" `
+        "/DProjectRoot=$ProjectRoot" `
+        "/DAllowElevatedMigrationTestContext=1" `
+        $ServiceInstallerFile
+    if ($LASTEXITCODE -ne 0) {
+        throw "Inno Setup ist für den ausschließlich internen Dienst-Testinstaller fehlgeschlagen."
+    }
+}
 
-Write-Host "Windows-Paket erzeugt:"
-Write-Host "- $Setup"
+$DesktopSetup = Join-Path $DistRoot "E-Rechnungs-Pruefer-$Version-Windows-x64-Setup.exe"
+$ServiceSetup = Join-Path $DistRoot "E-Rechnungs-Pruefer-$Version-Windows-x64-Dienst-Setup.exe"
+foreach ($ExpectedSetup in @($DesktopSetup, $ServiceSetup)) {
+    if (-not (Test-Path -LiteralPath $ExpectedSetup)) {
+        throw "Der erwartete Installer wurde nicht erzeugt: $ExpectedSetup"
+    }
+}
+Sign-File $DesktopSetup
+Sign-File $ServiceSetup
+if ($BuildElevatedMigrationTestInstaller) {
+    $ElevatedMigrationTestSetup = Join-Path $TestInstallerRoot "E-Rechnungs-Pruefer-$Version-Windows-x64-Dienst-Setup.exe"
+    if (-not (Test-Path -LiteralPath $ElevatedMigrationTestSetup)) {
+        throw "Der ausschließlich interne Dienst-Testinstaller wurde nicht erzeugt: $ElevatedMigrationTestSetup"
+    }
+    Sign-File $ElevatedMigrationTestSetup
+}
+
+$PublishedBundleDirectory = Join-Path $PublishBundleRoot "bundle"
+$PublishedDesktopDirectory = Join-Path $PublishedBundleDirectory "desktop"
+$PublishedServiceDirectory = Join-Path $PublishedBundleDirectory "service"
+New-Item $PublishedDesktopDirectory -ItemType Directory -Force | Out-Null
+New-Item $PublishedServiceDirectory -ItemType Directory -Force | Out-Null
+Copy-Item (Join-Path $DesktopBundle "*") $PublishedDesktopDirectory -Recurse -Force
+Copy-Item (Join-Path $ServiceBundle "*") $PublishedServiceDirectory -Recurse -Force
+Copy-Item $OpenClient $PublishedBundleDirectory -Force
+$BundleArchive = Join-Path $DistRoot "E-Rechnungs-Pruefer-$Version-Windows-x64-Binaries.zip"
+Remove-Item $BundleArchive -Force -ErrorAction SilentlyContinue
+Compress-Archive -Path $PublishedBundleDirectory -DestinationPath $BundleArchive -CompressionLevel Optimal
+if (-not (Test-Path -LiteralPath $BundleArchive)) {
+    throw "Das veröffentlichbare Binärbundle wurde nicht erzeugt: $BundleArchive"
+}
+
+$OwnedFiles = @(
+    [PSCustomObject]@{ Path = $DesktopExecutable; Name = "bundle/desktop/E-Rechnungs-Pruefer.exe" },
+    [PSCustomObject]@{ Path = $ServiceExecutable; Name = "bundle/service/E-Rechnungs-Pruefer-Dienst.exe" },
+    [PSCustomObject]@{ Path = $OpenClient; Name = "bundle/E-Rechnungs-Pruefer-Oeffnen.exe" },
+    [PSCustomObject]@{ Path = $DesktopSetup; Name = (Split-Path -Leaf $DesktopSetup) },
+    [PSCustomObject]@{ Path = $ServiceSetup; Name = (Split-Path -Leaf $ServiceSetup) },
+    [PSCustomObject]@{ Path = $BundleArchive; Name = (Split-Path -Leaf $BundleArchive) }
+)
+$ChecksumLines = foreach ($OwnedFile in $OwnedFiles) {
+    $Digest = (Get-FileHash $OwnedFile.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$Digest  $($OwnedFile.Name)"
+}
+$ChecksumFile = Join-Path $DistRoot "E-Rechnungs-Pruefer-$Version-Windows-x64-SHA256SUMS.txt"
+Set-Content $ChecksumFile $ChecksumLines -Encoding utf8NoBOM
+
+$ExpectedPublishedPaths = @(
+    "bundle/desktop/E-Rechnungs-Pruefer.exe",
+    "bundle/service/E-Rechnungs-Pruefer-Dienst.exe",
+    "bundle/E-Rechnungs-Pruefer-Oeffnen.exe",
+    "E-Rechnungs-Pruefer-$Version-Windows-x64-Setup.exe",
+    "E-Rechnungs-Pruefer-$Version-Windows-x64-Dienst-Setup.exe",
+    "E-Rechnungs-Pruefer-$Version-Windows-x64-Binaries.zip"
+)
+$VerificationRoot = Join-Path $BuildRoot "publish-verification-$([guid]::NewGuid().ToString('N'))"
+Test-PublishedWindowsArtifacts `
+    -Archive $BundleArchive `
+    -DesktopInstaller $DesktopSetup `
+    -ServiceInstaller $ServiceSetup `
+    -Manifest $ChecksumFile `
+    -ExpectedPaths $ExpectedPublishedPaths `
+    -VerificationRoot $VerificationRoot
+
+Write-Host "Windows-Pakete erzeugt:"
+Write-Host "- $DesktopSetup"
+Write-Host "- $ServiceSetup"
+Write-Host "- $BundleArchive"
 Write-Host "- $ChecksumFile"
+if ($BuildElevatedMigrationTestInstaller) {
+    Write-Host "Interner, nicht veröffentlichbarer VM-Testinstaller:"
+    Write-Host "- $ElevatedMigrationTestSetup"
+}

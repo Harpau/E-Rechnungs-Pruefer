@@ -26,6 +26,7 @@ Pytest, pytest-cov, Ruff, Mypy, Build, Twine, pip-audit, Pre-commit, HTTPX und H
 | Eclipse Temurin JRE | Java-Laufzeit für die gebündelte KoSIT-Prüfung | GPL-2.0 mit Classpath Exception sowie enthaltene Drittbedingungen |
 | Pillow | Erzeugung des Symbols im Windows-Infobereich | MIT-CMU |
 | pystray | Windows-Infobereich und Beenden-Menü | LGPL-3.0 |
+| pywin32 | Windows-SCM, DACLs und lokale Named-Pipe-IPC | Python Software Foundation License 2.0 |
 
 PyInstaller und Inno Setup werden ausschließlich während des Builds verwendet. Für eine kommerzielle Nutzung von Inno Setup sind die jeweils aktuellen Lizenz- und Erwerbsbedingungen zu prüfen.
 

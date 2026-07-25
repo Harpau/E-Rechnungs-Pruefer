@@ -31,7 +31,18 @@ Voraussetzung ist Python 3.11 oder neuer.
 
 ### Windows-x64-Installer
 
-Der signierte Windows-Installer aus einem GitHub Release benötigt weder Python noch Java und bringt die festgeschriebenen KoSIT-/XRechnung-Komponenten mit. Details zu Erstellung, Signierung und Prüfung stehen in [`docs/WINDOWS_PACKAGE.md`](docs/WINDOWS_PACKAGE.md).
+Die signierten Windows-Installer aus einem GitHub Release benötigen weder Python noch Java und bringen die
+festgeschriebenen KoSIT-/XRechnung-Komponenten mit. Es gibt zwei alternative Betriebsarten:
+
+- Der bestehende benutzerbezogene **Desktop-/Tray-Installer** benötigt keine Administratorrechte, installiert
+  unter `%LOCALAPPDATA%` und kann die Anwendung nach der Benutzeranmeldung automatisch starten.
+- Der neue administrative **Dienst-Installer** installiert unveränderliche Dateien unter `%ProgramFiles%`,
+  Maschinenzustand unter `%ProgramData%` und kann das Backend bereits vor einer Benutzeranmeldung als
+  `LocalService` starten.
+
+Beide Varianten bieten Browseroberfläche und lokale API, dürfen aber nicht gleichzeitig als Backend laufen.
+Details zu Auswahl, Migration, Signierung und Prüfung stehen in
+[`docs/WINDOWS_PACKAGE.md`](docs/WINDOWS_PACKAGE.md).
 
 ### Windows aus dem Quellcode
 
@@ -97,7 +108,8 @@ oder unter Windows:
 
 Der Check umfasst Versionskonsistenz, Ruff, Mypy sowie Pytest mit Branch Coverage. Mit `python scripts/build_release.py` entstehen Wheel, Source Distribution, ein bereinigtes Repository-ZIP und SHA-256-Prüfsummen.
 
-Der Windows-x64-Installer wird nativ auf Windows beziehungsweise im Windows-Job von GitHub Actions gebaut. Er kann auf dem Intel-Mac entwickelt, aber nicht erzeugt oder ausgeführt werden.
+Die Windows-x64-Installer werden nativ auf Windows beziehungsweise im Windows-Job von GitHub Actions gebaut. Sie
+können auf dem Intel-Mac entwickelt, aber nicht erzeugt oder ausgeführt werden.
 
 ## Weiterentwicklung mit Codex
 
@@ -194,13 +206,18 @@ PDF-Bericht für Mail-Automatisierungen. Beide Antworten enthalten die Header `X
 Rechnungs- oder Originaldateikennung. Der verbindliche Wertebereich und die Automatisierungsregeln stehen in
 [`docs/AUTOMATION_INTEGRATION.md`](docs/AUTOMATION_INTEGRATION.md).
 
-Die installierte Windows-App läuft auf dem festen Loopback-Port `8080` beziehungsweise dem mit `PORT`
-konfigurierten Port. Für lokale Automatisierungen legt sie ein persistentes Bearer-Token unter
-`%LOCALAPPDATA%\E-Rechnungs-Pruefer\api-token.txt` an. Dieses Token darf nur über den geschützten
-Credential-Speicher oder die Prozessumgebung von Node-RED eingebunden werden, niemals direkt im exportierten Flow.
-Mit `E-Rechnungs-Pruefer.exe --background` startet sie ohne ein automatisches Browserfenster.
-Der Installer bietet dazu die standardmäßig abgewählte Aufgabe „Bei Windows-Anmeldung automatisch starten“ an.
-Sie richtet einen benutzerbezogenen Autostart ein und ist kein Windows-Dienst.
+Die installierten Windows-Betriebsarten binden ausschließlich an `127.0.0.1` auf dem festen Port `8080`
+beziehungsweise dem konfigurierten Port. Der Desktopmodus speichert sein persistentes API-Token unter
+`%LOCALAPPDATA%\E-Rechnungs-Pruefer\api-token.txt`; der Dienst verwendet die geschützte Maschinendatei
+`%ProgramData%\E-Rechnungs-Pruefer\api-token.txt`. Das Token darf nur kontrolliert in den Credential-Speicher
+oder die geschützte Prozessumgebung von Node-RED provisioniert werden, niemals in einen exportierten Flow oder
+eine URL.
+
+Mit `E-Rechnungs-Pruefer.exe --background` startet der Desktopmodus ohne automatisches Browserfenster. Sein
+optionaler HKCU-Autostart gilt erst ab Benutzeranmeldung und bleibt eine eigenständige, nicht privilegierte
+Alternative zum Dienst. Im Dienstmodus öffnet der Startmenüeintrag **E-Rechnungs-Prüfer öffnen** die Oberfläche
+über authentifizierte lokale IPC und eine kurzlebige Einmalsitzung; das dauerhafte API-Token gelangt dabei nicht
+in den Browser.
 
 ## Konfiguration
 
@@ -218,7 +235,11 @@ Umgebungsvariablen können in `.env` oder `.env.kosit` stehen. Beide Dateien wer
 | `KOSIT_SCENARIOS` | automatisch | Semikolon-getrennte Szenariodateien |
 | `KOSIT_REPOSITORIES` | automatisch | Semikolon-getrennte Ressourcenpfade |
 | `KOSIT_TIMEOUT_SECONDS` | `60` | Zeitgrenze pro KoSIT-Aufruf |
-| `EINVOICE_API_TOKEN` | automatisch im Windows-Launcher | optional vorgegebenes URL-sicheres ASCII-API-Token mit mindestens 32 Zeichen |
+| `EINVOICE_API_TOKEN` | automatisch in den Windows-Laufzeiten | optional vorgegebenes URL-sicheres ASCII-API-Token mit mindestens 32 Zeichen |
+
+Der Windows-Dienst liest Port und KoSIT-Einstellungen stattdessen aus der streng validierten
+`%ProgramData%\E-Rechnungs-Pruefer\service.json` und aktiviert diese Werte zusammen mit dem Maschinentoken vor
+dem Import der Webanwendung. Seine Bind-Adresse ist fest auf `127.0.0.1` gesetzt und nicht konfigurierbar.
 
 ## Sicherheit und Datenschutz
 
@@ -230,6 +251,7 @@ Umgebungsvariablen können in `.env` oder `.env.kosit` stehen. Beide Dateien wer
 - begrenzte Upload- und Darstellungsgrößen
 - bereinigte Download-Dateinamen, Sicherheitsheader und Content Security Policy
 - zufällige Sitzung, Host- und Origin-Prüfung im Windows-Desktop-Modus
+- geschützte ProgramData-DACLs, dienstspezifischer SID und einmaliger IPC-Browserbootstrap im Windows-Dienstmodus
 - nicht privilegierter Benutzer im Docker-Image
 
 Ein öffentlicher oder mehrbenutzerfähiger Betrieb benötigt zusätzlich Authentifizierung, TLS, Rate Limits, sichere Protokollierung, Malware-Prüfung und Ressourcenbegrenzung. Siehe [`SECURITY.md`](SECURITY.md) und [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).
@@ -244,7 +266,7 @@ Ein öffentlicher oder mehrbenutzerfähiger Betrieb benötigt zusätzlich Authen
 - [`docs/CODEX.md`](docs/CODEX.md) – Arbeit mit Codex
 - [`docs/GITHUB_SETUP.md`](docs/GITHUB_SETUP.md) – Repository, Actions und Branch-Schutz
 - [`docs/RELEASE.md`](docs/RELEASE.md) – Versionierung und Veröffentlichung
-- [`docs/WINDOWS_PACKAGE.md`](docs/WINDOWS_PACKAGE.md) – Windows-Launcher, Installer, Signierung und Pakettest
+- [`docs/WINDOWS_PACKAGE.md`](docs/WINDOWS_PACKAGE.md) – Windows-Desktop- und Dienstmodus, Installer, Signierung und Pakettests
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) – Beiträge und Pull Requests
 
 ## Lizenz

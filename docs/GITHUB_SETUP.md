@@ -63,7 +63,11 @@ Für die Azure-Key-Vault-Signierung muss unter **Settings → Environments** ein
 
 Die Entra-Anwendung benötigt eine federierte GitHub-Identität für genau diese Umgebung. Bei Repositorys mit unveränderlichen OIDC-Subjects müssen Owner- und Repository-ID enthalten sein. Der Key-Vault-Service-Principal erhält am Vault die Rollen `Key Vault Reader` und `Key Vault Crypto User`.
 
-Der Windows-Installer wird nur mit gültiger Authenticode-Signatur veröffentlicht. Der Workflow speichert weder PFX-Datei noch Client-Secret und bricht bei fehlender oder ungültiger Signatur ab. Ein manueller Workflow-Start auf `main` erzeugt ein signiertes internes Actions-Artefakt, veröffentlicht aber keinen GitHub Release.
+Die Windows-Installer werden nur mit gültiger Authenticode-Signatur veröffentlicht. Der Workflow speichert weder
+PFX-Datei noch Client-Secret und bricht bei fehlender oder ungültiger Signatur ab. Ein manueller Workflow-Start
+auf `main` erzeugt ein signiertes, für drei Tage aufbewahrtes Vorab-Artefakt, veröffentlicht aber keinen GitHub
+Release. In einem öffentlichen Repository ist dieses Actions-Artefakt nicht vertraulich: Angemeldete
+GitHub-Nutzer mit Repository-Lesezugriff können es herunterladen.
 
 ## Empfohlener Branch-Schutz
 

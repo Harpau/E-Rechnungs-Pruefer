@@ -25,16 +25,63 @@ Die folgenden Werte müssen in der Prozessumgebung von Node-RED gesetzt werden:
 
 | Variable | Erforderlich | Bedeutung |
 |---|---|---|
-| `EINVOICE_API_TOKEN` | ja | Inhalt von `%LOCALAPPDATA%\E-Rechnungs-Pruefer\api-token.txt` |
+| `EINVOICE_API_TOKEN` | ja | kontrolliert provisioniertes API-Token des aktiven Desktop- oder Dienstmodus |
 | `EINVOICE_RESULT_TO` | ja | Empfängeradresse der Ergebnismail |
 | `EINVOICE_API_URL` | nein | Standard: `http://127.0.0.1:8080/api/report/pdf` |
 | `EINVOICE_REQUIRE_KOSIT` | nein | Standard: `true`; `false` überspringt die KoSIT-Prüfung und verwendet nur die interne Prüfung |
 
 Das API-Token darf nicht in den Flow kopiert oder als URL-Parameter übertragen werden und muss dem gemeinsamen
 Vertrag `^[A-Za-z0-9_-]{32,}$` entsprechen. Nach einer Änderung der Prozessumgebung muss Node-RED neu gestartet
-werden. Läuft Node-RED unter einem anderen Windows-Benutzer, muss das
-Token kontrolliert in dessen geschützte Prozessumgebung beziehungsweise Credential-Konfiguration übernommen
-werden; der andere Benutzer kann die Datei im ursprünglichen Benutzerprofil normalerweise nicht lesen.
+werden. Im Desktopmodus liegt der Quellwert unter
+`%LOCALAPPDATA%\E-Rechnungs-Pruefer\api-token.txt`. Der Dienst speichert ihn getrennt unter
+`%ProgramData%\E-Rechnungs-Pruefer\api-token.txt`; dessen geschützte DACL erlaubt absichtlich nicht allen lokalen
+Benutzern das Lesen.
+
+### Windows-Identität und sichere Provisionierung
+
+Vor der Produktivschaltung muss festgestellt werden, unter welcher Windows-Identität Node-RED tatsächlich läuft.
+Bei einer Dienstinstallation zeigt beispielsweise folgende administrative Abfrage Dienstname, Konto und
+Startzustand:
+
+```powershell
+Get-CimInstance Win32_Service |
+  Where-Object { $_.Name -match 'Node.?RED' -or $_.DisplayName -match 'Node.?RED' } |
+  Select-Object Name, DisplayName, StartName, StartMode, State
+```
+
+Ist Node-RED kein Dienst, ist stattdessen die Identität des konkret gestarteten `node.exe`-Prozesses und dessen
+Startmechanismus zu prüfen. Der Repositorycode kann diese produktive Identität nicht zuverlässig vorwegnehmen.
+Soll der gesamte Mail- und Prüfablauf schon vor einer Benutzeranmeldung funktionieren, muss auch Node-RED als
+Windows-Dienst unter einer dokumentierten Identität laufen. Ein HKCU-Autostart genügt dafür nicht.
+
+Im Desktopmodus wird der Tokenwert durch den Eigentümer des Benutzerprofils kontrolliert in den
+Node-RED-Credential-Speicher oder die geschützte Prozessumgebung übernommen. Im Dienstmodus kann ein Administrator
+nur der zuvor ermittelten Identität Leserechte auf die Token-Datei erteilen:
+
+```powershell
+$DienstExe = "$env:ProgramFiles\E-Rechnungs-Pruefer-Dienst\service\E-Rechnungs-Pruefer-Dienst.exe"
+& $DienstExe --grant-token-read "DOMAENE\svc-node-red"
+```
+
+`Everyone`, `Authenticated Users`, interaktive Sammelidentitäten sowie lokale oder Domänengruppen dürfen dafür
+nicht freigeschaltet werden. Zulässig sind konkrete Benutzer-, Computer-/gMSA- oder dienstspezifische
+`S-1-5-80-…`-Identitäten; ein gemeinsam von vielen Diensten verwendetes Konto wie `LocalService` ist keine
+hinreichend enge Token-Grenze. Der
+Tokenwert selbst gehört weiterhin ausschließlich in den Credential-Speicher beziehungsweise die geschützte
+Prozessumgebung und nicht in Flow, URL, normale Logs oder eine ungeschützte Datei.
+
+Eine geplante Rotation erfolgt bei gestopptem Prüferdienst:
+
+```powershell
+Stop-Service ERechnungsPrueferService
+& $DienstExe --rotate-token
+Start-Service ERechnungsPrueferService
+```
+
+Die Rotation bewahrt ausschließlich zuvor verifizierte, konkrete Leser-SIDs und bricht bei breiten oder
+unbekannten Schreibrechten geschlossen ab. Danach muss der neue Wert sicher in Node-RED
+provisioniert und Node-RED neu gestartet werden. Bis dahin werden Aufrufe mit dem alten Token erwartungsgemäß mit
+`403` abgewiesen. Die Rotation ändert weder Endpunkt noch Status-, Retry- oder Fehlervertrag.
 
 Der HTTP-Request-Knoten verwendet die mitgelieferte Proxy-Konfiguration
 **Nur lokale API – kein externer Proxy**. Sie überschreibt für genau diesen Request die Proxyvariablen des

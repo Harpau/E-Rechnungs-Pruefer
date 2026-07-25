@@ -13,6 +13,7 @@ from app.desktop_security import (
     API_TOKEN_ENV,
     DESKTOP_COOKIE_NAME,
     DesktopSessionMiddleware,
+    consume_api_token_environment,
     desktop_bootstrap_url,
     validate_api_token,
 )
@@ -108,6 +109,15 @@ def test_unsafe_request_rejects_cross_origin_but_accepts_matching_origin() -> No
     assert accepted.status_code == 200
 
 
+def test_default_http_origin_without_explicit_port_is_valid_on_port_80() -> None:
+    client = _desktop_client(port=80)
+    client.get("/desktop/bootstrap?token=test-token")
+
+    response = client.post("/api/action", headers={"origin": "http://127.0.0.1"})
+
+    assert response.status_code == 200
+
+
 def test_bearer_token_authorizes_only_api_requests() -> None:
     client = _desktop_client(api_token="api-token-abcdefghijklmnopqrstuvwxyz")
 
@@ -193,6 +203,18 @@ def test_api_token_contract_rejects_weak_or_non_url_safe_values(token: str) -> N
         validate_api_token(token)
 
 
+def test_api_token_is_consumed_even_when_validation_fails() -> None:
+    valid_environment = {API_TOKEN_ENV: "a" * 43, "UNCHANGED": "value"}
+
+    assert consume_api_token_environment(valid_environment) == "a" * 43
+    assert valid_environment == {"UNCHANGED": "value"}
+
+    invalid_environment = {API_TOKEN_ENV: "too-short"}
+    with pytest.raises(ValueError, match="mindestens 32"):
+        consume_api_token_environment(invalid_environment)
+    assert API_TOKEN_ENV not in invalid_environment
+
+
 def test_actual_asgi_app_rejects_invalid_api_token_during_import() -> None:
     environment = os.environ.copy()
     environment[API_TOKEN_ENV] = "x"
@@ -208,3 +230,23 @@ def test_actual_asgi_app_rejects_invalid_api_token_during_import() -> None:
 
     assert completed.returncode != 0
     assert "EINVOICE_API_TOKEN muss mindestens 32 URL-sichere ASCII-Zeichen enthalten" in completed.stderr
+
+
+def test_actual_asgi_app_consumes_valid_api_token_during_import() -> None:
+    environment = os.environ.copy()
+    environment[API_TOKEN_ENV] = "x" * 43
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os; import app.main; assert 'EINVOICE_API_TOKEN' not in os.environ",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr

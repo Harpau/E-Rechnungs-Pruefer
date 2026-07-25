@@ -18,11 +18,12 @@ from starlette.concurrency import run_in_threadpool
 from . import __version__
 from .analyzer import analyze_bytes
 from .desktop_security import (
-    API_TOKEN_ENV,
     DESKTOP_PORT_ENV,
     DESKTOP_TOKEN_ENV,
+    SERVICE_MODE_ENV,
     DesktopSessionMiddleware,
-    validate_api_token,
+    consume_api_token_environment,
+    get_service_browser_sessions,
 )
 from .pdf_report import render_pdf_report
 from .settings import settings
@@ -69,14 +70,13 @@ app = FastAPI(
     redoc_url=None,
 )
 _desktop_port = os.getenv(DESKTOP_PORT_ENV)
-_configured_api_token = os.getenv(API_TOKEN_ENV)
-if _configured_api_token is not None:
-    _configured_api_token = validate_api_token(_configured_api_token)
+_configured_api_token = consume_api_token_environment(os.environ)
 app.add_middleware(
     DesktopSessionMiddleware,
     token=os.getenv(DESKTOP_TOKEN_ENV),
     port=int(_desktop_port) if _desktop_port else None,
     api_token=_configured_api_token,
+    browser_sessions=get_service_browser_sessions() if os.getenv(SERVICE_MODE_ENV) == "1" else None,
 )
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=APP_DIR / "templates")
