@@ -517,6 +517,33 @@ function Wait-SetupUninstallMutexReleased {
     }
 }
 
+function Wait-PathsAbsent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$LiteralPath,
+        [ValidateRange(1, 600)]
+        [int]$Seconds = 60
+    )
+    $Timer = [Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        $Remaining = @()
+        foreach ($Candidate in $LiteralPath) {
+            if (Test-Path -LiteralPath $Candidate) {
+                $Remaining += $Candidate
+            }
+        }
+        if ($Remaining.Count -eq 0) {
+            return
+        }
+        if ($Timer.Elapsed.TotalSeconds -ge $Seconds) {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "Die nachlaufende Inno-Aufräumung wurde nicht innerhalb des Zeitlimits abgeschlossen. " +
+        "Noch vorhanden: $($Remaining -join ', ')"
+}
+
 function Assert-ValidSignature {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { throw "Signaturziel fehlt: $Path" }
@@ -1169,6 +1196,7 @@ Add-ExplorerAdministratorDirectoryAce -Path $DataDir -UserSid $ExplorerAdministr
 Add-ExplorerAdministratorDirectoryAce -Path $LogDir -UserSid $ExplorerAdministratorSid
 Invoke-ServiceUninstaller -Path $Uninstaller -LogPath $UninstallLog
 Wait-ServiceState -Name $ServiceName -State "Absent"
+Wait-PathsAbsent -LiteralPath @($InstallDir, $UninstallKey)
 if (Test-Path -LiteralPath (Join-Path $InstallDir ".uninstaller-state")) {
     throw "Standard-Deinstallation ließ den geschützten Deinstallationsbeleg zurück."
 }
@@ -1206,7 +1234,6 @@ if ((Get-ItemPropertyValue $ServiceRegistryPath "DelayedAutoStart") -ne 1) {
 }
 Invoke-ServiceUninstaller -Path $Uninstaller -LogPath $PurgeLog -PurgeData
 Wait-ServiceState -Name $ServiceName -State "Absent"
-if (Test-Path $DataDir) { throw "Explizite /PURGEDATA=1-Deinstallation ließ ProgramData zurück." }
-if (Test-Path $InstallDir) { throw "Dienst-Binärdateien wurden nicht vollständig entfernt." }
+Wait-PathsAbsent -LiteralPath @($InstallDir, $DataDir, $UninstallKey)
 
 Write-Host "Windows-Dienstpaket erfolgreich geprüft."

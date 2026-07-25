@@ -387,7 +387,7 @@ def test_service_installer_serializes_setup_and_uninstall_mutations() -> None:
 
     wait_for_release = package_test[
         package_test.index("function Wait-SetupUninstallMutexReleased") : package_test.index(
-            "function Assert-ValidSignature"
+            "function Wait-PathsAbsent"
         )
     ]
     assert '"Global\\E-Rechnungs-Pruefer-Service-Setup-Uninstall"' in wait_for_release
@@ -408,6 +408,50 @@ def test_service_installer_serializes_setup_and_uninstall_mutations() -> None:
         invoke_uninstaller.index("$Process.WaitForExit(600000)")
         < invoke_uninstaller.index("if ($Process.ExitCode -ne 0)")
         < invoke_uninstaller.index("Wait-SetupUninstallMutexReleased")
+    )
+
+
+def test_service_package_waits_for_inno_cleanup_before_reinstall_and_success() -> None:
+    script = _read("scripts/test_windows_service_package.ps1")
+
+    wait_for_paths = script[script.index("function Wait-PathsAbsent") : script.index("function Assert-ValidSignature")]
+    for expected in (
+        "[Parameter(Mandatory = $true)]",
+        "[string[]]$LiteralPath",
+        "[ValidateRange(1, 600)]",
+        "[int]$Seconds = 60",
+        "[Diagnostics.Stopwatch]::StartNew()",
+        "Test-Path -LiteralPath $Candidate",
+        "$Timer.Elapsed.TotalSeconds -ge $Seconds",
+        "Start-Sleep -Milliseconds 250",
+        "Noch vorhanden: $($Remaining -join ', ')",
+    ):
+        assert expected in wait_for_paths
+    assert "Remove-Item" not in wait_for_paths
+    assert "Remove-ItemProperty" not in wait_for_paths
+
+    preserve_start = script.index("Invoke-ServiceUninstaller -Path $Uninstaller -LogPath $UninstallLog")
+    preserve_end = script.index(
+        "if ((Get-Content $TokenFile -Raw).Trim() -ne $TokenBeforeUpdate)",
+        preserve_start,
+    )
+    preserve = script[preserve_start:preserve_end]
+    assert (
+        preserve.index("Invoke-ServiceUninstaller")
+        < preserve.index('Wait-ServiceState -Name $ServiceName -State "Absent"')
+        < preserve.index("Wait-PathsAbsent -LiteralPath @($InstallDir, $UninstallKey)")
+        < preserve.index("Invoke-ServiceInstaller -Path $Setup -LogPath $ReinstallLog")
+    )
+    preserve_waits = [line for line in preserve.splitlines() if line.startswith("Wait-PathsAbsent ")]
+    assert preserve_waits == ["Wait-PathsAbsent -LiteralPath @($InstallDir, $UninstallKey)"]
+    assert "$DataDir" not in preserve_waits[0]
+
+    purge_start = script.index("Invoke-ServiceUninstaller -Path $Uninstaller -LogPath $PurgeLog -PurgeData")
+    purge = script[purge_start : script.index('Write-Host "Windows-Dienstpaket erfolgreich geprüft."', purge_start)]
+    assert (
+        purge.index("Invoke-ServiceUninstaller")
+        < purge.index('Wait-ServiceState -Name $ServiceName -State "Absent"')
+        < purge.index("Wait-PathsAbsent -LiteralPath @($InstallDir, $DataDir, $UninstallKey)")
     )
 
 
