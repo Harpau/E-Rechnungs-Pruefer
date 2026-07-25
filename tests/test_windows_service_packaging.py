@@ -1017,7 +1017,10 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
     for expected in (
         "-ConfirmIsolatedEnvironment",
         "ERechnungsPrueferService",
-        "NT AUTHORITY\\LocalService",
+        "Get-AccountSidType",
+        "SIDType",
+        "GetOwnerSid",
+        "S-1-5-19",
         "DelayedAutoStart",
         "Get-Acl",
         "S-1-1-0",
@@ -1114,6 +1117,42 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
     assert first_repair < script.index('Arguments @("--verify-state")', first_repair)
     preserve_repair = script.rindex("Add-ExplorerAdministratorDirectoryAce -Path $DataDir")
     assert preserve_repair < script.index("Invoke-ServiceUninstaller", preserve_repair)
+
+
+def test_service_package_test_uses_locale_neutral_account_identifiers() -> None:
+    script = _read("scripts/test_windows_service_package.ps1")
+
+    account_type_helper = script[
+        script.index("function Get-AccountSidType") : script.index("function Wait-ServiceState")
+    ]
+    assert "Get-CimInstance -ClassName Win32_Account" in account_type_helper
+    assert "SIDType" in account_type_helper
+    assert "$Accounts.Count -ne 1" in account_type_helper
+    assert "$SidType -notin 1..9" in account_type_helper
+
+    direct_administrator_check = script[
+        script.index("$AdministratorsSid =") : script.index(
+            "if ($CommitHardKillRecovery",
+        )
+    ]
+    assert "Get-LocalGroupMember -SID $AdministratorsSid" in direct_administrator_check
+    assert "Get-AccountSidType" in direct_administrator_check
+    assert ".ObjectClass" not in direct_administrator_check
+    assert '"User"' not in direct_administrator_check
+    assert '"Benutzer"' not in direct_administrator_check
+
+    service_account_check = script[
+        script.index("$CimService = Get-CimInstance Win32_Service") : script.index(
+            "$DelayedAutoStart =",
+        )
+    ]
+    assert "Get-CimInstance Win32_Process" in service_account_check
+    assert "Invoke-CimMethod" in service_account_check
+    assert "GetOwnerSid" in service_account_check
+    assert "S-1-5-19" in service_account_check
+    assert "$CimService.StartName -ne" not in service_account_check
+    assert "NT AUTHORITY\\LocalService" not in service_account_check
+    assert "NT-AUTORITÄT\\Lokaler Dienst" not in service_account_check
 
 
 def test_migration_test_uses_published_130_desktop_installer() -> None:

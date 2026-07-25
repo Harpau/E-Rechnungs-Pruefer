@@ -12,6 +12,30 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Get-AccountSidType {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Security.Principal.SecurityIdentifier]$Sid
+    )
+    $SidValue = $Sid.Value
+    try {
+        $Accounts = @(
+            Get-CimInstance -ClassName Win32_Account -Filter "SID = '$SidValue'" -ErrorAction Stop
+        )
+    } catch {
+        throw "Der Windows-Kontotyp für SID $SidValue konnte nicht sicher bestimmt werden: " +
+            $_.Exception.Message
+    }
+    if ($Accounts.Count -ne 1) {
+        throw "Für SID $SidValue wurde keine eindeutige Windows-Kontoklassifikation gefunden."
+    }
+    $SidType = [int]$Accounts[0].SIDType
+    if ($SidType -notin 1..9) {
+        throw "SID $SidValue besitzt einen unbekannten Windows-Kontotyp: $SidType"
+    }
+    return $SidType
+}
+
 function Wait-ServiceState {
     param([string]$Name, [string]$State, [int]$Seconds = 330)
     $Deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
@@ -739,7 +763,10 @@ if (-not [Environment]::Is64BitProcess) {
 $AdministratorsSid = [Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
 $DirectAdministratorUsers = @(
     Get-LocalGroupMember -SID $AdministratorsSid | Where-Object {
-        [string]$_.ObjectClass -eq "User"
+        if ($null -eq $_.SID) {
+            throw "Ein direktes Mitglied der lokalen Administratorgruppe besitzt keine SID."
+        }
+        (Get-AccountSidType -Sid ([Security.Principal.SecurityIdentifier]$_.SID)) -eq 1
     } | Sort-Object { $_.SID.Value }
 )
 if ($DirectAdministratorUsers.Count -eq 0) {
@@ -907,7 +934,20 @@ Invoke-ServiceInstaller -Path $Setup -LogPath $InstallLog
 Wait-ServiceState -Name $ServiceName -State "Running"
 
 $CimService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
-if ($CimService.StartName -ne "NT AUTHORITY\LocalService") { throw "Falsches Dienstkonto: $($CimService.StartName)" }
+$ServiceProcesses = @(
+    Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$CimService.ProcessId)"
+)
+if ($ServiceProcesses.Count -ne 1) {
+    throw "Der laufende Dienstprozess konnte nicht eindeutig für die Kontoprüfung ermittelt werden."
+}
+$ServiceOwner = Invoke-CimMethod -InputObject $ServiceProcesses[0] -MethodName GetOwnerSid
+if ([int]$ServiceOwner.ReturnValue -ne 0 -or
+    [string]::IsNullOrWhiteSpace([string]$ServiceOwner.Sid)) {
+    throw "Die Besitzer-SID des laufenden Dienstprozesses konnte nicht sicher bestimmt werden."
+}
+if ([string]$ServiceOwner.Sid -ne "S-1-5-19") {
+    throw "Falsches Dienstkonto am laufenden Prozess: $($ServiceOwner.Sid)"
+}
 if ($CimService.StartMode -ne "Auto") { throw "Falscher Starttyp: $($CimService.StartMode)" }
 if ($CimService.PathName.Trim('"') -ne $ServiceExe) { throw "Falscher ImagePath: $($CimService.PathName)" }
 $DelayedAutoStart = Get-ItemPropertyValue $ServiceRegistryPath "DelayedAutoStart"

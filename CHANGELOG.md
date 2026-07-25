@@ -33,6 +33,7 @@ Vorgesehene Version: 1.4.0.
 - getrennte PyInstaller-Artefakte für Desktop, Dienst und Öffnen-Client sowie zwei eindeutig benannte Inno-Setup-Installer ergänzt
 - Authenticode-Signierung und nachgelagerte SHA-256-Prüfsummen decken alle drei eigenen EXEs und beide Installer ab; ein veröffentlichtes Bundle-ZIP macht die im Manifest genannten EXE-Pfade prüfbar
 - Windows-Integrationstests prüfen Desktop- und Dienstinstallation, API/PDF/XML, reale KoSIT-Ausführung, SCM/DACLs, Tokenpersistenz, laufende Updates, Deinstallation sowie die Migration vom veröffentlichten Desktopstand v1.3.0
+- der Windows-Dienstpakettest bestimmt direkte Benutzer und das tatsächlich verwendete Dienstkonto ausschließlich über sprachneutrale numerische Kontotypen und SIDs, sodass deutsche und englische Windows-Installationen denselben Sicherheitsvertrag prüfen
 - manuelle signierte Vorab-Probeläufe stellen den internen Recovery-Testinstaller für einen Tag als getrenntes, deutlich markiertes Actions-Artefakt bereit; Tag-Läufe, Produktionsartefakte und öffentliche Releases schließen ihn weiterhin aus
 - Releaseprozess verlangt weiterhin einen signierten Vorab-Probelauf, eine manuelle Windows-11-Abnahme einschließlich echtem Neustart und Dienststart vor Anmeldung sowie ausdrückliche Freigabe vor Tag und öffentlicher Veröffentlichung
 
