@@ -1389,9 +1389,8 @@ begin
       Exit;
     end;
   end;
-  { A running, exactly owned service legitimately holds both resources. For
-    stopped/absent baselines these checks must reject foreign owners before
-    the Desktop migration creates protected transaction state. }
+  { The legacy v1.3 Desktop never owns the machine-wide backend mutex.
+    Reject a foreign current backend before creating protected migration state. }
   if (not ServiceWasRunning) and CheckForMutexes(BackendMutexName) then
   begin
     Result :=
@@ -1399,19 +1398,25 @@ begin
       'Die Installation wird ohne Dateiänderung abgebrochen.';
     Exit;
   end;
+  Result := PrepareDesktopMigration;
+  if Result <> '' then
+  begin
+    if MigrationPrepared and not RollbackPreparedInstall then
+      Result := Result + ' Der geschützte Recovery-Zustand bleibt für den nächsten Setup-Lauf erhalten.';
+    Exit;
+  end;
+  { A running v1.3 Desktop legitimately owns the future service port until
+    the reversible migration step above has stopped it. Any remaining owner
+    is foreign and must be rejected before service or bundle state is changed. }
   if (not ServiceWasRunning) and not ExecChecked(
     InternalOpenClient, '--preflight-port',
     'Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen') then
   begin
     Result :=
       'Der konfigurierte lokale Dienstport ist belegt oder nicht exklusiv reservierbar. ' +
-      'Die Installation wird vor dem Ersetzen von Binärdateien abgebrochen.';
-    Exit;
-  end;
-  Result := PrepareDesktopMigration;
-  if Result <> '' then
-  begin
-    if MigrationPrepared and not RollbackPreparedInstall then
+      'Die vorbereitete Desktopmigration wird zurückgenommen; die Installation ' +
+      'wird vor dem Ersetzen von Dienstbinärdateien abgebrochen.';
+    if not RollbackPreparedInstall then
       Result := Result + ' Der geschützte Recovery-Zustand bleibt für den nächsten Setup-Lauf erhalten.';
     Exit;
   end;

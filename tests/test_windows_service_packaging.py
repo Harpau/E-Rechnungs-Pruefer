@@ -232,8 +232,8 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     assert "ServiceWasRunning" not in post_stop
     assert (
         preflight.index("(not ServiceWasRunning) and CheckForMutexes(BackendMutexName)")
-        < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
         < preflight.index("PrepareDesktopMigration")
+        < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
         < preflight.index("ForceDirectories(ExpandConstant('{app}'))")
         < preflight.index("BeginServiceTransition")
         < preflight.index("StopExistingServiceForUpdate")
@@ -241,6 +241,13 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
         < preflight.rindex("--preflight-port")
         < preflight.index("PrepareServiceBundleTransaction")
     )
+    initial_port_conflict = preflight[
+        preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen") : preflight.index(
+            "ForceDirectories(ExpandConstant('{app}'))"
+        )
+    ]
+    assert "if not RollbackPreparedInstall then" in initial_port_conflict
+    assert "vor dem Ersetzen von Dienstbinärdateien" in initial_port_conflict
 
 
 def test_service_configuration_failures_abort_through_the_transactional_install_path() -> None:
@@ -768,8 +775,8 @@ def test_service_installer_orders_durable_migration_recovery_around_the_commit_p
         < preflight.index("ReconcilePendingInstall")
         < preflight.index("--preflight-machine")
         < preflight.index("(not ServiceWasRunning) and CheckForMutexes(BackendMutexName)")
-        < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
         < preflight.index("PrepareDesktopMigration")
+        < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
         < preflight.index("ForceDirectories(ExpandConstant('{app}'))")
         < preflight.index("BeginServiceTransition")
         < preflight.index("StopExistingServiceForUpdate")
