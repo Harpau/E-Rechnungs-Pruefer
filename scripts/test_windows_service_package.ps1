@@ -67,6 +67,55 @@ function Test-BytePrefix {
     return $true
 }
 
+function Read-FileBytesWithRetry {
+    param(
+        [string]$Path,
+        [ValidateRange(100, 60000)]
+        [int]$TimeoutMilliseconds = 10000
+    )
+    $Deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $LastFailure = ""
+    # The running RotatingFileHandler must keep writing and renaming logs while
+    # this test captures a fixed-length, read-only preservation snapshot.
+    [IO.FileShare]$ShareMode = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    do {
+        $Stream = $null
+        try {
+            $Stream = [IO.FileStream]::new(
+                $Path,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::Read,
+                $ShareMode
+            )
+            $Length = $Stream.Length
+            if ($Length -gt [int]::MaxValue) {
+                throw [IO.IOException]::new("Die Datei ist für den Test zu groß: $Path")
+            }
+            [byte[]]$Bytes = [byte[]]::new([int]$Length)
+            $Offset = 0
+            while ($Offset -lt $Bytes.Length) {
+                $Read = $Stream.Read($Bytes, $Offset, $Bytes.Length - $Offset)
+                if ($Read -eq 0) {
+                    throw [IO.EndOfStreamException]::new(
+                        "Die Datei wurde während des Lesens unerwartet verkürzt: $Path"
+                    )
+                }
+                $Offset += $Read
+            }
+            return ,$Bytes
+        } catch [IO.IOException] {
+            $LastFailure = $_.Exception.Message
+        } finally {
+            if ($null -ne $Stream) {
+                $Stream.Dispose()
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    throw "Die Datei konnte während des Zeitlimits nicht stabil parallel gelesen werden: " +
+        "$Path`nLetzter Fehler: $LastFailure"
+}
+
 function Invoke-ServiceInstaller {
     param(
         [string]$Path,
@@ -1067,7 +1116,7 @@ Start-Service $ServiceName
 Wait-ServiceState -Name $ServiceName -State "Running"
 
 $ConfigurationHashBeforePreserve = (Get-FileHash -LiteralPath $ConfigFile -Algorithm SHA256).Hash
-$LogBytesBeforePreserve = [IO.File]::ReadAllBytes($LogFile)
+$LogBytesBeforePreserve = Read-FileBytesWithRetry -Path $LogFile
 if ($LogBytesBeforePreserve.Length -eq 0) {
     throw "Das technische Protokoll enthält vor dem Preserve-Test keinen Nachweis."
 }
@@ -1088,8 +1137,11 @@ if ((Get-FileHash -LiteralPath $ConfigFile -Algorithm SHA256).Hash -ne $Configur
 }
 $LogPrefixPreserved = $false
 foreach ($Candidate in @($LogFile, "${LogFile}.1", "${LogFile}.2", "${LogFile}.3")) {
-    if ((Test-Path -LiteralPath $Candidate -PathType Leaf) -and
-        (Test-BytePrefix -Prefix $LogBytesBeforePreserve -Value ([IO.File]::ReadAllBytes($Candidate)))) {
+    if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
+        continue
+    }
+    $CandidateBytes = Read-FileBytesWithRetry -Path $Candidate
+    if (Test-BytePrefix -Prefix $LogBytesBeforePreserve -Value $CandidateBytes) {
         $LogPrefixPreserved = $true
         break
     }

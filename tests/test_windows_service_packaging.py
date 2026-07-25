@@ -905,6 +905,7 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
         "ConfigurationHashBeforePreserve",
         "LogBytesBeforePreserve",
         "LogPrefixPreserved",
+        "Read-FileBytesWithRetry",
         "S-1-3-4",
         "ReadPermissions",
         "--grant-token-read",
@@ -943,6 +944,18 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
         assert expected in script
 
     assert 'Get-ItemPropertyValue $ServiceRegistryPath "FailureActions"' not in script
+    assert script.count("Read-FileBytesWithRetry -Path") == 2
+    assert "[IO.File]::ReadAllBytes($LogFile)" not in script
+    assert "[IO.File]::ReadAllBytes($Candidate)" not in script
+    shared_log_read = script[
+        script.index("function Read-FileBytesWithRetry") : script.index("function Invoke-ServiceInstaller")
+    ]
+    assert "[IO.FileStream]::new(" in shared_log_read
+    assert "[IO.FileShare]::ReadWrite" in shared_log_read
+    assert "[IO.FileShare]::Delete" in shared_log_read
+    assert "[IO.FileAccess]::Read" in shared_log_read
+    assert "finally" in shared_log_read
+    assert "$Stream.Dispose()" in shared_log_read
     assert "$FailureActionsScmAfterFailedUpdate -ne $FailureActionsScmBeforeFailedUpdate" in script
     assert "Vorher:`n$FailureActionsScmBeforeFailedUpdate" in script
     assert "Nachher:`n$FailureActionsScmAfterFailedUpdate" in script
