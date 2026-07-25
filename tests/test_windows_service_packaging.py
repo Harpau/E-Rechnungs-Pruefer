@@ -750,6 +750,23 @@ def test_test_installer_logs_only_allowlisted_internal_open_client_diagnostics()
     assert "ConsumeSetupDiagnostic" not in original_exec
 
 
+def test_open_client_desktop_health_probe_stays_free_of_server_dependencies() -> None:
+    open_client_spec = _read("packaging/windows/e_rechnungs_pruefer_open_client.spec")
+    desktop_migration = _read("app/windows_desktop_migration.py")
+    loopback_health = _read("app/loopback_health.py")
+
+    assert '"uvicorn"' in open_client_spec
+    health_probe = desktop_migration[
+        desktop_migration.index("def _desktop_health_is_ready") : desktop_migration.index(
+            "def _desktop_runtime_has_start_proof"
+        )
+    ]
+    assert "from .loopback_health import health_is_ready" in health_probe
+    assert "server_runtime" not in health_probe
+    assert "uvicorn" not in loopback_health
+    assert "from .server_runtime" not in loopback_health
+
+
 def test_service_installer_orders_durable_migration_recovery_around_the_commit_point() -> None:
     installer = _read("packaging/windows/service_installer.iss")
 
@@ -1175,3 +1192,7 @@ def test_migration_test_uses_published_130_desktop_installer() -> None:
     assert "Get-ChildItem -LiteralPath $Path -Force" in script
     assert "(leeres Verzeichnis)" in script
     assert script.count("Assert-MigrationStateAbsent -Path $MigrationState") == 2
+    assert "function Assert-TransferRootAbsent" in script
+    assert '$MigrationTransferRoot = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-Transfer"' in script
+    assert "ließ Desktop-Transferreste zurück" in script
+    assert script.count("Assert-TransferRootAbsent -Path $MigrationTransferRoot") == 1

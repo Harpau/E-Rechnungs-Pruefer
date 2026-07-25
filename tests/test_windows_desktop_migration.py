@@ -523,6 +523,90 @@ def test_transfer_staging_prepares_least_privilege_client_and_is_idempotent(
     assert client.read_bytes() == b"native-client"
 
 
+def test_transfer_prepare_clears_strict_stale_published_leaf_before_new_leaf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, modules, descriptors = _fake_transfer_environment(tmp_path, monkeypatch)
+    source = tmp_path / "client-source.exe"
+    source.write_bytes(b"native-client")
+    client_name = "E-Rechnungs-Pruefer-Oeffnen.exe"
+    stale_leaf = root / "is-Stale1.tmp"
+    migration.prepare_desktop_migration_transfer(stale_leaf, source, client_name)
+    receipt = stale_leaf / migration.DESKTOP_MIGRATION_TRANSFER_RECEIPT_NAME
+    token = stale_leaf / migration.DESKTOP_MIGRATION_TRANSFER_TOKEN_NAME
+    receipt.write_text("{}\n", encoding="utf-8")
+    token.write_text("t" * 43 + "\n", encoding="ascii")
+    descriptors[str(receipt)] = _private_receipt_descriptor(modules, owner_sid="S-1-5-21-1000")
+    descriptors[str(token)] = _private_receipt_descriptor(modules, owner_sid="S-1-5-21-1000")
+
+    current_leaf = root / "is-Current1.tmp"
+    current_client = migration.prepare_desktop_migration_transfer(current_leaf, source, client_name)
+
+    assert not stale_leaf.exists()
+    assert current_client.read_bytes() == b"native-client"
+    assert {path.name for path in root.iterdir()} == {current_leaf.name}
+
+
+def test_transfer_prepare_clears_exact_private_prepare_scratch_before_new_leaf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _modules, descriptors = _fake_transfer_environment(tmp_path, monkeypatch)
+    source = tmp_path / "client-source.exe"
+    source.write_bytes(b"native-client")
+    client_name = "E-Rechnungs-Pruefer-Oeffnen.exe"
+    migration._ensure_transfer_staging_root(root)
+    stale_leaves: list[Path] = []
+    for index, scratch_name in enumerate((client_name, f".{client_name}.{'a' * 32}.tmp"), start=1):
+        stale_leaf = root / f"is-Private{index}.tmp"
+        migration._create_transfer_staging_directory(stale_leaf, kind="private-directory")
+        scratch = stale_leaf / scratch_name
+        scratch.write_bytes(b"partial-client")
+        descriptors[str(scratch)] = migration._transfer_staging_security_attributes("client").SECURITY_DESCRIPTOR
+        stale_leaves.append(stale_leaf)
+
+    current_leaf = root / "is-Current2.tmp"
+    current_client = migration.prepare_desktop_migration_transfer(current_leaf, source, client_name)
+
+    assert all(not stale_leaf.exists() for stale_leaf in stale_leaves)
+    assert current_client.read_bytes() == b"native-client"
+    assert {path.name for path in root.iterdir()} == {current_leaf.name}
+
+
+def test_transfer_prepare_fails_closed_for_unknown_root_or_private_leaf_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _modules, descriptors = _fake_transfer_environment(tmp_path, monkeypatch)
+    source = tmp_path / "client-source.exe"
+    source.write_bytes(b"native-client")
+    client_name = "E-Rechnungs-Pruefer-Oeffnen.exe"
+    current_leaf = root / "is-Current3.tmp"
+    migration._ensure_transfer_staging_root(root)
+    unknown_root_entry = root / "unknown.bin"
+    unknown_root_entry.write_bytes(b"untrusted")
+
+    with pytest.raises(RuntimeError, match="kein Verzeichnis"):
+        migration.prepare_desktop_migration_transfer(current_leaf, source, client_name)
+    assert unknown_root_entry.read_bytes() == b"untrusted"
+    assert not current_leaf.exists()
+
+    unknown_root_entry.unlink()
+    stale_leaf = root / "is-Private2.tmp"
+    migration._create_transfer_staging_directory(stale_leaf, kind="private-directory")
+    unknown_private_entry = stale_leaf / "unknown.bin"
+    unknown_private_entry.write_bytes(b"untrusted")
+    descriptors[str(unknown_private_entry)] = migration._transfer_staging_security_attributes(
+        "client"
+    ).SECURITY_DESCRIPTOR
+
+    with pytest.raises(RuntimeError, match="unbekanntes Objekt"):
+        migration.prepare_desktop_migration_transfer(current_leaf, source, client_name)
+    assert unknown_private_entry.read_bytes() == b"untrusted"
+    assert not current_leaf.exists()
+
+
 def test_transfer_staging_validates_owner_inventory_and_cleans_nonrecursively(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2902,6 +2986,7 @@ def test_restart_desktop_requires_exact_existing_executable(
     process = Mock(pid=1234)
     process.poll.return_value = None
     popen = Mock(return_value=process)
+    monkeypatch.setenv("_PYI_ARCHIVE_FILE", "parent-archive")
     monkeypatch.setattr(migration.subprocess, "Popen", popen)
     monkeypatch.setattr(migration, "_desktop_runtime_path", lambda: tmp_path / "runtime.json")
     migration._restart_desktop(
@@ -2911,11 +2996,15 @@ def test_restart_desktop_requires_exact_existing_executable(
         _mutex_probe=lambda: True,
     )
 
-    popen.assert_called_once_with(
-        [str(executable), "--background"],
-        close_fds=True,
-        creationflags=getattr(migration.subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    popen.assert_called_once()
+    arguments, keywords = popen.call_args
+    assert arguments == ([str(executable), "--background"],)
+    assert keywords["close_fds"] is True
+    assert keywords["creationflags"] == getattr(migration.subprocess, "CREATE_NO_WINDOW", 0)
+    assert keywords["cwd"] == str(executable.parent)
+    assert keywords["env"] is not os.environ
+    assert keywords["env"]["_PYI_ARCHIVE_FILE"] == "parent-archive"
+    assert keywords["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
 
 
 def test_existing_desktop_start_proof_binds_runtime_pid_port_and_health(
@@ -3599,10 +3688,7 @@ def test_desktop_start_proof_and_health_fail_without_a_runtime_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     health_is_ready = Mock(return_value=True)
-    monkeypatch.setattr(
-        "app.server_runtime.health_is_ready",
-        health_is_ready,
-    )
+    monkeypatch.setattr("app.loopback_health.health_is_ready", health_is_ready)
     assert migration._desktop_health_is_ready(8765) is True
     health_is_ready.assert_called_once_with(8765, timeout=0.5)
 

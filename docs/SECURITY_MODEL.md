@@ -61,7 +61,9 @@ insbesondere kein fremdes Token lesen. Migrationsbeleg und optionaler
 Tokentransfer erhalten jeweils eine exakt geprüfte, geschützte DACL für `SYSTEM`, lokale Administratoren und die
 konkrete Originalbenutzer-SID. Vor dem Versiegeln prüft der erhöhte Prozess das exakte Inventar, übereinstimmende
 Besitzer, jede Pfadkomponente no-follow sowie die Hardlinkfreiheit. Die Bereinigung entfernt ausschließlich die
-bekannten Dateien und danach leere Verzeichnisse; sie ist bewusst nicht rekursiv.
+bekannten Dateien und danach leere Verzeichnisse; sie ist bewusst nicht rekursiv. Ein Folgelauf bereinigt ältere,
+streng erkennbare Transferblätter unter denselben Prüfungen, während fremdes Inventar oder abweichende DACLs
+geschlossen blockieren.
 Nicht geladene Benutzerhives werden unter gehaltenen no-follow Locks in eine administratorgeschützte
 Momentaufnahme kopiert und nur von dort kurzzeitig unter einem zufälligen Namen eingebunden; jeder verbliebene
 produktspezifische Autostartwert blockiert ebenso wie eine weitere Altinstallation. `NTUSER.DAT` und

@@ -422,6 +422,24 @@ function Assert-MigrationStateAbsent {
     throw "$Scenario ließ geschützten Desktop-Migrationszustand zurück: $Path`nEinträge: $Inventory"
 }
 
+function Assert-TransferRootAbsent {
+    param([string]$Path, [string]$Scenario)
+    $Deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ((Test-Path -LiteralPath $Path) -and [DateTime]::UtcNow -lt $Deadline) {
+        Start-Sleep -Milliseconds 50
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    $Entries = @(
+        Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop |
+            Sort-Object Name |
+            ForEach-Object { $_.Name }
+    )
+    $Inventory = if ($Entries.Count -eq 0) { "(leeres Verzeichnis)" } else { $Entries -join ", " }
+    throw "$Scenario ließ Desktop-Transferreste zurück: $Path`nEinträge: $Inventory"
+}
+
 if (-not $IsWindows) { throw "Der Migrationstest kann nur unter Windows laufen." }
 if (-not $ConfirmIsolatedEnvironment) {
     throw "Migrationstest nur auf einer sauberen Wegwerf-VM mit -ConfirmIsolatedEnvironment ausführen."
@@ -493,9 +511,17 @@ $ServiceExe = Join-Path $ServiceDir "service\E-Rechnungs-Pruefer-Dienst.exe"
 $ServiceUninstaller = Join-Path $ServiceDir "unins000.exe"
 $ServiceToken = Join-Path $env:ProgramData "E-Rechnungs-Pruefer\api-token.txt"
 $MigrationState = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-State"
+$MigrationTransferRoot = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-Transfer"
 
 $Conflicts = @()
-foreach ($Path in @($DesktopDir, $DesktopData, $ServiceDir, (Split-Path $ServiceToken -Parent), $MigrationState)) {
+foreach ($Path in @(
+    $DesktopDir,
+    $DesktopData,
+    $ServiceDir,
+    (Split-Path $ServiceToken -Parent),
+    $MigrationState,
+    $MigrationTransferRoot
+)) {
     if (Test-Path $Path) { $Conflicts += $Path }
 }
 if (Get-Service $ServiceName -ErrorAction SilentlyContinue) { $Conflicts += $ServiceName }
@@ -621,6 +647,7 @@ if (Test-Path (Split-Path $ServiceToken -Parent)) {
     throw "Fehlgeschlagene Migration ließ unerwarteten Maschinenzustand zurück."
 }
 Assert-MigrationStateAbsent -Path $MigrationState -Scenario "Fehlgeschlagene Migration"
+Assert-TransferRootAbsent -Path $MigrationTransferRoot -Scenario "Fehlgeschlagene Migration nach Recovery"
 
 $MigrationArguments = @(
     "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=`"systemstart`"",

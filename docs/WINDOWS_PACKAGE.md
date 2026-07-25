@@ -219,7 +219,9 @@ oder gelöscht werden, und Tokeninhalte sind nicht allgemein lesbar. Beleg und T
 für die konkrete Originalbenutzer-SID sowie `SYSTEM` und lokale Administratoren. Vor der Übernahme prüft der
 erhöhte Client exaktes Inventar, Besitzer, alle Pfadkomponenten no-follow und Hardlinkfreiheit. Danach entfernt
 das Setup nur die bekannten Dateien und leeren Verzeichnisse nichtrekursiv; unbekannte Einträge lassen die
-Bereinigung geschlossen fehlschlagen.
+Bereinigung geschlossen fehlschlagen. Nach einem unterbrochenen Setup entfernt der nächste serialisierte
+Setup-Lauf ältere Transferblätter nur dann, wenn ihre DACL und ihr begrenztes Inventar exakt einem veröffentlichten
+Transfer oder einem noch privaten Vorbereitungsschritt entsprechen; jeder abweichende Rest blockiert weiterhin.
 
 Beim Wechsel **Desktop → Dienst** beendet ein Hilfsprozess in der ursprünglichen interaktiven Benutzeridentität
 die Tray-App kontrolliert und entfernt nur den erwarteten HKCU-Autostartwert. Die Übernahme eines vorhandenen,

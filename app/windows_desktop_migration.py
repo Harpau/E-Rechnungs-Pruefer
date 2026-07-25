@@ -2209,6 +2209,83 @@ def _clear_failed_transfer_prepare(
         _remove_empty_transfer_directory(root, allow_nonempty=True)
 
 
+def _is_transfer_client_temporary_name(name: str, *, client_name: str) -> bool:
+    prefix = f".{client_name}."
+    suffix = ".tmp"
+    if not name.startswith(prefix) or not name.endswith(suffix):
+        return False
+    random_tail = name[len(prefix) : -len(suffix)]
+    return len(random_tail) == 32 and all(character in "0123456789abcdef" for character in random_tail)
+
+
+def _clear_stale_private_transfer_prepare(
+    root: Path,
+    transfer_directory: Path,
+    *,
+    client_name: str,
+) -> None:
+    """Remove only an exactly recognizable pre-publish prepare interruption."""
+
+    _verify_transfer_staging_path(transfer_directory, directory=True, kind="private-directory")
+    names = set(_transfer_directory_entries(transfer_directory))
+    if len(names) > 1:
+        raise RuntimeError("Ein privater Desktop-Transferrest enthält mehr als ein Objekt.")
+    known_paths: dict[str, Path] = {}
+    for name in names:
+        _validate_transfer_component(name, description="Ein privater Desktop-Transferrest")
+        if name != client_name and not _is_transfer_client_temporary_name(name, client_name=client_name):
+            raise RuntimeError("Ein privater Desktop-Transferrest enthält ein unbekanntes Objekt.")
+        path = transfer_directory / name
+        _verify_transfer_staging_path(path, directory=False, kind="client")
+        known_paths[name] = path
+
+    repeated_names = set(_transfer_directory_entries(transfer_directory))
+    if repeated_names != names:
+        raise RuntimeError("Ein privater Desktop-Transferrest änderte sich während der Bereinigung.")
+    _verify_transfer_staging_path(transfer_directory, directory=True, kind="private-directory")
+    for name in sorted(repeated_names):
+        _verify_transfer_staging_path(known_paths[name], directory=False, kind="client")
+    for name in sorted(repeated_names):
+        known_paths[name].unlink()
+    _remove_empty_transfer_directory(transfer_directory, allow_nonempty=False)
+    if validate_machine_path(root, directory=True):
+        _verify_transfer_staging_path(root, directory=True, kind="root")
+        _remove_empty_transfer_directory(root, allow_nonempty=True)
+
+
+def _clear_stale_desktop_migration_transfers(
+    root: Path,
+    *,
+    current_transfer_directory: Path,
+    client_name: str,
+) -> None:
+    """Clear strict stale leaves while the setup caller holds its global mutex."""
+
+    if not validate_machine_path(root, directory=True):
+        if os.path.lexists(root):
+            raise RuntimeError("Der Desktop-Transferstamm ist kein sicherer lokaler Ordner.")
+        return
+    _verify_transfer_staging_path(root, directory=True, kind="root")
+    names = _transfer_directory_entries(root)
+    for name in names:
+        _validate_transfer_component(name, description="Ein Desktop-Transferverzeichnis")
+        candidate = root / name
+        if _transfer_path_key(candidate) == _transfer_path_key(current_transfer_directory):
+            continue
+        if not validate_machine_path(candidate, directory=True):
+            raise RuntimeError("Der Desktop-Transferstamm enthält einen unbekannten Eintrag.")
+        try:
+            _verify_transfer_staging_path(candidate, directory=True, kind="leaf")
+        except RuntimeError:
+            _clear_stale_private_transfer_prepare(
+                root,
+                candidate,
+                client_name=client_name,
+            )
+        else:
+            clear_desktop_migration_transfer(candidate, client_name)
+
+
 def prepare_desktop_migration_transfer(
     transfer_directory: Path,
     client_source: Path,
@@ -2219,6 +2296,11 @@ def prepare_desktop_migration_transfer(
     if sys.platform != "win32":
         raise OSError("Der Desktop-Migrationstransfer ist ausschließlich unter Windows verfügbar.")
     root = _validate_transfer_layout(transfer_directory, client_name)
+    _clear_stale_desktop_migration_transfers(
+        root,
+        current_transfer_directory=transfer_directory,
+        client_name=client_name,
+    )
     _ensure_transfer_staging_root(root)
     if validate_machine_path(transfer_directory, directory=True):
         _verify_transfer_staging_path(transfer_directory, directory=True, kind="leaf")
@@ -2582,7 +2664,7 @@ def _read_desktop_runtime_identity(path: Path) -> tuple[int, int] | None:
 
 
 def _desktop_health_is_ready(port: int) -> bool:
-    from .server_runtime import health_is_ready
+    from .loopback_health import health_is_ready
 
     return health_is_ready(port, timeout=0.5)
 
@@ -2615,10 +2697,14 @@ def _restart_desktop(
         raise RuntimeError("Die zuvor laufende Desktop-App ist für die Rücknahme nicht mehr vorhanden.")
     if timeout_seconds <= 0 or poll_seconds < 0:
         raise RuntimeError("Der Desktop-Startnachweis besitzt ein ungültiges Zeitlimit.")
+    child_environment = os.environ.copy()
+    child_environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     process = (_popen or subprocess.Popen)(
         [str(executable), "--background"],
         close_fds=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        cwd=str(executable.parent),
+        env=child_environment,
     )
     runtime_reader = _runtime_reader or _read_desktop_runtime_identity
     health_probe = _health_probe or _desktop_health_is_ready

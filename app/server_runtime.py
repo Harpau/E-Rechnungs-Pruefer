@@ -3,16 +3,16 @@ from __future__ import annotations
 import os
 import socket
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable, Mapping
 from threading import Thread
 from typing import Any
 
 import uvicorn
 
+from .loopback_health import DIRECT_HTTP_OPENER as DIRECT_HTTP_OPENER
+from .loopback_health import health_is_ready
+
 SERVER_READY_TIMEOUT_SECONDS = 20.0
-DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def reserve_loopback_socket(port: int) -> tuple[socket.socket, int]:
@@ -31,14 +31,6 @@ def reserve_loopback_socket(port: int) -> tuple[socket.socket, int]:
     except Exception:
         listener.close()
         raise
-
-
-def health_is_ready(port: int, timeout: float = 0.5) -> bool:
-    try:
-        with DIRECT_HTTP_OPENER.open(f"http://127.0.0.1:{port}/api/health", timeout=timeout) as response:
-            return response.status == 200
-    except (OSError, urllib.error.URLError):
-        return False
 
 
 def load_main_app() -> Any:
