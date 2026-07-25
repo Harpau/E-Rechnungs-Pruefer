@@ -141,15 +141,18 @@ jobs:
         shell: pwsh
         run: .\scripts\test_windows_migration.ps1 -RequireSignature -ConfirmIsolatedEnvironment -AllowElevatedMigrationTestContext -DesktopHardKillRecovery Immediate
       - name: Inspect all owned executable signatures
+        id: inspect_signatures
         shell: pwsh
         run: |
           $version = python scripts/verify_version.py --print
+          $internalTestInstaller = "build\windows\test-installer\E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe"
           $ownedFiles = @(
             "build\windows\bundle\E-Rechnungs-Pruefer\E-Rechnungs-Pruefer.exe",
             "build\windows\bundle\E-Rechnungs-Pruefer-Dienst\E-Rechnungs-Pruefer-Dienst.exe",
             "build\windows\bundle\E-Rechnungs-Pruefer-Oeffnen.exe",
             "dist\E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe",
-            "dist\E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe"
+            "dist\E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe",
+            $internalTestInstaller
           )
           foreach ($path in $ownedFiles) {
             $signature = Get-AuthenticodeSignature $path
@@ -157,6 +160,13 @@ jobs:
             if ($signature.Status -ne "Valid" -or $null -eq $signature.TimeStamperCertificate) {
               throw "Eigene EXE besitzt keine gültige Authenticode-Signatur mit Zeitstempel: $path"
             }
+          }
+          if (
+            $env:GITHUB_EVENT_NAME -eq "workflow_dispatch" -and
+            $env:GITHUB_REF -eq "refs/heads/main"
+          ) {
+            "internal_test_installer=$internalTestInstaller" |
+              Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -167,6 +177,14 @@ jobs:
             dist/*-Windows-x64-Dienst-Setup.exe
             dist/*-Windows-x64-Binaries.zip
             dist/*-Windows-x64-SHA256SUMS.txt
+      - name: Upload signed internal recovery test installer
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: INTERNAL-TEST-windows-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 1
+          if-no-files-found: error
+          path: ${{ steps.inspect_signatures.outputs.internal_test_installer }}
 
   publish:
     name: Publish GitHub release

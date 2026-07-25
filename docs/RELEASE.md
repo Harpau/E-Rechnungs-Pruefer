@@ -77,8 +77,10 @@ wenn sie fremden oder vorhandenen Produktzustand finden. Auf einer regulär genu
 Installationen, API-Token, Autostart oder Dienstzustände verändern. Der Migrationstest installiert ausdrücklich den
 veröffentlichten, signierten Desktopstand v1.3.0 und wechselt mit Token-Opt-in zum neuen Dienstmodus.
 Der dafür zusätzlich unter `build\windows\test-installer` erzeugte und signierte VM-Testinstaller ist
-präprozessorseitig der einzige Build, der `/ALLOWELEVATEDTESTCONTEXT=1` unterstützt. Er wird nicht veröffentlicht;
-der produktive Dienst-Installer in `dist` enthält diesen Testpfad nicht.
+präprozessorseitig der einzige Build, der `/ALLOWELEVATEDTESTCONTEXT=1` unterstützt. Er wird weder nach `dist`
+noch in das normale Windows-Artefakt oder einen GitHub Release übernommen; der produktive Dienst-Installer in
+`dist` enthält diesen Testpfad nicht. Nur ein manueller signierter Vorab-Probelauf auf `main` stellt ihn für
+einen Tag als separates internes Actions-Artefakt bereit.
 Die beiden opt-in Hard-Kill-Läufe erkennen ihren Checkpoint nur über vollständig geparste, DACL- und
 Transaktions-ID-geprüfte persistente Marker. Der Desktop-Helfer hält seinen internen Testcheckpoint zusätzlich
 über eine ausschließlich im isolierten Testinstaller enthaltene, vom Testprozess kontrollierte Haltesperre
@@ -123,9 +125,27 @@ python -m venv /tmp/einvoice-release-test
 
 Vor einem öffentlichen Tag wird der Workflow `Release` manuell auf `main` gestartet. Dieser Lauf verwendet die
 geschützte Umgebung `release`, signiert alle eigenen Windows-EXEs und beide Installer über Azure Key Vault und
-stellt sie für drei Tage als Actions-Artefakt bereit. Der manuelle Workflowlauf veröffentlicht keinen GitHub
-Release. Das Artefakt ist in einem öffentlichen Repository nicht vertraulich und kann von angemeldeten
-GitHub-Nutzern mit Repository-Lesezugriff heruntergeladen werden.
+stellt die Produktionsdateien für drei Tage als Actions-Artefakt `windows-release-<Run-ID>` bereit. Zusätzlich
+enthält ausschließlich dieser manuelle Lauf das separate Artefakt
+`INTERNAL-TEST-windows-recovery-<Run-ID>-<Versuch>` mit dem signierten internen Recovery-Testinstaller; es wird
+nur einen Tag aufbewahrt. Das interne Artefakt wird niemals von Tag-Läufen hochgeladen oder an einen GitHub
+Release angehängt. Der manuelle Workflowlauf veröffentlicht keinen GitHub Release. Beide Artefakte sind in
+einem öffentlichen Repository nicht vertraulich und können von angemeldeten GitHub-Nutzern mit
+Repository-Lesezugriff heruntergeladen werden.
+
+Der interne Recovery-Testinstaller enthält den ausschließlich für isolierte Wegwerf-VMs vorgesehenen erhöhten
+Testkontext `/ALLOWELEVATEDTESTCONTEXT=1` und darf nicht als Produktinstaller verwendet werden. Für die
+persistenten Hard-Kill-Tests ist ein Checkout exakt des im Workflowlauf genannten Commits erforderlich. Aus dem
+normalen Artefakt wird das Binär-ZIP zunächst in ein leeres Zwischenverzeichnis entpackt. Dessen Inhalt
+`bundle\desktop\*` wird anschließend nach `build\windows\bundle\E-Rechnungs-Pruefer\*` kopiert, sodass die
+Desktop-EXE exakt unter `build\windows\bundle\E-Rechnungs-Pruefer\E-Rechnungs-Pruefer.exe` liegt; ein direktes
+Entpacken nach `build\windows` genügt wegen der absichtlich neutralen veröffentlichten ZIP-Pfade nicht. Der
+produktive Dienst-Installer wird unter
+`dist\E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe` abgelegt. Die aus dem internen Artefakt geladene,
+gleichnamige Test-EXE muss dagegen ausschließlich unter
+`build\windows\test-installer\E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe` liegen. Diese
+Trennung ist fail-closed in den Testskripten verankert. Vor der Verwendung sind bei beiden Installern
+Authenticode-Status und Zeitstempel erneut zu prüfen.
 
 Das signierte Artefakt ist anschließend auf einer sauberen, nach dem Test verworfenen Windows-11-x64-VM zu
 prüfen. Neben beiden automatisierten Pakettests und dem v1.3.0-Migrationstest umfasst die manuelle Abnahme:
