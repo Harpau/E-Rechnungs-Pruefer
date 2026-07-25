@@ -134,6 +134,58 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
     assert "$signature.TimeStamperCertificate" in workflow
 
 
+def test_manual_release_preview_uploads_internal_recovery_installer_separately() -> None:
+    workflow = (PROJECT_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    release_docs = (PROJECT_ROOT / "docs/RELEASE.md").read_text(encoding="utf-8")
+
+    inspect_start = workflow.index("      - name: Inspect all owned executable signatures")
+    production_upload = workflow.index("          name: windows-release-${{ github.run_id }}", inspect_start)
+    internal_upload = workflow.index("      - name: Upload signed internal recovery test installer")
+    publish_start = workflow.index("\n  publish:")
+    inspect_block = workflow[inspect_start:production_upload]
+    production_block = workflow[production_upload:internal_upload]
+    internal_block = workflow[internal_upload:publish_start]
+    publish_block = workflow[publish_start:]
+
+    assert "id: inspect_signatures" in inspect_block
+    assert r"build\windows\test-installer\E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" in inspect_block
+    assert "$internalTestInstaller" in inspect_block
+    assert '$env:GITHUB_EVENT_NAME -eq "workflow_dispatch"' in inspect_block
+    assert '$env:GITHUB_REF -eq "refs/heads/main"' in inspect_block
+    assert "internal_test_installer=$internalTestInstaller" in inspect_block
+    assert "$env:GITHUB_OUTPUT" in inspect_block
+
+    assert "test-installer" not in production_block
+    assert "INTERNAL-TEST-windows-recovery" not in production_block
+
+    assert "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" in internal_block
+    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in internal_block
+    assert "name: INTERNAL-TEST-windows-recovery-${{ github.run_id }}-${{ github.run_attempt }}" in internal_block
+    assert "retention-days: 1" in internal_block
+    assert "if-no-files-found: error" in internal_block
+    assert "path: ${{ steps.inspect_signatures.outputs.internal_test_installer }}" in internal_block
+    assert inspect_start < production_upload < internal_upload < publish_start
+
+    assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publish_block
+    assert "name: windows-release-${{ github.run_id }}" in publish_block
+    assert "INTERNAL-TEST-windows-recovery" not in publish_block
+    assert "test-installer" not in publish_block
+
+    for expected in (
+        "INTERNAL-TEST-windows-recovery-",
+        "nur einen Tag",
+        "/ALLOWELEVATEDTESTCONTEXT=1",
+        "nicht als Produktinstaller",
+        r"build\windows\test-installer\E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe",
+        r"bundle\desktop\*",
+        r"build\windows\bundle\E-Rechnungs-Pruefer\*",
+        r"build\windows\bundle\E-Rechnungs-Pruefer\E-Rechnungs-Pruefer.exe",
+        r"dist\E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe",
+        "niemals von Tag-Läufen",
+    ):
+        assert expected in release_docs
+
+
 def test_windows_release_dependencies_are_exactly_pinned_and_hashed() -> None:
     lock_path = PROJECT_ROOT / "packaging/windows/requirements-release.txt"
     requirement = re.compile(

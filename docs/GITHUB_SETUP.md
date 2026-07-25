@@ -65,9 +65,11 @@ Die Entra-Anwendung benötigt eine federierte GitHub-Identität für genau diese
 
 Die Windows-Installer werden nur mit gültiger Authenticode-Signatur veröffentlicht. Der Workflow speichert weder
 PFX-Datei noch Client-Secret und bricht bei fehlender oder ungültiger Signatur ab. Ein manueller Workflow-Start
-auf `main` erzeugt ein signiertes, für drei Tage aufbewahrtes Vorab-Artefakt, veröffentlicht aber keinen GitHub
-Release. In einem öffentlichen Repository ist dieses Actions-Artefakt nicht vertraulich: Angemeldete
-GitHub-Nutzer mit Repository-Lesezugriff können es herunterladen.
+auf `main` erzeugt ein signiertes, für drei Tage aufbewahrtes Vorab-Artefakt sowie ein getrenntes, nur einen Tag
+verfügbares internes Recovery-Testartefakt, veröffentlicht aber keinen GitHub Release. Das interne Artefakt wird
+von Tag-Läufen und dem Publish-Job ausgeschlossen und darf wegen seines erhöhten Testkontexts ausschließlich auf
+einer isolierten Wegwerf-VM verwendet werden. In einem öffentlichen Repository sind diese Actions-Artefakte
+nicht vertraulich: Angemeldete GitHub-Nutzer mit Repository-Lesezugriff können sie herunterladen.
 
 ## Empfohlener Branch-Schutz
 
