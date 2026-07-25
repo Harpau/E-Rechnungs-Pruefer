@@ -71,7 +71,8 @@ function Invoke-SetupExpectedFailure {
         [string[]]$Arguments,
         [string]$LogPath,
         [string]$ExpectedLogReason,
-        [int]$ExpectedExitCode = 4
+        # Inno Setup reports an Abort during the installation phase as exit code 5.
+        [int]$ExpectedExitCode = 5
     )
     $Process = Start-Process $Path -ArgumentList $Arguments -PassThru
     if (-not $Process.WaitForExit(600000)) { throw "Erwarteter Setupfehler überschritt das Zeitlimit: $Path" }
@@ -616,7 +617,7 @@ if ($DesktopHardKillRecovery -ne "None") {
 Invoke-SetupExpectedFailure -Path $ServiceSetup -Arguments $FailedMigrationArguments `
     -LogPath $FailedMigrationLog `
     -ExpectedLogReason "Absichtlich ausgelöster transaktionaler Installationstest." `
-    -ExpectedExitCode 4
+    -ExpectedExitCode 5
 if (-not $DesktopProcess.WaitForExit(30000)) {
     throw "Desktop v1.3.0 wurde für den Rollback-Test nicht kontrolliert beendet."
 }

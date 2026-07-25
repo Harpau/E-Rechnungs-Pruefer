@@ -1185,8 +1185,10 @@ def test_migration_test_uses_published_130_desktop_installer() -> None:
         "Wait-SetupUninstallMutexReleased"
     )
     assert "ExpectedLogReason" in invoke_expected_failure
-    assert "ExpectedExitCode = 4" in invoke_expected_failure
+    assert "Inno Setup reports an Abort during the installation phase as exit code 5." in invoke_expected_failure
+    assert "ExpectedExitCode = 5" in invoke_expected_failure
     assert "Absichtlich ausgelöster transaktionaler Installationstest." in script
+    assert "-ExpectedExitCode 5" in script
     assert '"/LOG=`"$FailedMigrationLog`""' in script
     assert "function Assert-MigrationStateAbsent" in script
     assert "Get-ChildItem -LiteralPath $Path -Force" in script
