@@ -394,7 +394,11 @@ $DesktopProcess = Start-Process $DesktopExe -ArgumentList "--background" -PassTh
 $Deadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
     Start-Sleep -Milliseconds 250
-} while (-not (Test-Path $DesktopToken) -and [DateTime]::UtcNow -lt $Deadline -and -not $DesktopProcess.HasExited)
+} while (
+    (-not (Test-Path $DesktopToken) -or -not (Test-Path $RuntimeFile)) -and
+    [DateTime]::UtcNow -lt $Deadline -and
+    -not $DesktopProcess.HasExited
+)
 if (-not (Test-Path $DesktopToken) -or -not (Test-Path $RuntimeFile)) {
     throw "Desktop v1.3.0 wurde für die Migration nicht betriebsbereit."
 }

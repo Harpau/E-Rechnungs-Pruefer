@@ -1097,3 +1097,10 @@ def test_migration_test_uses_published_130_desktop_installer() -> None:
 
     assert script.count('"/ALLOWELEVATEDTESTCONTEXT=1"') == 3
     assert script.count("if ($AllowElevatedMigrationTestContext)") == 3
+    startup_wait = script[
+        script.index("$DesktopProcess = Start-Process") : script.index(
+            "$OriginalToken = (Get-Content $DesktopToken", script.index("$DesktopProcess = Start-Process")
+        )
+    ]
+    assert "-not (Test-Path $DesktopToken) -or -not (Test-Path $RuntimeFile)" in startup_wait
+    assert "} while (-not (Test-Path $DesktopToken) -and" not in startup_wait
