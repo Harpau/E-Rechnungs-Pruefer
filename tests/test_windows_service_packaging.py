@@ -92,7 +92,7 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     assert "--service-snapshot" not in installer
     assert r"{tmp}\service-metadata" not in installer
     assert "--clear-service-metadata" in installer
-    assert installer.count("ALLOWELEVATEDTESTCONTEXT") == 2
+    assert installer.count("ALLOWELEVATEDTESTCONTEXT") == 3
     assert installer.count("ServiceBelongsToThisInstallation(ServiceObject)") >= 3
     assert "CompareText(String(ServiceObject.State), 'Stopped') <> 0" not in installer
     assert installer.count("ServiceWasRunning := CompareText(ServiceState, 'Running') = 0;") == 4
@@ -798,6 +798,25 @@ def test_service_installer_orders_durable_migration_recovery_around_the_commit_p
     )
     assert "FileExists(TokenTransferFile) or FileExists(MigrationReceipt)" in desktop_flow
 
+    hard_kill_function = installer.index("function DesktopHardKillCheckpointTestRequested")
+    hard_kill_ifdef = installer.rindex("#ifdef AllowElevatedMigrationTestContext", 0, hard_kill_function)
+    hard_kill_hold = installer[hard_kill_ifdef : installer.index("function PrepareToInstall")]
+    assert hard_kill_hold.startswith("#ifdef AllowElevatedMigrationTestContext")
+    assert "{param:TESTDESKTOPHARDKILLHOLD|0}" in hard_kill_hold
+    assert "{param:ALLOWELEVATEDTESTCONTEXT|0}" in hard_kill_hold
+    assert "procedure RequireDesktopHardKillCheckpointHarness" in hard_kill_hold
+    assert "CheckForMutexes(DesktopHardKillTestMutexName)" in hard_kill_hold
+    assert "for PollCount := 1 to 3600 do" in hard_kill_hold
+    assert "Sleep(50);" in hard_kill_hold
+    assert "RaiseException(" in hard_kill_hold
+    assert (
+        preflight.index("RequireDesktopHardKillCheckpointHarness")
+        < preflight.index("PrepareDesktopMigration")
+        < preflight.index("HoldDesktopHardKillCheckpointForTest")
+        < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
+        < preflight.index("BeginServiceTransition")
+    )
+
     begin_transition = installer[
         installer.index("function BeginServiceTransition") : installer.index("function MarkServiceCommitted")
     ]
@@ -1111,3 +1130,12 @@ def test_migration_test_uses_published_130_desktop_installer() -> None:
     ]
     assert "-not (Test-Path $DesktopToken) -or -not (Test-Path $RuntimeFile)" in startup_wait
     assert "} while (-not (Test-Path $DesktopToken) -and" not in startup_wait
+    assert "[Threading.Mutex]::new(" in script
+    assert "Global\\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Hold" in script
+    assert "/TESTDESKTOPHARDKILLHOLD=1" in script
+    assert '"/LOG=`"$HardKillLog`""' in script
+    assert "Setup endete mit Exitcode $($Process.ExitCode)" in script
+    assert "Get-Content -LiteralPath $LogPath -Tail 80" in script
+    assert "$HardKillHoldMutexCreated" in script
+    assert "finally" in script[script.index("$HardKillHoldMutex = $null") :]
+    assert "$HardKillHoldMutex.Dispose()" in script

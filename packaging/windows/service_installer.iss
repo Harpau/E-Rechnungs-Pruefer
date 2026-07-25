@@ -87,6 +87,10 @@ const
   ReconcileRollback = 10;
   ReconcileCommit = 11;
   ReconcileCleanup = 12;
+  #ifdef AllowElevatedMigrationTestContext
+  DesktopHardKillTestMutexName =
+    'Global\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Hold';
+  #endif
   SetupHwndTopMost = -1;
   SetupHwndNotTopMost = -2;
   SetupSwRestore = 9;
@@ -1307,6 +1311,52 @@ begin
   end;
 end;
 
+#ifdef AllowElevatedMigrationTestContext
+function DesktopHardKillCheckpointTestRequested: Boolean;
+begin
+  Result :=
+    CompareText(
+      ExpandConstant('{param:TESTDESKTOPHARDKILLHOLD|0}'), '1') = 0;
+  if Result and
+     (CompareText(
+        ExpandConstant('{param:ALLOWELEVATEDTESTCONTEXT|0}'), '1') <> 0) then
+    RaiseException(
+      'Der interne Desktop-Hard-Kill-Testpfad benötigt den isolierten Testkontext.');
+end;
+
+procedure RequireDesktopHardKillCheckpointHarness;
+begin
+  if not DesktopHardKillCheckpointTestRequested then
+    Exit;
+  if not CheckForMutexes(DesktopHardKillTestMutexName) then
+    RaiseException(
+      'Die interne Desktop-Hard-Kill-Haltesperre wurde nicht vom Testprozess angelegt.');
+end;
+
+procedure HoldDesktopHardKillCheckpointForTest;
+var
+  PollCount: Integer;
+begin
+  if not DesktopHardKillCheckpointTestRequested then
+    Exit;
+  RequireDesktopHardKillCheckpointHarness;
+  Log(
+    'Interner Desktop-Hard-Kill-Test hält den rollbackfähigen Zustand ' +
+    'vor Dienst- und Bundlemutation.');
+  for PollCount := 1 to 3600 do
+  begin
+    if not CheckForMutexes(DesktopHardKillTestMutexName) then
+      RaiseException(
+        'Die interne Desktop-Hard-Kill-Haltesperre wurde ohne den erwarteten ' +
+        'harten Setupabbruch freigegeben.');
+    Sleep(50);
+  end;
+  RaiseException(
+    'Der interne Desktop-Hard-Kill-Testprozess hielt den Checkpoint ' +
+    'länger als das begrenzte Zeitfenster offen.');
+end;
+#endif
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ExitCode: Integer;
@@ -1398,6 +1448,9 @@ begin
       'Die Installation wird ohne Dateiänderung abgebrochen.';
     Exit;
   end;
+  #ifdef AllowElevatedMigrationTestContext
+  RequireDesktopHardKillCheckpointHarness;
+  #endif
   Result := PrepareDesktopMigration;
   if Result <> '' then
   begin
@@ -1405,6 +1458,9 @@ begin
       Result := Result + ' Der geschützte Recovery-Zustand bleibt für den nächsten Setup-Lauf erhalten.';
     Exit;
   end;
+  #ifdef AllowElevatedMigrationTestContext
+  HoldDesktopHardKillCheckpointForTest;
+  #endif
   { A running v1.3 Desktop legitimately owns the future service port until
     the reversible migration step above has stopped it. Any remaining owner
     is foreign and must be rejected before service or bundle state is changed. }

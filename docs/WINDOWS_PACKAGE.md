@@ -375,13 +375,15 @@ Auf einer Wegwerf-VM können zusätzlich zwei echte Prozessabbruch-Checkpoints g
 
 Der erste Helfer beendet ausschließlich den von ihm gestarteten, anhand PID und kanonischem EXE-Pfad
 identifizierten Setup-Prozessbaum, nachdem Desktop-Seal und `Apply` nachgewiesen sind, aber noch kein
-Dienst-`PREPARED`-Manifest und kein SCM-Dienst existieren. Derselbe Installer wird danach erneut gestartet; die
-frühe Recovery muss den Desktopzustand zunächst vollständig zurückrollen. Der zweite Helfer unterbricht ein
+Dienst-`PREPARED`-Manifest und kein SCM-Dienst existieren. Der isolierte Testinstaller hält diesen Zustand nur bei
+explizitem Hard-Kill-Testparameter an einer vom Testprozess kontrollierten, systemweiten Haltesperre fest; der
+produktive Installer enthält diesen Pfad nicht. Derselbe Installer wird danach erneut gestartet; die frühe
+Recovery muss den Desktopzustand zunächst vollständig zurückrollen. Der zweite Helfer unterbricht ein
 Update erst nach einem hashgebundenen `COMMIT_STARTED`-Marker und startet denselben Installer erneut; dieser muss
 den bereits committed Dienst ausschließlich vorwärts bereinigen. Beide Helfer bestehen nur, wenn der vollständig
-geparste, DACL-geprüfte Marker nach dem harten Abbruch noch unverändert vorhanden ist. Ist das absichtlich kurze
-Zeitfenster verpasst oder Setup bereits beendet, bricht der Test ab und meldet den Checkpoint ausdrücklich nicht
-als ausgeführt.
+geparste, DACL-geprüfte Marker nach dem harten Abbruch noch unverändert vorhanden ist. Ist das
+Checkpointfenster nicht eindeutig erreicht oder Setup bereits beendet, bricht der Test ab und meldet den
+Checkpoint ausdrücklich nicht als ausgeführt.
 
 CI verwendet frische Windows-Runner für diese zerstörenden Paketprüfungen. Sie ersetzen keine manuelle
 Endabnahme.

@@ -184,7 +184,8 @@ function Invoke-DesktopCheckpointHardKill {
         [string]$LegacyExecutable,
         [string]$ExpectedServiceExecutable,
         [string]$ExpectedServiceName,
-        [string]$ExpectedReaderSid
+        [string]$ExpectedReaderSid,
+        [string]$LogPath
     )
     $SealPath = Join-Path $StateDirectory "desktop-migration-receipt.json"
     $PhasePath = Join-Path $StateDirectory "desktop-migration-phase.json"
@@ -198,7 +199,14 @@ function Invoke-DesktopCheckpointHardKill {
     $TransactionId = ""
     do {
         if ($Process.HasExited) {
-            throw "Setup endete, ohne den Desktop-Hard-Kill-Checkpoint beobachtbar zu hinterlassen."
+            $Process.WaitForExit()
+            $LogTail = if (Test-Path -LiteralPath $LogPath) {
+                (Get-Content -LiteralPath $LogPath -Tail 80) -join "`n"
+            } else {
+                "Der angeforderte Inno-Setup-Log wurde nicht erzeugt: $LogPath"
+            }
+            throw "Setup endete mit Exitcode $($Process.ExitCode), ohne den Desktop-Hard-Kill-Checkpoint " +
+                "beobachtbar zu hinterlassen.`n$LogTail"
         }
         if ((Test-Path -LiteralPath $SealPath) -and
             (Test-Path -LiteralPath $PhasePath) -and
@@ -414,14 +422,34 @@ if ($AllowElevatedMigrationTestContext) {
     $FailedMigrationArguments += "/ALLOWELEVATEDTESTCONTEXT=1"
 }
 if ($DesktopHardKillRecovery -ne "None") {
-    $HardKillArguments = @(
-        "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=`"systemstart`"",
-        "/MIGRATEDESKTOPTOKEN=1", "/ALLOWELEVATEDTESTCONTEXT=1"
-    )
-    Invoke-DesktopCheckpointHardKill -Path $ServiceSetup -Arguments $HardKillArguments `
-        -StateDirectory $MigrationState -LegacyExecutable $DesktopExe `
-        -ExpectedServiceExecutable $ServiceExe -ExpectedServiceName $ServiceName `
-        -ExpectedReaderSid $Identity.User.Value
+    $HardKillHoldMutex = $null
+    $HardKillHoldMutexCreated = $false
+    try {
+        $HardKillHoldMutex = [Threading.Mutex]::new(
+            $false,
+            "Global\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Hold",
+            [ref]$HardKillHoldMutexCreated
+        )
+        if (-not $HardKillHoldMutexCreated) {
+            throw "Die interne Desktop-Hard-Kill-Haltesperre ist bereits vorhanden."
+        }
+        $HardKillLog = Join-Path $TemporaryRoot (
+            "e-rechnungs-pruefer-desktop-hard-kill-$([guid]::NewGuid().ToString('N')).log"
+        )
+        $HardKillArguments = @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=`"systemstart`"",
+            "/MIGRATEDESKTOPTOKEN=1", "/ALLOWELEVATEDTESTCONTEXT=1",
+            "/TESTDESKTOPHARDKILLHOLD=1", "/LOG=`"$HardKillLog`""
+        )
+        Invoke-DesktopCheckpointHardKill -Path $ServiceSetup -Arguments $HardKillArguments `
+            -StateDirectory $MigrationState -LegacyExecutable $DesktopExe `
+            -ExpectedServiceExecutable $ServiceExe -ExpectedServiceName $ServiceName `
+            -ExpectedReaderSid $Identity.User.Value -LogPath $HardKillLog
+    } finally {
+        if ($null -ne $HardKillHoldMutex) {
+            $HardKillHoldMutex.Dispose()
+        }
+    }
     if ($DesktopHardKillRecovery -eq "LeaveForReboot") {
         Write-Warning (
             "Der beweisbare Rollbackzustand bleibt absichtlich erhalten. VM jetzt hart neu starten; " +

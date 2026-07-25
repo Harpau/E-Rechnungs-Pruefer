@@ -80,9 +80,10 @@ Der dafür zusätzlich unter `build\windows\test-installer` erzeugte und signier
 präprozessorseitig der einzige Build, der `/ALLOWELEVATEDTESTCONTEXT=1` unterstützt. Er wird nicht veröffentlicht;
 der produktive Dienst-Installer in `dist` enthält diesen Testpfad nicht.
 Die beiden opt-in Hard-Kill-Läufe erkennen ihren Checkpoint nur über vollständig geparste, DACL- und
-Transaktions-ID-geprüfte persistente Marker. Sie beenden ausschließlich den exakt von ihnen gestarteten
-Setup-Prozessbaum. Ein verpasstes Zeitfenster ist ein fehlgeschlagener, nicht etwa ein übersprungener oder
-bestandener Test.
+Transaktions-ID-geprüfte persistente Marker. Der Desktop-Helfer hält seinen internen Testcheckpoint zusätzlich
+über eine ausschließlich im isolierten Testinstaller enthaltene, vom Testprozess kontrollierte Haltesperre
+stabil. Beide Helfer beenden ausschließlich den exakt von ihnen gestarteten Setup-Prozessbaum. Ein nicht eindeutig
+erreichter Checkpoint ist ein fehlgeschlagener, nicht etwa ein übersprungener oder bestandener Test.
 
 Zusätzliche Artefakte:
 
