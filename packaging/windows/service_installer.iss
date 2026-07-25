@@ -64,6 +64,9 @@ Source: "{#ProjectRoot}\LICENSE"; DestDir: "{code:PropagateServiceConfigurationF
 [Icons]
 Name: "{group}\E-Rechnungs-Prüfer öffnen"; Filename: "{app}\service\{#OpenClientExeName}"; WorkingDir: "{app}\service"
 
+[UninstallDelete]
+Type: dirifempty; Name: "{app}"
+
 [Code]
 const
   ServiceName = '{#ServiceName}';

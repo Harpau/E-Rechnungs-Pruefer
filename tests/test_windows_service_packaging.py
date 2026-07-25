@@ -85,7 +85,6 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     assert "ServiceObject := Services.ItemIndex(0);" in installer
     assert "TokenMigrationPage.Selected[" not in installer
     assert installer.count("TokenMigrationPage.Values[0]") == 7
-    assert "[UninstallDelete]" not in installer
     assert 'Source: "{#OpenClientFile}"; DestDir: "{app}"' not in installer
     assert (
         'Source: "{#OpenClientFile}"; DestDir: "{app}\\service.new"; Flags: ignoreversion uninsneveruninstall'
@@ -383,7 +382,12 @@ def test_service_installer_serializes_setup_and_uninstall_mutations() -> None:
     deinitialize_uninstall = installer[installer.index("procedure DeinitializeUninstall") :]
     assert "finally" in deinitialize_uninstall
     assert "ReleaseSetupUninstallMutex;" in deinitialize_uninstall
+    assert deinitialize_uninstall.index("ClearOriginalServiceMetadata") < deinitialize_uninstall.index(
+        "ReleaseSetupUninstallMutex;"
+    )
     assert deinitialize_uninstall.rindex("ReleaseSetupUninstallMutex;") > deinitialize_uninstall.rindex("finally")
+    assert "RemoveDir(" not in deinitialize_uninstall
+    assert "DelTree(" not in deinitialize_uninstall
 
     wait_for_release = package_test[
         package_test.index("function Wait-SetupUninstallMutexReleased") : package_test.index(
@@ -413,6 +417,20 @@ def test_service_installer_serializes_setup_and_uninstall_mutations() -> None:
 
 def test_service_package_waits_for_inno_cleanup_before_reinstall_and_success() -> None:
     script = _read("scripts/test_windows_service_package.ps1")
+    installer = _read("packaging/windows/service_installer.iss")
+
+    uninstall_delete = installer[installer.index("[UninstallDelete]") : installer.index("[Code]")]
+    assert installer.count("[UninstallDelete]") == 1
+    uninstall_delete_entries = [
+        line.strip()
+        for line in uninstall_delete.splitlines()
+        if line.strip() and not line.startswith("[UninstallDelete]")
+    ]
+    assert uninstall_delete_entries == ['Type: dirifempty; Name: "{app}"']
+    assert "Type: files;" not in uninstall_delete
+    assert "filesandordirs" not in uninstall_delete
+    assert "{commonappdata}" not in uninstall_delete
+    assert "*" not in uninstall_delete
 
     wait_for_paths = script[script.index("function Wait-PathsAbsent") : script.index("function Assert-ValidSignature")]
     for expected in (
