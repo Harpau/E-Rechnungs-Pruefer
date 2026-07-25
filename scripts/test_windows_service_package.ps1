@@ -981,13 +981,12 @@ $TreeBeforeFailedUpdate = Get-TreeFingerprint (Join-Path $InstallDir "service")
 $HashBeforeFailedUpdate = (Get-FileHash $ServiceExe -Algorithm SHA256).Hash
 $ConfigHashBeforeFailedUpdate = (Get-FileHash $ConfigFile -Algorithm SHA256).Hash
 $DescriptionBeforeFailedUpdate = Get-ItemPropertyValue $ServiceRegistryPath "Description"
-$FailureActionsBeforeFailedUpdate = [Convert]::ToBase64String(
-    [byte[]](Get-ItemPropertyValue $ServiceRegistryPath "FailureActions")
-)
 $FailureFlagBeforeFailedUpdate = Get-ItemPropertyValue $ServiceRegistryPath "FailureActionsOnNonCrashFailures"
 $DelayedStartBeforeFailedUpdate = Get-ItemPropertyValue $ServiceRegistryPath "DelayedAutoStart" -ErrorAction SilentlyContinue
 $DescriptionScmBeforeFailedUpdate = (& sc.exe qdescription $ServiceName) | Out-String
 if ($LASTEXITCODE -ne 0) { throw "Dienstbeschreibung konnte vor dem Rollback-Test nicht gelesen werden." }
+# FailureActions is an SCM-private REG_BINARY serialization. Equivalent values
+# can have different bytes after a supported ChangeServiceConfig2 round-trip.
 $FailureActionsScmBeforeFailedUpdate = (& sc.exe qfailure $ServiceName) | Out-String
 if ($LASTEXITCODE -ne 0) { throw "Recovery-Konfiguration konnte vor dem Rollback-Test nicht gelesen werden." }
 $FailureFlagScmBeforeFailedUpdate = (& sc.exe qfailureflag $ServiceName) | Out-String
@@ -1019,12 +1018,6 @@ if ((Get-FileHash $ConfigFile -Algorithm SHA256).Hash -ne $ConfigHashBeforeFaile
 if ((Get-ItemPropertyValue $ServiceRegistryPath "Description") -ne $DescriptionBeforeFailedUpdate) {
     throw "Fehlgeschlagenes Update stellte die ursprüngliche Dienstbeschreibung nicht wieder her."
 }
-$FailureActionsAfterFailedUpdate = [Convert]::ToBase64String(
-    [byte[]](Get-ItemPropertyValue $ServiceRegistryPath "FailureActions")
-)
-if ($FailureActionsAfterFailedUpdate -ne $FailureActionsBeforeFailedUpdate) {
-    throw "Fehlgeschlagenes Update stellte die ursprüngliche Recovery-Konfiguration nicht wieder her."
-}
 if ((Get-ItemPropertyValue $ServiceRegistryPath "FailureActionsOnNonCrashFailures") -ne
     $FailureFlagBeforeFailedUpdate) {
     throw "Fehlgeschlagenes Update stellte die ursprüngliche Recovery-Option nicht wieder her."
@@ -1039,7 +1032,8 @@ if ($LASTEXITCODE -ne 0 -or $DescriptionScmAfterFailedUpdate -ne $DescriptionScm
 }
 $FailureActionsScmAfterFailedUpdate = (& sc.exe qfailure $ServiceName) | Out-String
 if ($LASTEXITCODE -ne 0 -or $FailureActionsScmAfterFailedUpdate -ne $FailureActionsScmBeforeFailedUpdate) {
-    throw "SCM meldet nach fehlgeschlagenem Update nicht die ursprüngliche Recovery-Konfiguration."
+    throw "SCM meldet nach fehlgeschlagenem Update nicht die ursprüngliche Recovery-Konfiguration.`n" +
+        "Vorher:`n$FailureActionsScmBeforeFailedUpdate`nNachher:`n$FailureActionsScmAfterFailedUpdate"
 }
 $FailureFlagScmAfterFailedUpdate = (& sc.exe qfailureflag $ServiceName) | Out-String
 if ($LASTEXITCODE -ne 0 -or $FailureFlagScmAfterFailedUpdate -ne $FailureFlagScmBeforeFailedUpdate) {

@@ -915,7 +915,6 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
         "/PURGEDATA=1",
         "/TESTFAILAFTERCONFIG=1",
         "Rollback-Test-Beschreibung",
-        "FailureActionsBeforeFailedUpdate",
         "FailureActionsOnNonCrashFailures",
         "qdescription",
         "qfailureflag",
@@ -943,6 +942,10 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
     ):
         assert expected in script
 
+    assert 'Get-ItemPropertyValue $ServiceRegistryPath "FailureActions"' not in script
+    assert "$FailureActionsScmAfterFailedUpdate -ne $FailureActionsScmBeforeFailedUpdate" in script
+    assert "Vorher:`n$FailureActionsScmBeforeFailedUpdate" in script
+    assert "Nachher:`n$FailureActionsScmAfterFailedUpdate" in script
     assert script.count('"/ALLOWELEVATEDTESTCONTEXT=1"') == 3
     assert script.count("if ($AllowElevatedMigrationTestContext)") == 4
     assert script.count("-ExpectedLogReason") == 4
