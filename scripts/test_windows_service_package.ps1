@@ -470,6 +470,51 @@ function Invoke-ServiceUninstaller {
     if ($Process.ExitCode -ne 0) {
         throw "Der Dienst-Uninstaller schlug mit Exitcode $($Process.ExitCode) fehl."
     }
+    Wait-SetupUninstallMutexReleased
+}
+
+function Wait-SetupUninstallMutexReleased {
+    param(
+        [string]$Name = "Global\E-Rechnungs-Pruefer-Service-Setup-Uninstall",
+        [ValidateRange(1, 600)]
+        [int]$Seconds = 60
+    )
+    # Inno's observed unins*.exe exits successfully before its temporary
+    # second-phase clone runs DeinitializeUninstall and releases this mutex.
+    $Mutex = $null
+    try {
+        try {
+            $Mutex = [Threading.Mutex]::OpenExisting($Name)
+        } catch [Threading.WaitHandleCannotBeOpenedException] {
+            return
+        }
+
+        $Owned = $false
+        $Abandoned = $false
+        try {
+            try {
+                $Owned = $Mutex.WaitOne($Seconds * 1000)
+            } catch [Threading.AbandonedMutexException] {
+                $Owned = $true
+                $Abandoned = $true
+            }
+            if (-not $Owned) {
+                throw "Die systemweite Installations-/Deinstallationssperre wurde nach erfolgreicher " +
+                    "Deinstallation nicht innerhalb des Zeitlimits freigegeben."
+            }
+            if ($Abandoned) {
+                throw "Die temporäre zweite Uninstaller-Phase wurde unerwartet beendet."
+            }
+        } finally {
+            if ($Owned) {
+                $Mutex.ReleaseMutex()
+            }
+        }
+    } finally {
+        if ($null -ne $Mutex) {
+            $Mutex.Dispose()
+        }
+    }
 }
 
 function Assert-ValidSignature {

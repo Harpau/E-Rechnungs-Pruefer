@@ -312,6 +312,7 @@ def test_service_configuration_failures_abort_through_the_transactional_install_
 
 def test_service_installer_serializes_setup_and_uninstall_mutations() -> None:
     installer = _read("packaging/windows/service_installer.iss")
+    package_test = _read("scripts/test_windows_service_package.ps1")
 
     assert "SetupUninstallMutexName = 'Global\\E-Rechnungs-Pruefer-Service-Setup-Uninstall';" in installer
     assert "SetupUninstallMutexName = BackendMutexName" not in installer
@@ -383,6 +384,31 @@ def test_service_installer_serializes_setup_and_uninstall_mutations() -> None:
     assert "finally" in deinitialize_uninstall
     assert "ReleaseSetupUninstallMutex;" in deinitialize_uninstall
     assert deinitialize_uninstall.rindex("ReleaseSetupUninstallMutex;") > deinitialize_uninstall.rindex("finally")
+
+    wait_for_release = package_test[
+        package_test.index("function Wait-SetupUninstallMutexReleased") : package_test.index(
+            "function Assert-ValidSignature"
+        )
+    ]
+    assert '"Global\\E-Rechnungs-Pruefer-Service-Setup-Uninstall"' in wait_for_release
+    assert "[Threading.Mutex]::OpenExisting($Name)" in wait_for_release
+    assert "$Mutex.WaitOne($Seconds * 1000)" in wait_for_release
+    assert "catch [Threading.WaitHandleCannotBeOpenedException]" in wait_for_release
+    assert "catch [Threading.AbandonedMutexException]" in wait_for_release
+    assert "$Abandoned = $true" in wait_for_release
+    assert "Die temporäre zweite Uninstaller-Phase wurde unerwartet beendet." in wait_for_release
+    assert wait_for_release.index("$Mutex.ReleaseMutex()") < wait_for_release.index("$Mutex.Dispose()")
+
+    invoke_uninstaller = package_test[
+        package_test.index("function Invoke-ServiceUninstaller") : package_test.index(
+            "function Wait-SetupUninstallMutexReleased"
+        )
+    ]
+    assert (
+        invoke_uninstaller.index("$Process.WaitForExit(600000)")
+        < invoke_uninstaller.index("if ($Process.ExitCode -ne 0)")
+        < invoke_uninstaller.index("Wait-SetupUninstallMutexReleased")
+    )
 
 
 def test_service_installer_activates_the_visible_wizard_once_after_show() -> None:
