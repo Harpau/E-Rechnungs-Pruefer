@@ -806,9 +806,16 @@ def test_service_installer_orders_durable_migration_recovery_around_the_commit_p
     assert "{param:ALLOWELEVATEDTESTCONTEXT|0}" in hard_kill_hold
     assert "procedure RequireDesktopHardKillCheckpointHarness" in hard_kill_hold
     assert "CheckForMutexes(DesktopHardKillTestMutexName)" in hard_kill_hold
+    assert "DesktopHardKillReadyEventName" in hard_kill_hold
+    assert "OpenEvent(EventModifyState, False, DesktopHardKillReadyEventName)" in hard_kill_hold
+    assert "procedure SignalDesktopHardKillCheckpointReadyForTest" in hard_kill_hold
+    assert "SetEvent(ReadyEventHandle)" in hard_kill_hold
     assert "for PollCount := 1 to 3600 do" in hard_kill_hold
     assert "Sleep(50);" in hard_kill_hold
     assert "RaiseException(" in hard_kill_hold
+    assert hard_kill_hold.index("SignalDesktopHardKillCheckpointReadyForTest;") < hard_kill_hold.index(
+        "for PollCount := 1 to 3600 do"
+    )
     assert (
         preflight.index("RequireDesktopHardKillCheckpointHarness")
         < preflight.index("PrepareDesktopMigration")
@@ -1132,6 +1139,12 @@ def test_migration_test_uses_published_130_desktop_installer() -> None:
     assert "} while (-not (Test-Path $DesktopToken) -and" not in startup_wait
     assert "[Threading.Mutex]::new(" in script
     assert "Global\\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Hold" in script
+    assert "[Threading.EventWaitHandle]::new(" in script
+    assert "[Threading.EventResetMode]::ManualReset" in script
+    assert "Global\\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Ready" in script
+    assert "$ReadyEvent.WaitOne(50)" in script
+    assert "$HardKillReadyEventCreated" in script
+    assert "$HardKillReadyEvent.Dispose()" in script
     assert "/TESTDESKTOPHARDKILLHOLD=1" in script
     assert '"/LOG=`"$HardKillLog`""' in script
     assert "Setup endete mit Exitcode $($Process.ExitCode)" in script
@@ -1139,3 +1152,26 @@ def test_migration_test_uses_published_130_desktop_installer() -> None:
     assert "$HardKillHoldMutexCreated" in script
     assert "finally" in script[script.index("$HardKillHoldMutex = $null") :]
     assert "$HardKillHoldMutex.Dispose()" in script
+    wait_for_setup_release = script[
+        script.index("function Wait-SetupUninstallMutexReleased") : script.index("function Invoke-Setup")
+    ]
+    assert '"Global\\E-Rechnungs-Pruefer-Service-Setup-Uninstall"' in wait_for_setup_release
+    assert "[Threading.Mutex]::OpenExisting($Name)" in wait_for_setup_release
+    assert "$Mutex.WaitOne($Seconds * 1000)" in wait_for_setup_release
+    assert "catch [Threading.AbandonedMutexException]" in wait_for_setup_release
+    invoke_setup = script[script.index("function Invoke-Setup") : script.index("function Invoke-SetupExpectedFailure")]
+    invoke_expected_failure = script[
+        script.index("function Invoke-SetupExpectedFailure") : script.index("function Get-TokenScryptVerifier")
+    ]
+    assert invoke_setup.index("$Process.WaitForExit(600000)") < invoke_setup.index("Wait-SetupUninstallMutexReleased")
+    assert invoke_expected_failure.index("$Process.WaitForExit(600000)") < invoke_expected_failure.index(
+        "Wait-SetupUninstallMutexReleased"
+    )
+    assert "ExpectedLogReason" in invoke_expected_failure
+    assert "ExpectedExitCode = 4" in invoke_expected_failure
+    assert "Absichtlich ausgelöster transaktionaler Installationstest." in script
+    assert '"/LOG=`"$FailedMigrationLog`""' in script
+    assert "function Assert-MigrationStateAbsent" in script
+    assert "Get-ChildItem -LiteralPath $Path -Force" in script
+    assert "(leeres Verzeichnis)" in script
+    assert script.count("Assert-MigrationStateAbsent -Path $MigrationState") == 2

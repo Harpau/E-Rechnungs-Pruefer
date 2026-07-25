@@ -643,6 +643,8 @@ def test_protected_migration_seal_binds_transaction_reader_token_and_initial_pha
     monkeypatch.setattr(migration, "_migration_windows_modules", lambda: modules)
     monkeypatch.setattr(migration, "_migration_state_paths", lambda: (state_directory, seal_path))
     monkeypatch.setattr(migration.secrets, "token_hex", lambda _length: "a" * 32)
+    wait_for_state_absent = Mock()
+    monkeypatch.setattr(migration, "_wait_for_migration_state_absent", wait_for_state_absent)
 
     migration.seal_desktop_migration(receipt_path=receipt_path, token_transfer_path=token_path)
 
@@ -685,6 +687,7 @@ def test_protected_migration_seal_binds_transaction_reader_token_and_initial_pha
     migration.clear_desktop_migration_seal()
 
     assert not state_directory.exists()
+    wait_for_state_absent.assert_called_once_with(state_directory)
 
 
 def test_token_verifier_uses_transaction_salted_scrypt_and_constant_time_comparison(
@@ -970,6 +973,8 @@ def test_partial_detection_and_cleanup_accept_interrupted_atomic_seal_scratch(
         "_verify_migration_state_path",
         Mock(return_value="S-1-5-21-test"),
     )
+    wait_for_state_absent = Mock()
+    monkeypatch.setattr(migration, "_wait_for_migration_state_absent", wait_for_state_absent)
 
     assert migration.desktop_migration_state_is_partial() is True
     assert scratch.read_bytes() == payload
@@ -977,6 +982,7 @@ def test_partial_detection_and_cleanup_accept_interrupted_atomic_seal_scratch(
     migration.clear_desktop_migration_seal()
 
     assert not state_directory.exists()
+    wait_for_state_absent.assert_called_once_with(state_directory)
 
 
 def test_partial_detection_accepts_interrupted_token_and_phase_scratch_only_before_fixed_phase(

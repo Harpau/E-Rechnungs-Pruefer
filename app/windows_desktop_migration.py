@@ -1444,13 +1444,13 @@ def _wait_for_profile_hive_recovery_tail_empty(snapshot_directory: Path) -> None
     raise RuntimeError("Das geschützte NTUSER-Hive-Verzeichnis enthält nach Ablauf der Löschfrist weiterhin Einträge.")
 
 
-def _wait_for_profile_hive_snapshot_absent(snapshot_directory: Path) -> None:
+def _wait_for_removed_directory_absent(directory: Path, *, description: str) -> None:
     """Observe a successful rmdir until its delete-pending namespace entry is absent."""
 
     last_error: OSError | None = None
     for attempt in range(PROFILE_HIVE_NAMESPACE_POLL_ATTEMPTS):
         try:
-            snapshot_directory.lstat()
+            directory.lstat()
         except FileNotFoundError:
             return
         except OSError as exc:
@@ -1461,9 +1461,23 @@ def _wait_for_profile_hive_snapshot_absent(snapshot_directory: Path) -> None:
             time.sleep(PROFILE_HIVE_NAMESPACE_POLL_INTERVAL_SECONDS)
     if last_error is not None:
         raise RuntimeError(
-            "Das entfernte NTUSER-Hive-Verzeichnis konnte nicht sicher auf Abwesenheit geprüft werden."
+            f"Das entfernte {description} konnte nicht sicher auf Abwesenheit geprüft werden."
         ) from last_error
-    raise RuntimeError("Das entfernte NTUSER-Hive-Verzeichnis ist nach Ablauf der Löschfrist weiterhin vorhanden.")
+    raise RuntimeError(f"Das entfernte {description} ist nach Ablauf der Löschfrist weiterhin vorhanden.")
+
+
+def _wait_for_profile_hive_snapshot_absent(snapshot_directory: Path) -> None:
+    _wait_for_removed_directory_absent(
+        snapshot_directory,
+        description="NTUSER-Hive-Verzeichnis",
+    )
+
+
+def _wait_for_migration_state_absent(state_directory: Path) -> None:
+    _wait_for_removed_directory_absent(
+        state_directory,
+        description="Verzeichnis des geschützten Desktop-Migrationszustands",
+    )
 
 
 def _remove_profile_hive_snapshot(
@@ -3573,6 +3587,7 @@ def _clear_migration_state(*, expected_reader_sid: str, require_current_user: bo
             raise RuntimeError(
                 "Der partielle geschützte Desktop-Migrationszustand konnte nicht entfernt werden."
             ) from exc
+        _wait_for_migration_state_absent(state_directory)
         return
 
     entry_names = _migration_state_entries(state_directory)
@@ -3741,6 +3756,7 @@ def _clear_migration_state(*, expected_reader_sid: str, require_current_user: bo
         state_directory.rmdir()
     except OSError as exc:
         raise RuntimeError("Der geschützte Desktop-Migrationszustand konnte nicht entfernt werden.") from exc
+    _wait_for_migration_state_absent(state_directory)
     if validate_machine_path(state_directory, directory=True):
         raise RuntimeError("Der geschützte Desktop-Migrationszustand wurde nicht vollständig entfernt.")
 

@@ -90,6 +90,9 @@ const
   #ifdef AllowElevatedMigrationTestContext
   DesktopHardKillTestMutexName =
     'Global\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Hold';
+  DesktopHardKillReadyEventName =
+    'Global\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Ready';
+  EventModifyState = $0002;
   #endif
   SetupHwndTopMost = -1;
   SetupHwndNotTopMost = -2;
@@ -142,6 +145,12 @@ function ReleaseMutex(Handle: Cardinal): BOOL;
   external 'ReleaseMutex@kernel32.dll stdcall';
 function CloseHandle(Handle: Cardinal): BOOL;
   external 'CloseHandle@kernel32.dll stdcall';
+#ifdef AllowElevatedMigrationTestContext
+function OpenEvent(DesiredAccess: DWORD; InheritHandle: BOOL; Name: String): Cardinal;
+  external 'OpenEventW@kernel32.dll stdcall';
+function SetEvent(EventHandle: Cardinal): BOOL;
+  external 'SetEvent@kernel32.dll stdcall';
+#endif
 function SetTimer(
   Window: HWND; TimerID: UINT_PTR; Elapse: UINT; TimerProcedure: LongWord): UINT_PTR;
   external 'SetTimer@user32.dll stdcall';
@@ -1325,12 +1334,48 @@ begin
 end;
 
 procedure RequireDesktopHardKillCheckpointHarness;
+var
+  ReadyEventHandle: Cardinal;
 begin
   if not DesktopHardKillCheckpointTestRequested then
     Exit;
   if not CheckForMutexes(DesktopHardKillTestMutexName) then
     RaiseException(
       'Die interne Desktop-Hard-Kill-Haltesperre wurde nicht vom Testprozess angelegt.');
+  ReadyEventHandle :=
+    OpenEvent(EventModifyState, False, DesktopHardKillReadyEventName);
+  if ReadyEventHandle = 0 then
+    RaiseException(
+      'Das interne Desktop-Hard-Kill-Bereitschaftsereignis wurde nicht vom Testprozess angelegt.');
+  CloseHandle(ReadyEventHandle);
+end;
+
+procedure SignalDesktopHardKillCheckpointReadyForTest;
+var
+  ErrorCode: LongInt;
+  ReadyEventHandle: Cardinal;
+begin
+  if not DesktopHardKillCheckpointTestRequested then
+    Exit;
+  RequireDesktopHardKillCheckpointHarness;
+  ReadyEventHandle :=
+    OpenEvent(EventModifyState, False, DesktopHardKillReadyEventName);
+  ErrorCode := DLLGetLastError;
+  if ReadyEventHandle = 0 then
+    RaiseException(
+      'Das interne Desktop-Hard-Kill-Bereitschaftsereignis konnte nicht geöffnet werden ' +
+      '(Windows-Fehler ' + IntToStr(ErrorCode) + ').');
+  try
+    if not SetEvent(ReadyEventHandle) then
+    begin
+      ErrorCode := DLLGetLastError;
+      RaiseException(
+        'Der vollständig vorbereitete Desktop-Hard-Kill-Checkpoint konnte nicht signalisiert werden ' +
+        '(Windows-Fehler ' + IntToStr(ErrorCode) + ').');
+    end;
+  finally
+    CloseHandle(ReadyEventHandle);
+  end;
 end;
 
 procedure HoldDesktopHardKillCheckpointForTest;
@@ -1340,6 +1385,7 @@ begin
   if not DesktopHardKillCheckpointTestRequested then
     Exit;
   RequireDesktopHardKillCheckpointHarness;
+  SignalDesktopHardKillCheckpointReadyForTest;
   Log(
     'Interner Desktop-Hard-Kill-Test hält den rollbackfähigen Zustand ' +
     'vor Dienst- und Bundlemutation.');

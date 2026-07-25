@@ -12,18 +12,88 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Wait-SetupUninstallMutexReleased {
+    param(
+        [string]$Name = "Global\E-Rechnungs-Pruefer-Service-Setup-Uninstall",
+        [ValidateRange(1, 600)]
+        [int]$Seconds = 60
+    )
+    # The observed Inno loader can exit before its temporary second phase
+    # finishes DeinitializeSetup and releases the transaction mutex.
+    $Mutex = $null
+    try {
+        try {
+            $Mutex = [Threading.Mutex]::OpenExisting($Name)
+        } catch [Threading.WaitHandleCannotBeOpenedException] {
+            return
+        }
+
+        $Owned = $false
+        $Abandoned = $false
+        try {
+            try {
+                $Owned = $Mutex.WaitOne($Seconds * 1000)
+            } catch [Threading.AbandonedMutexException] {
+                $Owned = $true
+                $Abandoned = $true
+            }
+            if (-not $Owned) {
+                throw "Die systemweite Installations-/Deinstallationssperre wurde nach dem Setup " +
+                    "nicht innerhalb des Zeitlimits freigegeben."
+            }
+            if ($Abandoned) {
+                throw "Die temporäre zweite Setup-Phase wurde unerwartet beendet."
+            }
+        } finally {
+            if ($Owned) {
+                $Mutex.ReleaseMutex()
+            }
+        }
+    } finally {
+        if ($null -ne $Mutex) {
+            $Mutex.Dispose()
+        }
+    }
+}
+
 function Invoke-Setup {
     param([string]$Path, [string[]]$Arguments)
     $Process = Start-Process $Path -ArgumentList $Arguments -PassThru
     if (-not $Process.WaitForExit(600000)) { throw "Setup-Zeitlimit überschritten: $Path" }
-    if ($Process.ExitCode -ne 0) { throw "Setup fehlgeschlagen ($($Process.ExitCode)): $Path" }
+    $ExitCode = $Process.ExitCode
+    Wait-SetupUninstallMutexReleased
+    if ($ExitCode -ne 0) { throw "Setup fehlgeschlagen ($ExitCode): $Path" }
 }
 
 function Invoke-SetupExpectedFailure {
-    param([string]$Path, [string[]]$Arguments)
+    param(
+        [string]$Path,
+        [string[]]$Arguments,
+        [string]$LogPath,
+        [string]$ExpectedLogReason,
+        [int]$ExpectedExitCode = 4
+    )
     $Process = Start-Process $Path -ArgumentList $Arguments -PassThru
     if (-not $Process.WaitForExit(600000)) { throw "Erwarteter Setupfehler überschritt das Zeitlimit: $Path" }
-    if ($Process.ExitCode -eq 0) { throw "Der angeforderte transaktionale Setupfehler blieb aus: $Path" }
+    $ExitCode = $Process.ExitCode
+    Wait-SetupUninstallMutexReleased
+    $LogTail = if (Test-Path -LiteralPath $LogPath) {
+        (Get-Content -LiteralPath $LogPath -Tail 80) -join "`n"
+    } else {
+        "Der angeforderte Inno-Setup-Log wurde nicht erzeugt: $LogPath"
+    }
+    if ($ExitCode -ne $ExpectedExitCode) {
+        throw "Der angeforderte transaktionale Setupfehler lieferte Exitcode $ExitCode statt " +
+            "$ExpectedExitCode.`n$LogTail"
+    }
+    if (-not (Test-Path -LiteralPath $LogPath)) {
+        throw "Der absichtlich fehlschlagende Installer erzeugte keinen Inno-Setup-Log: $LogPath"
+    }
+    $Log = Get-Content -LiteralPath $LogPath -Raw
+    if ($Log.IndexOf($ExpectedLogReason, [StringComparison]::Ordinal) -lt 0) {
+        throw "Der Dienst-Installer schlug aus einem unerwarteten Grund fehl. " +
+            "Erwartet: $ExpectedLogReason`n$LogTail"
+    }
 }
 
 function Get-TokenScryptVerifier {
@@ -185,7 +255,8 @@ function Invoke-DesktopCheckpointHardKill {
         [string]$ExpectedServiceExecutable,
         [string]$ExpectedServiceName,
         [string]$ExpectedReaderSid,
-        [string]$LogPath
+        [string]$LogPath,
+        [Threading.EventWaitHandle]$ReadyEvent
     )
     $SealPath = Join-Path $StateDirectory "desktop-migration-receipt.json"
     $PhasePath = Join-Path $StateDirectory "desktop-migration-phase.json"
@@ -195,6 +266,29 @@ function Invoke-DesktopCheckpointHardKill {
     ) ".installer-state\install-transaction.prepared.json"
     $QuarantinedExecutable = "$LegacyExecutable.service-mode-disabled"
     $Process = Start-Process $Path -ArgumentList $Arguments -PassThru
+    $ReadyDeadline = [DateTime]::UtcNow.AddSeconds(180)
+    $ReadyObserved = $false
+    do {
+        if ($ReadyEvent.WaitOne(50)) {
+            $ReadyObserved = $true
+            break
+        }
+        if ($Process.HasExited) {
+            $Process.WaitForExit()
+            $LogTail = if (Test-Path -LiteralPath $LogPath) {
+                (Get-Content -LiteralPath $LogPath -Tail 80) -join "`n"
+            } else {
+                "Der angeforderte Inno-Setup-Log wurde nicht erzeugt: $LogPath"
+            }
+            throw "Setup endete mit Exitcode $($Process.ExitCode), bevor der vollständig verifizierte " +
+                "Desktop-Hard-Kill-Checkpoint signalisiert wurde.`n$LogTail"
+        }
+    } while ([DateTime]::UtcNow -lt $ReadyDeadline)
+    if (-not $ReadyObserved) {
+        Stop-VerifiedSetupProcessTree -Process $Process -ExpectedPath $Path
+        throw "Der vollständig verifizierte Desktop-Hard-Kill-Checkpoint wurde nicht rechtzeitig signalisiert."
+    }
+
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
     $TransactionId = ""
     do {
@@ -252,6 +346,7 @@ function Invoke-DesktopCheckpointHardKill {
         Start-Sleep -Milliseconds 10
     } while ([DateTime]::UtcNow -lt $Deadline)
     if (-not $TransactionId) {
+        Stop-VerifiedSetupProcessTree -Process $Process -ExpectedPath $Path
         throw "Desktop-Hard-Kill-Checkpoint wurde nicht rechtzeitig und eindeutig beobachtet."
     }
 
@@ -311,6 +406,20 @@ function Wait-ServiceRunning {
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $Deadline)
     throw "Migrierter Dienst wurde nicht betriebsbereit."
+}
+
+function Assert-MigrationStateAbsent {
+    param([string]$Path, [string]$Scenario)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    $Entries = @(
+        Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop |
+            Sort-Object Name |
+            ForEach-Object { $_.Name }
+    )
+    $Inventory = if ($Entries.Count -eq 0) { "(leeres Verzeichnis)" } else { $Entries -join ", " }
+    throw "$Scenario ließ geschützten Desktop-Migrationszustand zurück: $Path`nEinträge: $Inventory"
 }
 
 if (-not $IsWindows) { throw "Der Migrationstest kann nur unter Windows laufen." }
@@ -414,9 +523,12 @@ $OriginalToken = (Get-Content $DesktopToken -Raw).Trim()
 $ExpectedRun = "`"$DesktopExe`" --background"
 if ((Get-ItemPropertyValue $RunKey $RunName) -ne $ExpectedRun) { throw "v1.3.0-HKCU-Autostart fehlt." }
 
+$FailedMigrationLog = Join-Path $TemporaryRoot (
+    "e-rechnungs-pruefer-failed-migration-$([guid]::NewGuid().ToString('N')).log"
+)
 $FailedMigrationArguments = @(
     "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=`"systemstart`"",
-    "/MIGRATEDESKTOPTOKEN=1", "/TESTFAILAFTERCONFIG=1"
+    "/MIGRATEDESKTOPTOKEN=1", "/TESTFAILAFTERCONFIG=1", "/LOG=`"$FailedMigrationLog`""
 )
 if ($AllowElevatedMigrationTestContext) {
     $FailedMigrationArguments += "/ALLOWELEVATEDTESTCONTEXT=1"
@@ -424,6 +536,8 @@ if ($AllowElevatedMigrationTestContext) {
 if ($DesktopHardKillRecovery -ne "None") {
     $HardKillHoldMutex = $null
     $HardKillHoldMutexCreated = $false
+    $HardKillReadyEvent = $null
+    $HardKillReadyEventCreated = $false
     try {
         $HardKillHoldMutex = [Threading.Mutex]::new(
             $false,
@@ -432,6 +546,15 @@ if ($DesktopHardKillRecovery -ne "None") {
         )
         if (-not $HardKillHoldMutexCreated) {
             throw "Die interne Desktop-Hard-Kill-Haltesperre ist bereits vorhanden."
+        }
+        $HardKillReadyEvent = [Threading.EventWaitHandle]::new(
+            $false,
+            [Threading.EventResetMode]::ManualReset,
+            "Global\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Ready",
+            [ref]$HardKillReadyEventCreated
+        )
+        if (-not $HardKillReadyEventCreated) {
+            throw "Das interne Desktop-Hard-Kill-Bereitschaftsereignis ist bereits vorhanden."
         }
         $HardKillLog = Join-Path $TemporaryRoot (
             "e-rechnungs-pruefer-desktop-hard-kill-$([guid]::NewGuid().ToString('N')).log"
@@ -444,8 +567,12 @@ if ($DesktopHardKillRecovery -ne "None") {
         Invoke-DesktopCheckpointHardKill -Path $ServiceSetup -Arguments $HardKillArguments `
             -StateDirectory $MigrationState -LegacyExecutable $DesktopExe `
             -ExpectedServiceExecutable $ServiceExe -ExpectedServiceName $ServiceName `
-            -ExpectedReaderSid $Identity.User.Value -LogPath $HardKillLog
+            -ExpectedReaderSid $Identity.User.Value -LogPath $HardKillLog `
+            -ReadyEvent $HardKillReadyEvent
     } finally {
+        if ($null -ne $HardKillReadyEvent) {
+            $HardKillReadyEvent.Dispose()
+        }
         if ($null -ne $HardKillHoldMutex) {
             $HardKillHoldMutex.Dispose()
         }
@@ -460,7 +587,10 @@ if ($DesktopHardKillRecovery -ne "None") {
         exit 194
     }
 }
-Invoke-SetupExpectedFailure $ServiceSetup $FailedMigrationArguments
+Invoke-SetupExpectedFailure -Path $ServiceSetup -Arguments $FailedMigrationArguments `
+    -LogPath $FailedMigrationLog `
+    -ExpectedLogReason "Absichtlich ausgelöster transaktionaler Installationstest." `
+    -ExpectedExitCode 4
 if (-not $DesktopProcess.WaitForExit(30000)) {
     throw "Desktop v1.3.0 wurde für den Rollback-Test nicht kontrolliert beendet."
 }
@@ -490,7 +620,7 @@ if (Test-Path $ServiceDir) { throw "Fehlgeschlagene Migration ließ Dienstbinär
 if (Test-Path (Split-Path $ServiceToken -Parent)) {
     throw "Fehlgeschlagene Migration ließ unerwarteten Maschinenzustand zurück."
 }
-if (Test-Path $MigrationState) { throw "Fehlgeschlagene Migration ließ den geschützten Phasenbeleg zurück." }
+Assert-MigrationStateAbsent -Path $MigrationState -Scenario "Fehlgeschlagene Migration"
 
 $MigrationArguments = @(
     "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=`"systemstart`"",
@@ -520,7 +650,7 @@ $QuarantinedDesktop = "$DesktopExe.service-mode-disabled"
 if (Test-Path -LiteralPath $QuarantinedDesktop) {
     throw "Die quarantänisierte Desktop-EXE wurde nach dem erfolgreichen Moduswechsel nicht entfernt."
 }
-if (Test-Path $MigrationState) { throw "Erfolgreiche Migration ließ den geschützten Phasenbeleg zurück." }
+Assert-MigrationStateAbsent -Path $MigrationState -Scenario "Erfolgreiche Migration"
 
 $EINVOICE_API_TOKEN = $OriginalToken
 $Config = Get-Content (Join-Path (Split-Path $ServiceToken -Parent) "service.json") -Raw | ConvertFrom-Json

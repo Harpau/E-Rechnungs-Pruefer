@@ -377,8 +377,10 @@ Der erste Helfer beendet ausschließlich den von ihm gestarteten, anhand PID und
 identifizierten Setup-Prozessbaum, nachdem Desktop-Seal und `Apply` nachgewiesen sind, aber noch kein
 Dienst-`PREPARED`-Manifest und kein SCM-Dienst existieren. Der isolierte Testinstaller hält diesen Zustand nur bei
 explizitem Hard-Kill-Testparameter an einer vom Testprozess kontrollierten, systemweiten Haltesperre fest; der
-produktive Installer enthält diesen Pfad nicht. Derselbe Installer wird danach erneut gestartet; die frühe
-Recovery muss den Desktopzustand zunächst vollständig zurückrollen. Der zweite Helfer unterbricht ein
+zugehörige Testprozess akzeptiert den Checkpoint erst nach dem Bereitschaftssignal der vollständig abgeschlossenen
+Desktop-Verifikation. Der produktive Installer enthält diesen Pfad nicht. Derselbe Installer wird danach erneut
+gestartet; die frühe Recovery muss den Desktopzustand zunächst vollständig zurückrollen, bevor der separat
+protokollierte transaktionale Testfehler erreicht werden darf. Der zweite Helfer unterbricht ein
 Update erst nach einem hashgebundenen `COMMIT_STARTED`-Marker und startet denselben Installer erneut; dieser muss
 den bereits committed Dienst ausschließlich vorwärts bereinigen. Beide Helfer bestehen nur, wenn der vollständig
 geparste, DACL-geprüfte Marker nach dem harten Abbruch noch unverändert vorhanden ist. Ist das
