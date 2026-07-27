@@ -137,7 +137,7 @@ def test_main_routes_service_transaction_actions(monkeypatch: pytest.MonkeyPatch
     rollback = Mock(return_value=10)
     commit = Mock(return_value=11)
     classify = Mock(return_value=12)
-    finish = Mock(return_value=0)
+    finish = Mock(return_value=11)
     monkeypatch.setattr(windows_open_client, "begin_service_transition", begin)
     monkeypatch.setattr(windows_open_client, "mark_service_rollback_complete", rollback)
     monkeypatch.setattr(windows_open_client, "mark_service_committed", commit)
@@ -165,7 +165,9 @@ def test_main_routes_service_transaction_actions(monkeypatch: pytest.MonkeyPatch
     assert (
         windows_open_client.main(["--prepare-install-reconcile", "--expected-service-exe", EXPECTED_SERVICE_EXE]) == 12
     )
-    assert windows_open_client.main(["--finish-install-reconcile", "--expected-service-exe", EXPECTED_SERVICE_EXE]) == 0
+    assert (
+        windows_open_client.main(["--finish-install-reconcile", "--expected-service-exe", EXPECTED_SERVICE_EXE]) == 11
+    )
 
 
 @pytest.mark.parametrize(

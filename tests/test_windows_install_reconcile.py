@@ -78,7 +78,6 @@ def _stable_store(monkeypatch: pytest.MonkeyPatch) -> None:
             transaction.TransactionPhase.SERVICE_ROLLBACK_COMPLETE,
             reconcile.ReconcileDirection.CLEANUP,
         ),
-        (transaction.TransactionPhase.COMMIT_STARTED, reconcile.ReconcileDirection.COMMIT),
     ],
 )
 def test_classifier_maps_service_only_phases(
@@ -102,6 +101,36 @@ def test_classifier_maps_service_only_phases(
         plan.assert_not_called()
     else:
         plan.assert_called_once_with(state, BASELINE_STOPPED)
+
+
+@pytest.mark.parametrize(
+    ("observation", "expected"),
+    [
+        (COMMITTED_STOPPED, reconcile.ReconcileDirection.CLEANUP),
+        (
+            transaction.RecoveryObservation(
+                transaction.BundleTopology(True, False, False, True),
+                transaction.ServiceState.OWNED_STOPPED,
+            ),
+            reconcile.ReconcileDirection.COMMIT,
+        ),
+    ],
+)
+def test_classifier_distinguishes_pending_and_completed_commit(
+    observation: transaction.RecoveryObservation,
+    expected: reconcile.ReconcileDirection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(transaction.TransactionPhase.COMMIT_STARTED)
+    monkeypatch.setattr(reconcile.windows_install_transaction, "load_transaction", lambda _path: state)
+
+    assert (
+        reconcile.classify_install_reconcile(
+            EXPECTED_EXECUTABLE,
+            _observe=lambda _path: observation,
+        )
+        is expected
+    )
 
 
 def test_classifier_handles_none_partial_and_orphan(
@@ -432,18 +461,30 @@ def test_execute_service_recovery_allows_missing_noop_rollback_but_not_commit(
         )
 
 
+@pytest.mark.parametrize(
+    "direction",
+    [
+        reconcile.ReconcileDirection.ROLLBACK,
+        reconcile.ReconcileDirection.COMMIT,
+    ],
+)
 def test_finish_executes_directional_recovery_and_leaves_terminal_marker(
+    direction: reconcile.ReconcileDirection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         reconcile,
         "classify_install_reconcile",
-        lambda *_args, **_kwargs: reconcile.ReconcileDirection.ROLLBACK,
+        lambda *_args, **_kwargs: direction,
     )
     execute = Mock()
     monkeypatch.setattr(reconcile, "_execute_service_recovery", execute)
-    assert reconcile.finish_install_reconcile(EXPECTED_EXECUTABLE) is reconcile.ReconcileDirection.ROLLBACK
-    execute.assert_called_once()
+    assert reconcile.finish_install_reconcile(EXPECTED_EXECUTABLE) is direction
+    execute.assert_called_once_with(
+        EXPECTED_EXECUTABLE,
+        direction=direction,
+        recovery_factory=reconcile._default_recovery_factory,
+    )
 
 
 def test_finish_cleans_partial_and_orphan_tails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -492,10 +533,25 @@ def test_finish_cleans_partial_and_orphan_tails(monkeypatch: pytest.MonkeyPatch)
     clear_orphan.assert_called_once_with(EXPECTED_EXECUTABLE)
 
 
+@pytest.mark.parametrize(
+    ("phase", "plan_direction"),
+    [
+        (
+            transaction.TransactionPhase.SERVICE_ROLLBACK_COMPLETE,
+            transaction.RecoveryDirection.COMPLETE,
+        ),
+        (
+            transaction.TransactionPhase.COMMIT_STARTED,
+            transaction.RecoveryDirection.FORWARD,
+        ),
+    ],
+)
 def test_finish_finalizes_terminal_service_transaction(
+    phase: transaction.TransactionPhase,
+    plan_direction: transaction.RecoveryDirection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = _state(transaction.TransactionPhase.SERVICE_ROLLBACK_COMPLETE)
+    state = _state(phase)
     monkeypatch.setattr(
         reconcile,
         "classify_install_reconcile",
@@ -505,7 +561,7 @@ def test_finish_finalizes_terminal_service_transaction(
     operations = _Operations(BASELINE_STOPPED)
     plan = transaction.RecoveryPlan(
         TRANSACTION_ID,
-        transaction.RecoveryDirection.COMPLETE,
+        plan_direction,
         BASELINE_STOPPED,
         (),
     )

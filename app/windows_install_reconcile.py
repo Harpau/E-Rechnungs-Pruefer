@@ -81,13 +81,13 @@ def _expected_terminal_observation(
 def _validate_observation_for_phase(
     state: windows_install_transaction.TransactionState,
     observation: windows_install_transaction.RecoveryObservation,
-) -> None:
+) -> windows_install_transaction.RecoveryPlan | None:
     if state.phase is windows_install_transaction.TransactionPhase.SERVICE_ROLLBACK_COMPLETE:
         expected = _expected_terminal_observation(state.prepared, committed=False)
         if observation != expected:
             raise RuntimeError("Der als zurückgerollt markierte Dienstzustand ist nicht exakt wiederhergestellt.")
-        return
-    windows_install_transaction.plan_recovery(state, observation)
+        return None
+    return windows_install_transaction.plan_recovery(state, observation)
 
 
 def classify_install_reconcile(
@@ -109,11 +109,13 @@ def classify_install_reconcile(
         return ReconcileDirection.NONE
 
     observation = _observe(expected_executable)
-    _validate_observation_for_phase(state, observation)
+    plan = _validate_observation_for_phase(state, observation)
     if state.phase is windows_install_transaction.TransactionPhase.PREPARED:
         return ReconcileDirection.ROLLBACK
     if state.phase is windows_install_transaction.TransactionPhase.COMMIT_STARTED:
-        return ReconcileDirection.COMMIT
+        if plan is None:
+            raise RuntimeError("Für den committed Dienstzustand fehlt ein Recovery-Plan.")
+        return ReconcileDirection.COMMIT if plan.actions else ReconcileDirection.CLEANUP
     return ReconcileDirection.CLEANUP
 
 
