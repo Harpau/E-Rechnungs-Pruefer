@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import copy_metadata
 from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo,
     StringFileInfo,
@@ -54,10 +55,12 @@ analysis = Analysis(
     [str(PROJECT_ROOT / "packaging" / "windows" / "open_client_entrypoint.py")],
     pathex=[str(PROJECT_ROOT)],
     binaries=[],
-    datas=[],
+    datas=copy_metadata("regipy"),
     hiddenimports=[
         "ntsecuritycon",
         "pywintypes",
+        "regipy",
+        "regipy.registry",
         "win32api",
         "win32con",
         "win32file",

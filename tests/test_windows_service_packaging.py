@@ -14,6 +14,7 @@ def test_desktop_installer_remains_a_separate_unprivileged_option() -> None:
 
     assert "AppId={{D33FD9E5-0C5E-48ED-BF0C-E9D2962A45DF}" in installer
     assert r"DefaultDirName={localappdata}\Programs\E-Rechnungs-Pruefer" in installer
+    assert "DisableDirPage=yes" not in installer
     assert "PrivilegesRequired=lowest" in installer
     assert 'Root: HKCU; Subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Run"' in installer
     assert 'Name: "autostart"' in installer
@@ -795,10 +796,50 @@ def test_windows_build_signs_owned_binaries_and_both_installers() -> None:
     assert "disable_windowed_traceback=True" in service_spec
     assert '"win32net"' in service_spec
     assert '"win32net"' in open_client_spec
+    assert 'copy_metadata("regipy")' in open_client_spec
+    assert '"regipy"' in open_client_spec
+    assert '"regipy.registry"' in open_client_spec
     service_entrypoint = _read("packaging/windows/service_entrypoint.py")
     assert "raise SystemExit(_run(sys.argv[1:]))" in service_entrypoint
     assert "if session_id is None or session_id == 0:" in service_entrypoint
     assert "E-Rechnungs-Pruefer-Oeffnen.exe" in service_entrypoint
+
+
+def test_offline_profile_inventory_is_read_only_bounded_and_version_pinned() -> None:
+    scanner = _read("app/windows_install_conflicts.py")
+    build_requirements = _read("packaging/windows/requirements-build.txt")
+    release_requirements = _read("packaging/windows/requirements-release.txt")
+    third_party = _read("THIRD_PARTY.md")
+
+    for forbidden in ("RegLoadAppKeyW", "RegLoadKey", "RegRestoreKey", "reg.exe load"):
+        assert forbidden not in scanner
+    for expected in (
+        'REGIPY_VERSION = "6.2.1"',
+        "OFFLINE_HIVE_MAX_BYTES = 256 * 1024 * 1024",
+        "FILE_FLAG_OPEN_REPARSE_POINT",
+        "FILE_SHARE_READ",
+        "_read_safe_hive_bytes",
+        "_validate_hive_snapshot",
+        "primary_sequence != secondary_sequence",
+        "_registry_header_checksum",
+        "_root_key_cell",
+        "root_key_offset % 8 != 0",
+        "OFFLINE_HIVE_INSPECTION_TIMEOUT_SECONDS = 30",
+        "OFFLINE_PROFILE_INVENTORY_TIMEOUT_SECONDS = 60",
+        "_inspect_offline_profile_hive_isolated",
+        "subprocess.TimeoutExpired",
+        "_validated_hive_bin_ranges",
+        '!= b"hbin"',
+        "len(children) != int(current.subkey_count)",
+        "len(values) != int(current.values_count)",
+    ):
+        assert expected in scanner
+    assert "regipy==6.2.1" in build_requirements
+    assert (
+        "regipy==6.2.1 --hash=sha256:b03110e5c4e12385e1ba53c032ccd120c6dcde1b71afb8c3b7aa4717a5a24e43"
+    ) in release_requirements
+    for expected in ("| Regipy |", "| Construct |", "| Inflection |", "| pytz |"):
+        assert expected in third_party
 
 
 def test_windows_ci_builds_and_tests_both_modes() -> None:
@@ -1158,3 +1199,119 @@ def test_mode_exclusion_test_proves_manual_switch_and_no_mutation_on_rejection()
         script.index("if ((Get-Service -Name $ServiceName") : script.index("Invoke-Setup -Path $DesktopUninstaller")
     ]
     assert "(Test-Path -LiteralPath $ServiceUninstallKey)" in rejected_service_residue_check
+
+
+def test_mode_exclusion_test_covers_a_real_logged_off_profile_hive() -> None:
+    script = _read("scripts/test_windows_mode_exclusion.ps1")
+
+    for expected in (
+        "ModeExclusionNativeProfileApi",
+        "CreateProfile(",
+        'EntryPoint = "CreateProfile"',
+        'EntryPoint = "DeleteProfileW"',
+        "New-LocalUser -Name $FixtureUserName",
+        "Remove-LocalUser -SID $FixtureSidObject",
+        '"ERPModeT$([Guid]::NewGuid()',
+        '"ERPModeHive_$([Guid]::NewGuid()',
+        '"load"',
+        '"unload"',
+        '"add"',
+        '"delete"',
+        "{D33FD9E5-0C5E-48ED-BF0C-E9D2962A45DF}_is1",
+        '"InstallLocation"',
+        '"DisplayVersion"',
+        '"1.3.0"',
+        '"Offline-Autostart-only eintragen"',
+        '"Offline-v1.3-Uninstall-Key entfernen"',
+        '"Offline-Autostart bereinigen"',
+        "Assert-FirstDesktopPreflightRejected",
+        "Assert-OfflineFixtureUnchanged",
+        "Assert-ServiceInstallerFootprintAbsent",
+        "Get-FileHash -LiteralPath $FixtureHivePath -Algorithm SHA256",
+        "Get-TreeFingerprint -Path $FixtureCustomDesktopDir",
+        "$FixtureProfileImagePath = Get-OptionalRegistryValue",
+        '"Registry::HKEY_USERS\\$Sid"',
+        '"Registry::HKEY_USERS\\$MountName"',
+    ):
+        assert expected in script
+
+    first_preflight = script[
+        script.index("function Assert-FirstDesktopPreflightRejected") : script.index(
+            "function Assert-ServiceInstallerFootprintAbsent"
+        )
+    ]
+    assert "Desktop-Gegenmodus profilübergreifend und read-only ausschließen" in first_preflight
+    assert "Desktop-Gegenmodus unmittelbar vor der Diensttransition erneut ausschließen" in first_preflight
+    assert '$Content.Contains("$FirstPreflight ist fehlgeschlagen")' in first_preflight
+    assert "$Content.Contains($SecondPreflight)" in first_preflight
+
+    fixture_start = script.index('$FixtureUserName = "ERPModeT')
+    offline_uninstall_rejection = script.index(
+        "Dienstinstallation bei offline registrierter benutzerdefinierter v1.3-Desktopinstallation"
+    )
+    offline_autostart_rejection = script.index(
+        "Dienstinstallation bei Autostart-only in einem offline gehaltenen Profil"
+    )
+    clean_hive = script.index("$CleanOfflineHiveHash = (", offline_autostart_rejection)
+    ordinary_desktop_install = script.index(
+        'Invoke-Setup -Path $DesktopSetup -Scenario "Desktopinstallation"',
+        fixture_start,
+    )
+    clean_service_install = script.index(
+        'Invoke-Setup -Path $ServiceSetup -Scenario "Dienstinstallation nach Desktopdeinstallation"'
+    )
+    clean_hive_assertion = script.index(
+        "-ExpectedHiveHash $CleanOfflineHiveHash",
+        clean_service_install,
+    )
+    assert (
+        fixture_start
+        < offline_uninstall_rejection
+        < offline_autostart_rejection
+        < clean_hive
+        < ordinary_desktop_install
+        < clean_service_install
+        < clean_hive_assertion
+    )
+
+    offline_uninstall_scenario = script[
+        script.index("$OfflineDesktopUninstallKey = (") : script.index(
+            'Invoke-RegistryTool -Scenario "Offline-v1.3-Hive für Autostarttest laden"'
+        )
+    ]
+    assert '"InstallLocation"' in offline_uninstall_scenario
+    assert '"DisplayVersion"' in offline_uninstall_scenario
+    assert "Assert-FirstDesktopPreflightRejected" in offline_uninstall_scenario
+    assert "Assert-ServiceInstallerFootprintAbsent" in offline_uninstall_scenario
+    assert "-ExpectedHiveHash $OfflineUninstallHiveHash" in offline_uninstall_scenario
+
+    offline_autostart_scenario = script[
+        script.index('Invoke-RegistryTool -Scenario "Offline-v1.3-Hive für Autostarttest laden"') : clean_hive
+    ]
+    assert offline_autostart_scenario.index('"Offline-v1.3-Uninstall-Key entfernen"') < (
+        offline_autostart_scenario.index('"Offline-Autostart-only eintragen"')
+    )
+    assert "Assert-FirstDesktopPreflightRejected" in offline_autostart_scenario
+    assert "Assert-ServiceInstallerFootprintAbsent" in offline_autostart_scenario
+    assert "-ExpectedHiveHash $OfflineAutostartHiveHash" in offline_autostart_scenario
+
+    cleanup = script[script.index("} finally {") :]
+    assert '"Eigene Offline-Hive-Mountbereinigung"' in cleanup
+    assert "[ModeExclusionNativeProfileApi]::DeleteProfile(" in cleanup
+    assert "Get-LocalUser -SID $FixtureSidObject" in cleanup
+    assert "Remove-LocalUser -SID $FixtureSidObject" in cleanup
+    assert "$FixtureCleanupProblems.Add(" in cleanup
+    assert "if ($FixtureCleanupProblems.Count -gt 0)" in cleanup
+    assert "Offline-Profilfixture wurde nicht rückstandsfrei bereinigt" in cleanup
+    assert cleanup.count("} finally {") >= 2
+    assert cleanup.index("} finally {", cleanup.index("} finally {") + 1) < cleanup.index(
+        '"Eigene Offline-Hive-Mountbereinigung"'
+    )
+    assert "Profilrest konnte vor der Benutzerbereinigung nicht geprüft werden" in cleanup
+    assert cleanup.index('"Eigene Offline-Hive-Mountbereinigung"') < cleanup.index(
+        "[ModeExclusionNativeProfileApi]::DeleteProfile("
+    )
+    assert cleanup.index("[ModeExclusionNativeProfileApi]::DeleteProfile(") < cleanup.index(
+        "Remove-LocalUser -SID $FixtureSidObject"
+    )
+    assert "Remove-Item -LiteralPath $FixtureProfilePath -Recurse" not in cleanup

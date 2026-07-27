@@ -75,6 +75,13 @@ def test_conflict_action_is_internal_and_parameterless() -> None:
         )
 
 
+def test_offline_hive_worker_is_internal_and_requires_a_path() -> None:
+    parsed = windows_open_client._parse_arguments(["--inspect-offline-profile-hive", r"C:\Users\Fixture\NTUSER.DAT"])
+    assert windows_open_client._internal_action_stage(parsed) == "inspect-offline-profile-hive"
+    with pytest.raises(SystemExit):
+        windows_open_client._parse_arguments(["--inspect-offline-profile-hive"])
+
+
 def test_main_routes_desktop_conflict_check_in_administrative_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -87,6 +94,24 @@ def test_main_routes_desktop_conflict_check_in_administrative_context(
     assert windows_open_client.main(["--assert-no-desktop-installation"]) == 0
     elevated.assert_called_once_with()
     inventory.assert_called_once_with()
+
+
+@pytest.mark.parametrize(("conflict", "exit_code"), [(False, 0), (True, 10)])
+def test_main_routes_isolated_offline_hive_worker(
+    conflict: bool,
+    exit_code: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(windows_open_client.sys, "platform", "win32")
+    elevated = Mock()
+    inspect = Mock(return_value=conflict)
+    monkeypatch.setattr(windows_open_client, "verify_administrative_context", elevated)
+    monkeypatch.setattr(windows_open_client, "inspect_offline_profile_hive", inspect)
+
+    path = r"C:\Users\Fixture\NTUSER.DAT"
+    assert windows_open_client.main(["--inspect-offline-profile-hive", path]) == exit_code
+    elevated.assert_called_once_with()
+    inspect.assert_called_once_with(Path(path))
 
 
 def test_internal_failure_returns_one_without_user_message(

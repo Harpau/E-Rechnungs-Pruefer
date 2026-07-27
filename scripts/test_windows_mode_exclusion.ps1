@@ -660,6 +660,91 @@ function Assert-ServiceSnapshotUnchanged {
     }
 }
 
+function Invoke-RegistryTool {
+    param(
+        [string[]]$Arguments,
+        [string]$Scenario
+    )
+    $RegistryTool = Join-Path $env:SystemRoot "System32\reg.exe"
+    if (-not (Test-Path -LiteralPath $RegistryTool -PathType Leaf)) {
+        throw "Das Windows-Registrywerkzeug fehlt für die Offline-Profilfixture."
+    }
+    $null = & $RegistryTool @Arguments 2>&1
+    $ExitCode = [int]$LASTEXITCODE
+    if ($ExitCode -ne 0) {
+        throw "$Scenario schlug mit reg.exe-Exitcode $ExitCode fehl."
+    }
+}
+
+function Assert-OfflineFixtureUnloaded {
+    param(
+        [string]$Sid,
+        [string]$MountName
+    )
+    if ((Test-Path -LiteralPath "Registry::HKEY_USERS\$Sid") -or
+        (Test-Path -LiteralPath "Registry::HKEY_USERS\$MountName")) {
+        throw "Die eigene Profilfixture ist entgegen der Testannahme noch unter HKEY_USERS geladen."
+    }
+}
+
+function Assert-FirstDesktopPreflightRejected {
+    param(
+        [string]$LogPath,
+        [string]$Scenario
+    )
+    $FirstPreflight = "Desktop-Gegenmodus profilübergreifend und read-only ausschließen"
+    $SecondPreflight = "Desktop-Gegenmodus unmittelbar vor der Diensttransition erneut ausschließen"
+    $Content = Get-Content -LiteralPath $LogPath -Raw -ErrorAction Stop
+    if (-not $Content.Contains("$FirstPreflight ist fehlgeschlagen") -or
+        $Content.Contains($SecondPreflight)) {
+        throw "$Scenario wurde nicht eindeutig beim ersten Desktop-Gegenmodus-Preflight abgewiesen."
+    }
+}
+
+function Assert-ServiceInstallerFootprintAbsent {
+    param(
+        [string]$ServiceName,
+        [string]$ServiceDir,
+        [string]$ServiceData,
+        [string]$ServiceUninstallKey,
+        [string]$UnsupportedLegacyState,
+        [string]$UnsupportedLegacyTransfer,
+        [string]$Scenario
+    )
+    if ((Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -or
+        (Test-Path -LiteralPath $ServiceDir) -or
+        (Test-Path -LiteralPath $ServiceData) -or
+        (Test-Path -LiteralPath $ServiceUninstallKey) -or
+        (Test-Path -LiteralPath $UnsupportedLegacyState) -or
+        (Test-Path -LiteralPath $UnsupportedLegacyTransfer)) {
+        throw "$Scenario hinterließ Programm-, ProgramData-, Dienst- oder Maschinenzustand."
+    }
+}
+
+function Assert-OfflineFixtureUnchanged {
+    param(
+        [string]$HivePath,
+        [string]$ExpectedHiveHash,
+        [string]$CustomDesktopDir,
+        [string]$ExpectedCustomTree,
+        [string]$ProfileListPath,
+        $ExpectedProfileImagePath,
+        [string]$Sid,
+        [string]$MountName,
+        [string]$Scenario
+    )
+    Assert-OfflineFixtureUnloaded -Sid $Sid -MountName $MountName
+    if ((Get-FileHash -LiteralPath $HivePath -Algorithm SHA256).Hash -ne $ExpectedHiveHash) {
+        throw "$Scenario veränderte den offline gehaltenen NTUSER-Hive."
+    }
+    if ((Get-TreeFingerprint -Path $CustomDesktopDir) -ne $ExpectedCustomTree) {
+        throw "$Scenario veränderte den eigenen benutzerdefinierten Desktop-Sentinel."
+    }
+    Assert-RegistryValueUnchanged -Before $ExpectedProfileImagePath `
+        -After (Get-OptionalRegistryValue -Path $ProfileListPath -Name "ProfileImagePath") `
+        -Description "$Scenario`: ProfileList"
+}
+
 if (-not $IsWindows) {
     throw "Der Windows-Modusausschlusstest kann nur unter Windows laufen."
 }
@@ -674,6 +759,40 @@ if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 if (-not [Environment]::Is64BitProcess) {
     throw "Der Modusausschlusstest benötigt einen 64-Bit-PowerShell-Prozess."
 }
+
+$NativeProfileApiSource = @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class ModeExclusionNativeProfileApi
+{
+    [DllImport(
+        "userenv.dll",
+        EntryPoint = "CreateProfile",
+        ExactSpelling = true,
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    public static extern int CreateProfile(
+        string userSid,
+        string userName,
+        StringBuilder profilePath,
+        uint profilePathCharacters);
+
+    [DllImport(
+        "userenv.dll",
+        EntryPoint = "DeleteProfileW",
+        ExactSpelling = true,
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DeleteProfile(
+        string sidString,
+        string profilePath,
+        string computerName);
+}
+"@
+Add-Type -TypeDefinition $NativeProfileApiSource -Language CSharp
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Version = (Get-Content (Join-Path $ProjectRoot "VERSION") -Raw).Trim()
@@ -753,6 +872,8 @@ $TestRoot = Join-Path $TemporaryRoot (
 )
 New-Item -Path $TestRoot -ItemType Directory | Out-Null
 $DesktopInstallLog = Join-Path $TestRoot "desktop-install.log"
+$OfflineCustomUninstallBlockedLog = Join-Path $TestRoot "offline-custom-uninstall-blocked.log"
+$OfflineAutostartBlockedLog = Join-Path $TestRoot "offline-autostart-blocked.log"
 $ServiceBlockedLog = Join-Path $TestRoot "service-blocked-by-desktop.log"
 $DesktopUninstallLog = Join-Path $TestRoot "desktop-uninstall.log"
 $ServiceInstallLog = Join-Path $TestRoot "service-install.log"
@@ -763,8 +884,240 @@ $DesktopPreservedDataUninstallLog = Join-Path $TestRoot "desktop-uninstall-with-
 $ServiceReinstallLog = Join-Path $TestRoot "service-reinstall-with-preserved-data.log"
 $ServicePurgeUninstallLog = Join-Path $TestRoot "service-uninstall-purge.log"
 $DesktopProcess = $null
+$FixtureUserName = "ERPModeT$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+$FixtureUserCreated = $false
+$FixtureSidObject = $null
+$FixtureSid = ""
+$FixtureProfilePath = ""
+$FixtureHivePath = ""
+$FixtureHiveMountName = "ERPModeHive_$([Guid]::NewGuid().ToString('N'))"
+$FixtureHiveMounted = $false
+$FixtureCustomDesktopDir = ""
+$FixtureCustomTree = ""
+$FixtureProfileListPath = ""
+$FixtureProfileImagePath = $null
+$CleanOfflineHiveHash = ""
+$FixtureCleanupProblems = [Collections.Generic.List[string]]::new()
 
 try {
+    $FixturePassword = ConvertTo-SecureString `
+        -String "Aa1!$([Guid]::NewGuid().ToString('N'))" -AsPlainText -Force
+    $FixtureUser = New-LocalUser -Name $FixtureUserName -Password $FixturePassword `
+        -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword `
+        -Description "Temporäre E-Rechnungs-Pruefer CI-Profilfixture"
+    $FixtureUserCreated = $true
+    $FixtureSidObject = $FixtureUser.SID
+    $FixtureSid = [string]$FixtureSidObject.Value
+    if ([string]::IsNullOrWhiteSpace($FixtureSid)) {
+        throw "Für die eigene lokale Profilfixture wurde keine SID ermittelt."
+    }
+
+    $ProfilePathBuffer = [Text.StringBuilder]::new(4096)
+    $CreateProfileResult = [ModeExclusionNativeProfileApi]::CreateProfile(
+        $FixtureSid,
+        $FixtureUserName,
+        $ProfilePathBuffer,
+        [uint32]$ProfilePathBuffer.Capacity
+    )
+    if ($CreateProfileResult -lt 0) {
+        [Runtime.InteropServices.Marshal]::ThrowExceptionForHR($CreateProfileResult)
+    }
+    $FixtureProfilePath = $ProfilePathBuffer.ToString()
+    if ([string]::IsNullOrWhiteSpace($FixtureProfilePath) -or
+        -not (Test-Path -LiteralPath $FixtureProfilePath -PathType Container)) {
+        throw "CreateProfile lieferte kein vorhandenes eigenes Testprofil."
+    }
+    $FixtureProfileListPath = (
+        "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$FixtureSid"
+    )
+    $FixtureProfileImagePath = Get-OptionalRegistryValue `
+        -Path $FixtureProfileListPath -Name "ProfileImagePath"
+    if (-not $FixtureProfileImagePath.Exists) {
+        throw "CreateProfile registrierte das eigene Testprofil nicht unter ProfileList."
+    }
+    $ResolvedFixtureProfilePath = Resolve-DiagnosticProfilePath `
+        -Value $FixtureProfileImagePath.Value -Kind $FixtureProfileImagePath.Kind
+    if (-not [string]::Equals(
+        $ResolvedFixtureProfilePath,
+        [IO.Path]::GetFullPath($FixtureProfilePath),
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "CreateProfile registrierte einen unerwarteten Profilpfad."
+    }
+
+    $FixtureHivePath = Join-Path $FixtureProfilePath "NTUSER.DAT"
+    if ((Get-DiagnosticHiveFileState -Path $FixtureHivePath) -ne "present") {
+        throw "CreateProfile erzeugte keinen sicher prüfbaren NTUSER.DAT-Hive."
+    }
+    Assert-OfflineFixtureUnloaded -Sid $FixtureSid -MountName $FixtureHiveMountName
+
+    $FixtureCustomDesktopDir = Join-Path (
+        Join-Path $FixtureProfilePath "AppData\Local"
+    ) "ERP-Custom-v1.3"
+    New-Item -Path $FixtureCustomDesktopDir -ItemType Directory | Out-Null
+    $FixtureCustomSentinel = Join-Path $FixtureCustomDesktopDir "desktop-v1.3-sentinel.txt"
+    [IO.File]::WriteAllText(
+        $FixtureCustomSentinel,
+        "offline-custom-v1.3-$([Guid]::NewGuid().ToString('N'))",
+        [Text.Encoding]::UTF8
+    )
+    $FixtureCustomTree = Get-TreeFingerprint -Path $FixtureCustomDesktopDir
+
+    $OfflineDesktopUninstallKey = (
+        "HKU\$FixtureHiveMountName\Software\Microsoft\Windows\CurrentVersion\Uninstall\" +
+        "{D33FD9E5-0C5E-48ED-BF0C-E9D2962A45DF}_is1"
+    )
+    Invoke-RegistryTool -Scenario "Offline-v1.3-Hive laden" -Arguments @(
+        "load",
+        "HKU\$FixtureHiveMountName",
+        $FixtureHivePath
+    )
+    $FixtureHiveMounted = $true
+    Invoke-RegistryTool -Scenario "Offline-v1.3-InstallLocation eintragen" -Arguments @(
+        "add",
+        $OfflineDesktopUninstallKey,
+        "/v",
+        "InstallLocation",
+        "/t",
+        "REG_SZ",
+        "/d",
+        $FixtureCustomDesktopDir,
+        "/f"
+    )
+    Invoke-RegistryTool -Scenario "Offline-v1.3-Version eintragen" -Arguments @(
+        "add",
+        $OfflineDesktopUninstallKey,
+        "/v",
+        "DisplayVersion",
+        "/t",
+        "REG_SZ",
+        "/d",
+        "1.3.0",
+        "/f"
+    )
+    Invoke-RegistryTool -Scenario "Offline-v1.3-Hive entladen" -Arguments @(
+        "unload",
+        "HKU\$FixtureHiveMountName"
+    )
+    $FixtureHiveMounted = $false
+    Assert-OfflineFixtureUnloaded -Sid $FixtureSid -MountName $FixtureHiveMountName
+
+    $OfflineUninstallHiveHash = (
+        Get-FileHash -LiteralPath $FixtureHivePath -Algorithm SHA256
+    ).Hash
+    Invoke-SetupExpectedFailure -Path $ServiceSetup `
+        -LogPath $OfflineCustomUninstallBlockedLog `
+        -Scenario "Dienstinstallation bei offline registrierter benutzerdefinierter v1.3-Desktopinstallation" `
+        -Arguments @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/TASKS=`"systemstart`"",
+            "/LOG=`"$OfflineCustomUninstallBlockedLog`""
+        )
+    Assert-FirstDesktopPreflightRejected -LogPath $OfflineCustomUninstallBlockedLog `
+        -Scenario "Offline registrierte benutzerdefinierte v1.3-Desktopinstallation"
+    Assert-OfflineFixtureUnchanged -HivePath $FixtureHivePath `
+        -ExpectedHiveHash $OfflineUninstallHiveHash `
+        -CustomDesktopDir $FixtureCustomDesktopDir -ExpectedCustomTree $FixtureCustomTree `
+        -ProfileListPath $FixtureProfileListPath `
+        -ExpectedProfileImagePath $FixtureProfileImagePath `
+        -Sid $FixtureSid -MountName $FixtureHiveMountName `
+        -Scenario "Der abgewiesene Dienst-Installer"
+    Assert-ServiceInstallerFootprintAbsent -ServiceName $ServiceName `
+        -ServiceDir $ServiceDir -ServiceData $ServiceData `
+        -ServiceUninstallKey $ServiceUninstallKey `
+        -UnsupportedLegacyState $UnsupportedLegacyState `
+        -UnsupportedLegacyTransfer $UnsupportedLegacyTransfer `
+        -Scenario "Der beim offline registrierten Uninstall-Key abgewiesene Dienst-Installer"
+
+    Invoke-RegistryTool -Scenario "Offline-v1.3-Hive für Autostarttest laden" -Arguments @(
+        "load",
+        "HKU\$FixtureHiveMountName",
+        $FixtureHivePath
+    )
+    $FixtureHiveMounted = $true
+    Invoke-RegistryTool -Scenario "Offline-v1.3-Uninstall-Key entfernen" -Arguments @(
+        "delete",
+        $OfflineDesktopUninstallKey,
+        "/f"
+    )
+    $OfflineRunKey = (
+        "HKU\$FixtureHiveMountName\Software\Microsoft\Windows\CurrentVersion\Run"
+    )
+    $OfflineAutostartValue = (
+        "`"$(Join-Path $FixtureCustomDesktopDir 'E-Rechnungs-Pruefer.exe')`" --background"
+    )
+    Invoke-RegistryTool -Scenario "Offline-Autostart-only eintragen" -Arguments @(
+        "add",
+        $OfflineRunKey,
+        "/v",
+        $RunName,
+        "/t",
+        "REG_SZ",
+        "/d",
+        $OfflineAutostartValue,
+        "/f"
+    )
+    Invoke-RegistryTool -Scenario "Offline-Autostart-Hive entladen" -Arguments @(
+        "unload",
+        "HKU\$FixtureHiveMountName"
+    )
+    $FixtureHiveMounted = $false
+    Assert-OfflineFixtureUnloaded -Sid $FixtureSid -MountName $FixtureHiveMountName
+
+    $OfflineAutostartHiveHash = (
+        Get-FileHash -LiteralPath $FixtureHivePath -Algorithm SHA256
+    ).Hash
+    Invoke-SetupExpectedFailure -Path $ServiceSetup `
+        -LogPath $OfflineAutostartBlockedLog `
+        -Scenario "Dienstinstallation bei Autostart-only in einem offline gehaltenen Profil" `
+        -Arguments @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/TASKS=`"systemstart`"",
+            "/LOG=`"$OfflineAutostartBlockedLog`""
+        )
+    Assert-FirstDesktopPreflightRejected -LogPath $OfflineAutostartBlockedLog `
+        -Scenario "Autostart-only in einem offline gehaltenen Profil"
+    Assert-OfflineFixtureUnchanged -HivePath $FixtureHivePath `
+        -ExpectedHiveHash $OfflineAutostartHiveHash `
+        -CustomDesktopDir $FixtureCustomDesktopDir -ExpectedCustomTree $FixtureCustomTree `
+        -ProfileListPath $FixtureProfileListPath `
+        -ExpectedProfileImagePath $FixtureProfileImagePath `
+        -Sid $FixtureSid -MountName $FixtureHiveMountName `
+        -Scenario "Der beim Autostart-only abgewiesene Dienst-Installer"
+    Assert-ServiceInstallerFootprintAbsent -ServiceName $ServiceName `
+        -ServiceDir $ServiceDir -ServiceData $ServiceData `
+        -ServiceUninstallKey $ServiceUninstallKey `
+        -UnsupportedLegacyState $UnsupportedLegacyState `
+        -UnsupportedLegacyTransfer $UnsupportedLegacyTransfer `
+        -Scenario "Der beim Offline-Autostart abgewiesene Dienst-Installer"
+
+    Invoke-RegistryTool -Scenario "Offline-Hive zur Bereinigung laden" -Arguments @(
+        "load",
+        "HKU\$FixtureHiveMountName",
+        $FixtureHivePath
+    )
+    $FixtureHiveMounted = $true
+    Invoke-RegistryTool -Scenario "Offline-Autostart bereinigen" -Arguments @(
+        "delete",
+        $OfflineRunKey,
+        "/v",
+        $RunName,
+        "/f"
+    )
+    Invoke-RegistryTool -Scenario "Bereinigten Offline-Hive entladen" -Arguments @(
+        "unload",
+        "HKU\$FixtureHiveMountName"
+    )
+    $FixtureHiveMounted = $false
+    Assert-OfflineFixtureUnloaded -Sid $FixtureSid -MountName $FixtureHiveMountName
+    $CleanOfflineHiveHash = (
+        Get-FileHash -LiteralPath $FixtureHivePath -Algorithm SHA256
+    ).Hash
+
     Invoke-Setup -Path $DesktopSetup -Scenario "Desktopinstallation" -Arguments @(
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
@@ -885,6 +1238,13 @@ try {
         -not (Test-Path -LiteralPath $ServiceToken -PathType Leaf)) {
         throw "Der Dienstmodus wurde nach Entfernung des Desktopmodus nicht vollständig installiert."
     }
+    Assert-OfflineFixtureUnchanged -HivePath $FixtureHivePath `
+        -ExpectedHiveHash $CleanOfflineHiveHash `
+        -CustomDesktopDir $FixtureCustomDesktopDir -ExpectedCustomTree $FixtureCustomTree `
+        -ProfileListPath $FixtureProfileListPath `
+        -ExpectedProfileImagePath $FixtureProfileImagePath `
+        -Sid $FixtureSid -MountName $FixtureHiveMountName `
+        -Scenario "Die Dienstinstallation bei bereinigtem Offline-Hive"
 
     Stop-Service $ServiceName
     Wait-ServiceState -Name $ServiceName -State "Stopped"
@@ -1005,41 +1365,155 @@ try {
         throw "Der Modusausschlusstest hinterließ Dienstzustand."
     }
 } finally {
-    if ($null -ne $DesktopProcess) {
+    try {
+        if ($null -ne $DesktopProcess) {
+            try {
+                $DesktopProcess.Refresh()
+                if (-not $DesktopProcess.HasExited) {
+                    $DesktopProcess.Kill($true)
+                    $DesktopProcess.WaitForExit()
+                }
+            } catch {
+                Write-Warning "Der eigene Desktop-Testprozess konnte nicht bereinigt werden: $_"
+            }
+        }
+        if (Test-Path -LiteralPath $DesktopUninstaller -PathType Leaf) {
+            try {
+                Invoke-Setup -Path $DesktopUninstaller -Scenario "Desktopbereinigung" -Arguments @(
+                    "/VERYSILENT",
+                    "/SUPPRESSMSGBOXES",
+                    "/NORESTART"
+                )
+            } catch {
+                Write-Warning "Die eigene Desktop-Testinstallation konnte nicht bereinigt werden: $_"
+            }
+        }
+        if (Test-Path -LiteralPath $ServiceUninstaller -PathType Leaf) {
+            try {
+                Invoke-Setup -Path $ServiceUninstaller -Scenario "Dienstbereinigung" -Arguments @(
+                    "/VERYSILENT",
+                    "/SUPPRESSMSGBOXES",
+                    "/NORESTART",
+                    "/PURGEDATA=1"
+                )
+                Wait-ServiceState -Name $ServiceName -State "Absent"
+            } catch {
+                Write-Warning "Die eigene Dienst-Testinstallation konnte nicht bereinigt werden: $_"
+            }
+        }
+    } finally {
+    if ($FixtureHiveMounted -and
+        -not [string]::IsNullOrWhiteSpace($FixtureHiveMountName)) {
         try {
-            $DesktopProcess.Refresh()
-            if (-not $DesktopProcess.HasExited) {
-                $DesktopProcess.Kill($true)
-                $DesktopProcess.WaitForExit()
+            Invoke-RegistryTool -Scenario "Eigene Offline-Hive-Mountbereinigung" -Arguments @(
+                "unload",
+                "HKU\$FixtureHiveMountName"
+            )
+            $FixtureHiveMounted = $false
+        } catch {
+            Write-Warning "Der exakt gespeicherte eigene Offline-Hive-Mount konnte nicht bereinigt werden."
+            $FixtureCleanupProblems.Add("Der eigene Offline-Hive-Mount blieb geladen.")
+        }
+    }
+    if (-not $FixtureHiveMounted -and
+        -not [string]::IsNullOrWhiteSpace($FixtureSid) -and
+        -not [string]::IsNullOrWhiteSpace($FixtureProfilePath)) {
+        try {
+            $ProfileDeleted = [ModeExclusionNativeProfileApi]::DeleteProfile(
+                $FixtureSid,
+                $FixtureProfilePath,
+                $null
+            )
+            if (-not $ProfileDeleted -and
+                ((Test-Path -LiteralPath $FixtureProfileListPath) -or
+                    (Test-Path -LiteralPath $FixtureProfilePath))) {
+                $DeleteProfileError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                Write-Warning (
+                    "Das exakt gespeicherte eigene Testprofil konnte nicht mit DeleteProfileW " +
+                    "bereinigt werden (Windows-Fehler $DeleteProfileError)."
+                )
+                $FixtureCleanupProblems.Add("Das eigene Testprofil blieb nach DeleteProfileW bestehen.")
             }
         } catch {
-            Write-Warning "Der eigene Desktop-Testprozess konnte nicht bereinigt werden: $_"
+            Write-Warning "Das exakt gespeicherte eigene Testprofil konnte nicht bereinigt werden."
+            $FixtureCleanupProblems.Add("Die eigene Testprofilbereinigung löste einen Fehler aus.")
         }
+    } elseif ($FixtureHiveMounted) {
+        $FixtureCleanupProblems.Add(
+            "Die Profilbereinigung wurde wegen des weiterhin geladenen eigenen Hives sicher ausgelassen."
+        )
     }
-    if (Test-Path -LiteralPath $DesktopUninstaller -PathType Leaf) {
+    $FixtureProfileRemains = $true
+    try {
+        $FixtureProfileRemains = (
+            (-not [string]::IsNullOrWhiteSpace($FixtureProfileListPath) -and
+                (Test-Path -LiteralPath $FixtureProfileListPath)) -or
+            (-not [string]::IsNullOrWhiteSpace($FixtureProfilePath) -and
+                (Test-Path -LiteralPath $FixtureProfilePath))
+        )
+    } catch {
+        $FixtureCleanupProblems.Add("Der eigene Profilrest konnte vor der Benutzerbereinigung nicht geprüft werden.")
+    }
+    if ($FixtureUserCreated -and $null -ne $FixtureSidObject -and
+        -not $FixtureHiveMounted -and -not $FixtureProfileRemains) {
         try {
-            Invoke-Setup -Path $DesktopUninstaller -Scenario "Desktopbereinigung" -Arguments @(
-                "/VERYSILENT",
-                "/SUPPRESSMSGBOXES",
-                "/NORESTART"
-            )
+            $FixtureUserForCleanup = Get-LocalUser -SID $FixtureSidObject `
+                -ErrorAction SilentlyContinue
+            if ($null -ne $FixtureUserForCleanup -and
+                [string]::Equals(
+                    [string]$FixtureUserForCleanup.Name,
+                    $FixtureUserName,
+                    [StringComparison]::Ordinal
+                ) -and
+                [string]::Equals(
+                    [string]$FixtureUserForCleanup.SID.Value,
+                    $FixtureSid,
+                    [StringComparison]::Ordinal
+                )) {
+                Remove-LocalUser -SID $FixtureSidObject -ErrorAction Stop
+            } elseif ($null -ne $FixtureUserForCleanup) {
+                Write-Warning "Die eigene lokale Testidentität hatte bei der Bereinigung unerwartete Merkmale."
+                $FixtureCleanupProblems.Add(
+                    "Die eigene lokale Testidentität hatte unerwartete Bereinigungsmerkmale."
+                )
+            }
         } catch {
-            Write-Warning "Die eigene Desktop-Testinstallation konnte nicht bereinigt werden: $_"
+            Write-Warning "Die exakt über ihre SID adressierte lokale Testidentität konnte nicht bereinigt werden."
+            $FixtureCleanupProblems.Add("Die eigene lokale Testidentität konnte nicht entfernt werden.")
         }
+    } elseif ($FixtureUserCreated -and ($FixtureHiveMounted -or $FixtureProfileRemains)) {
+        $FixtureCleanupProblems.Add(
+            "Die Benutzerbereinigung wurde wegen verbliebenen eigenen Profilzustands sicher ausgelassen."
+        )
+    } elseif ($FixtureUserCreated -and $null -eq $FixtureSidObject) {
+        $FixtureCleanupProblems.Add("Für die eigene Testidentität fehlt die sichere SID zur Bereinigung.")
     }
-    if (Test-Path -LiteralPath $ServiceUninstaller -PathType Leaf) {
-        try {
-            Invoke-Setup -Path $ServiceUninstaller -Scenario "Dienstbereinigung" -Arguments @(
-                "/VERYSILENT",
-                "/SUPPRESSMSGBOXES",
-                "/NORESTART",
-                "/PURGEDATA=1"
-            )
-            Wait-ServiceState -Name $ServiceName -State "Absent"
-        } catch {
-            Write-Warning "Die eigene Dienst-Testinstallation konnte nicht bereinigt werden: $_"
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($FixtureHiveMountName) -and
+            (Test-Path -LiteralPath "Registry::HKEY_USERS\$FixtureHiveMountName")) {
+            $FixtureCleanupProblems.Add("Der eigene Offline-Hive-Mount ist nach der Bereinigung noch vorhanden.")
         }
+        if (-not [string]::IsNullOrWhiteSpace($FixtureProfileListPath) -and
+            (Test-Path -LiteralPath $FixtureProfileListPath)) {
+            $FixtureCleanupProblems.Add("Der eigene ProfileList-Eintrag ist nach der Bereinigung noch vorhanden.")
+        }
+        if (-not [string]::IsNullOrWhiteSpace($FixtureProfilePath) -and
+            (Test-Path -LiteralPath $FixtureProfilePath)) {
+            $FixtureCleanupProblems.Add("Der eigene Profilordner ist nach der Bereinigung noch vorhanden.")
+        }
+        if ($FixtureUserCreated -and $null -ne $FixtureSidObject -and
+            $null -ne (Get-LocalUser -SID $FixtureSidObject -ErrorAction SilentlyContinue)) {
+            $FixtureCleanupProblems.Add("Die eigene lokale Testidentität ist nach der Bereinigung noch vorhanden.")
+        }
+    } catch {
+        $FixtureCleanupProblems.Add("Der eigene Fixture-Endzustand konnte nicht vollständig geprüft werden.")
     }
+    }
+}
+
+if ($FixtureCleanupProblems.Count -gt 0) {
+    throw "Die eigene Offline-Profilfixture wurde nicht rückstandsfrei bereinigt:`n" +
+        ($FixtureCleanupProblems -join "`n")
 }
 
 Write-Host "Gegenseitiger Ausschluss von Desktop- und Dienstmodus erfolgreich geprüft."

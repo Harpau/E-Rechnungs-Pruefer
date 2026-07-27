@@ -836,7 +836,8 @@ begin
     'Desktop-Gegenmodus profilübergreifend und read-only ausschließen') then
   begin
     Result :=
-      'Eine vorhandene oder unvollständig entfernte Desktop-Version wurde gefunden. ' +
+      'Eine vorhandene oder unvollständig entfernte Desktop-Version wurde gefunden ' +
+      'oder ein Benutzerprofil konnte nicht sicher geprüft werden. ' +
       'Deinstallieren Sie den E-Rechnungs-Prüfer Desktop unter "Installierte Apps" ' +
       'vollständig und starten Sie dieses Dienst-Setup anschließend erneut. ' +
       'Ein Desktop-API-Token wird nicht übernommen.';
@@ -895,7 +896,8 @@ begin
     'Desktop-Gegenmodus unmittelbar vor der Diensttransition erneut ausschließen') then
   begin
     Result :=
-      'Während der Vorprüfung wurde eine Desktop-Installation erkannt. ' +
+      'Während der Vorprüfung wurde eine Desktop-Installation erkannt oder ein ' +
+      'Benutzerprofil konnte nicht sicher geprüft werden. ' +
       'Die Installation wurde vor der Diensttransition abgebrochen.';
     Exit;
   end;

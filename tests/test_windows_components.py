@@ -346,6 +346,8 @@ def test_windows_package_test_exercises_running_update_and_uninstall() -> None:
     script = (PROJECT_ROOT / "scripts/test_windows_package.ps1").read_text(encoding="utf-8")
 
     for expected in (
+        '"/DIR=`"$TargetDirectory`""',
+        'throw "Der Desktop-Installer ignorierte den expliziten benutzerdefinierten /DIR-Zielpfad."',
         '$UpdateLog = Join-Path $TestRoot "update.log"',
         "$OriginalProcessId = $process.Id",
         "Invoke-TestInstaller -Path $Setup -TargetDirectory $InstallDir -LogPath $UpdateLog",

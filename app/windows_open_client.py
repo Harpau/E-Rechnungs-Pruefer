@@ -7,7 +7,11 @@ import webbrowser
 from collections.abc import Sequence
 from pathlib import Path
 
-from .windows_install_conflicts import assert_no_desktop_installation
+from .windows_install_conflicts import (
+    OFFLINE_HIVE_CONFLICT_EXIT_CODE,
+    assert_no_desktop_installation,
+    inspect_offline_profile_hive,
+)
 from .windows_install_reconcile import (
     begin_service_transition,
     classify_install_reconcile,
@@ -33,6 +37,7 @@ from .windows_service_preflight import (
 
 _INTERNAL_ACTION_STAGES = (
     ("assert_no_desktop_installation", "assert-no-desktop-installation"),
+    ("inspect_offline_profile_hive", "inspect-offline-profile-hive"),
     ("begin_service_transition", "begin-service-transition"),
     ("mark_service_rollback_complete", "mark-service-rollback"),
     ("mark_service_committed", "mark-service-committed"),
@@ -64,6 +69,7 @@ def _parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="E-Rechnungs-Pruefer-Oeffnen")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--assert-no-desktop-installation", action="store_true", help=argparse.SUPPRESS)
+    actions.add_argument("--inspect-offline-profile-hive", metavar="PATH", help=argparse.SUPPRESS)
     actions.add_argument("--begin-service-transition", action="store_true", help=argparse.SUPPRESS)
     actions.add_argument("--mark-service-rollback-complete", action="store_true", help=argparse.SUPPRESS)
     actions.add_argument("--mark-service-committed", action="store_true", help=argparse.SUPPRESS)
@@ -140,6 +146,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if options.assert_no_desktop_installation:
             verify_administrative_context()
             assert_no_desktop_installation()
+            return 0
+        if options.inspect_offline_profile_hive:
+            verify_administrative_context()
+            if inspect_offline_profile_hive(Path(options.inspect_offline_profile_hive)):
+                return OFFLINE_HIVE_CONFLICT_EXIT_CODE
             return 0
         if options.begin_service_transition:
             verify_administrative_context()

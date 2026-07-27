@@ -342,6 +342,9 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     if (-not (Test-Path -LiteralPath $Executable)) {
         throw "Installierte Anwendung nicht gefunden: $Executable"
     }
+    if (Test-Path -LiteralPath $DefaultInstallDir) {
+        throw "Der Desktop-Installer ignorierte den expliziten benutzerdefinierten /DIR-Zielpfad."
+    }
     $AutostartState = Get-OptionalRegistryValue -Path $RunKey -Name $RunValueName
     if (-not (Test-ExpectedStringRegistryValue -State $AutostartState -ExpectedValue $ExpectedAutostartCommand)) {
         throw "Der optionale Autostart wurde nicht korrekt eingerichtet: $($AutostartState.Value)"

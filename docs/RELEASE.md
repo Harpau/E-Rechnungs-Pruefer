@@ -148,11 +148,11 @@ prüfen. Neben den automatisierten Paket-, Modusausschluss- und Recoverytests um
 
 1. Bundle-ZIP entpacken und Signaturen sowie SHA-256-Prüfsummen aller fünf eigenen Dateien und des ZIPs prüfen;
 2. Desktopstart, Tray, Standardbrowser und HKCU-Autostart, danach reguläre Desktopdeinstallation;
-3. auf einer echten zweiten lokalen Testidentität Desktop und Autostart installieren, die Identität abmelden und
-   ihren `NTUSER.DAT`- beziehungsweise `NTUSER.MAN`-Hive als offline bestätigen; das aus der administrativen
-   Testidentität gestartete Dienstsetup muss fail-closed abbrechen und Desktopinstallation, Token und Autostart im
-   abgemeldeten Profil unverändert lassen. Danach den Desktop unter der zweiten Identität regulär deinstallieren
-   und wieder abmelden;
+3. auf einer echten zweiten lokalen Testidentität die signierte v1.3.0-Desktopversion in einem benutzerdefinierten
+   Zielordner mit Autostart installieren, die Identität abmelden und bestätigen, dass ihr Benutzerhive nicht mehr
+   unter `HKEY_USERS` geladen ist; das aus der administrativen Testidentität gestartete Dienstsetup muss
+   fail-closed abbrechen und Desktopinstallation, Hive-Datei, Token und Autostart im abgemeldeten Profil
+   unverändert lassen. Danach den Desktop unter der zweiten Identität regulär deinstallieren und wieder abmelden;
 4. Dienstkonto, Service-SID, DACLs, Starttyp, Recovery und Öffnen-Client;
 5. tatsächlichen Windows-Neustart und erfolgreichen verzögerten Dienststart vor der ersten Benutzeranmeldung;
 6. API ohne, mit falschem und mit richtigem Token, PDF-Bericht, bytegetreuen XML-Export sowie echte

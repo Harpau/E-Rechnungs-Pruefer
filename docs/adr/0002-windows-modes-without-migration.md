@@ -24,10 +24,11 @@ automatisch ineinander überführt:
 
 1. Vor der Dienstinstallation muss der Desktopmodus regulär und vollständig deinstalliert werden. Der
    Dienst-Installer beendet oder verändert keine Desktopinstallation. Ein read-only Scanner prüft
-   Standardinstallationsordner, Uninstall-Key und Autostart aller registrierten lokalen und Entra-ID-Profile. Bei
-   abgemeldeten Profilen wird genau ein no-follow geprüfter `NTUSER.DAT`- oder `NTUSER.MAN`-Hive privat mit
-   `RegLoadAppKeyW` und `KEY_READ` geöffnet. Fehlende, doppelte oder anderweitig unsichere Inventuren blockieren
-   geschlossen.
+   Standardinstallationsordner, Uninstall-Key und Autostart aller registrierten lokalen und Entra-ID-Profile.
+   Abgemeldete `NTUSER.DAT`- oder `NTUSER.MAN`-Hives werden als gesperrter, größenbegrenzter Speicher-Snapshot
+   in einem zeitbegrenzten Hilfsprozess mit der exakt gepinnten Offline-Komponente Regipy gelesen, ohne sie zu
+   mounten oder zu verändern.
+   Unvollständige oder anderweitig unsichere Profil-, Datei- oder Registryinventuren blockieren geschlossen.
 2. Solange der eigene SCM-Dienst registriert ist, verweigert der Desktop-Installer die Installation. Er verändert
    weder Dienstbundle noch SCM-Metadaten oder ProgramData.
 3. Das Diensttoken wird nicht aus dem Desktopprofil übernommen. Die frühere Inno-Option
@@ -44,12 +45,20 @@ automatisch ineinander überführt:
 Der gemeinsame Backend-Mutex und die feste Loopback-Portreservierung bleiben als Laufzeitgrenze bestehen. Sie
 verhindern parallele Backends, ersetzen jedoch nicht den Installationsausschluss.
 
+Der Desktop-Installer behält die Zielordnerwahl und den registrierten Pfad bei Updates bei. Der
+Betriebsartenwechsel setzt unabhängig vom verwendeten Pfad weiterhin die reguläre Deinstallation voraus.
+
 ## Folgen
 
 - Der UAC-übergreifende Originalbenutzer-Transfer, Tokentransfer, Desktop-Seal, EXE-Quarantäne und
   Desktop-Hard-Kill-Recovery entfallen.
 - Ein Betriebsartenwechsel besteht sichtbar aus Deinstallation, Installation und erneuter Provisionierung der
   lokalen Automatisierungen.
+- Der Dienst-Preflight liest abgemeldete Benutzerhives aus einem gesperrten In-Memory-Snapshot in einem
+  zeitbegrenzten Hilfsprozess. Dadurch entfallen private `RegLoadAppKeyW`-Handles und Mountzustände, während
+  Registryreste und benutzerdefinierte Installationspfade abgemeldeter Profile weiterhin sichtbar bleiben.
+- Die zusätzliche Parserabhängigkeit ist auf eine geprüfte Version festgeschrieben. Ein Upgrade erfordert die
+  erneute Prüfung des versionsgebundenen In-Memory-Adapters sowie der echten Offline-Hive-Szenarien.
 - Die Diensttransaktion behält `PREPARED`, `COMMIT_STARTED`, Rollback, Roll-forward und die reale Reboot-Abnahme,
   ist aber unabhängig vom Desktopzustand.
 - Der Windows-Modusausschlusstest prüft beide Blockierrichtungen und den Preserve-Fall mit reinem ProgramData.

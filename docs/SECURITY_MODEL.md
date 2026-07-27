@@ -54,12 +54,24 @@ Der maschinenweite Backend-Mutex und die feste Portreservierung bleiben eine zwe
 nicht den gegenseitigen Installationsausschluss.
 
 Der Dienst-Preflight inventarisiert den Gegenmodus read-only in allen registrierten lokalen und Entra-ID-Profilen.
-Er prüft Standardinstallationsordner, Uninstall-Key und Autostart. Für ein abgemeldetes Profil muss genau ein
-no-follow geprüfter `NTUSER.DAT`- oder `NTUSER.MAN`-Hive vorhanden sein; er wird mit `RegLoadAppKeyW` als privater
-`KEY_READ`-Anwendungshive geöffnet, ohne ihn systemweit einzuhängen. Fehlende, doppelte, umgeleitete oder während
-der Prüfung verschwindende Hives, nicht kanonische oder nicht feste Profilpfade, Reparse-Points/Junctions,
-Hardlinks und eine unvollständige Profilinventur führen zum geschlossenen Abbruch. Dieser Scanner besitzt keinen
-Migrations- oder Bereinigungspfad und verändert kein fremdes Profil.
+Er prüft den Standardinstallationsordner, Uninstall-Key und Autostart. Geladene Hives werden ausschließlich über
+`HKEY_USERS` gelesen. Für ein abgemeldetes Profil muss genau ein no-follow geprüfter `NTUSER.DAT`- oder
+`NTUSER.MAN`-Hive vorhanden sein. Der Scanner öffnet diese Datei mit einem gegen Schreiben und Löschen gesperrten
+Lesehandle, begrenzt ihre Größe und wertet einen einmaligen Speicher-Snapshot mit der exakt gepinnten
+Offline-Registry-Komponente Regipy aus. Diese Auswertung läuft in einem eigenen Hilfsprozess mit fester
+30-Sekunden-Grenze je Hive und einer 60-Sekunden-Gesamtgrenze je Inventur; Timeout, Prozessfehler oder
+Speichererschöpfung blockieren die Installation geschlossen.
+Der Hive wird weder systemweit noch privat gemountet; insbesondere wird `RegLoadAppKeyW` nicht verwendet und
+keine zweite Hive-Datei angelegt.
+
+Dateiidentität, REGF-Signatur, Header-Prüfsumme, Sequenznummern, die vollständige HBin-Kette, der explizite
+Root-Key-Verweis und die für die Inventur verfolgten Strukturzähler müssen vor beziehungsweise während der
+Auswertung konsistent bleiben.
+Fehlende, doppelte, umgeleitete, veränderte, nicht kanonische oder nicht vollständig lesbare Profile und Hives
+führen zum geschlossenen Abbruch. Dadurch bleiben auch
+benutzerdefinierte Installationspfade abgemeldeter Desktop-Altinstallationen erkennbar. Der Scanner besitzt keinen
+Migrations- oder Bereinigungspfad und verändert kein fremdes Profil. Eine laufende Instanz wird zusätzlich über
+Prozess und Desktop-Mutex erkannt.
 
 API-Tokens bleiben absichtlich an ihre Betriebsart gebunden. Das Diensttoken wird nicht aus dem Desktopprofil
 gelesen oder kopiert; die frühere Option `/MIGRATEDESKTOPTOKEN=1` wird nicht unterstützt. Ein bei der

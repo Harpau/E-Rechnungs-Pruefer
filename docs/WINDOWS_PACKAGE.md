@@ -7,13 +7,14 @@ stehen zwei bewusst getrennte Betriebsarten bereit:
 
 | Betriebsart | Installer | Installation | Start |
 |---|---|---|---|
-| Desktop/Tray | `E-Rechnungs-Pruefer-<Version>-Windows-x64-Setup.exe` | benutzerbezogen unter `%LOCALAPPDATA%\Programs\E-Rechnungs-Pruefer` | manuell oder optional nach Benutzeranmeldung |
+| Desktop/Tray | `E-Rechnungs-Pruefer-<Version>-Windows-x64-Setup.exe` | benutzerbezogen, standardmäßig unter `%LOCALAPPDATA%\Programs\E-Rechnungs-Pruefer` | manuell oder optional nach Benutzeranmeldung |
 | Windows-Dienst | `E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe` | systemweit unter `%ProgramFiles%\E-Rechnungs-Pruefer-Dienst` | manuell oder standardmäßig `Automatic (Delayed Start)` |
 
 Der Desktop-Installer behält seine eigene App-ID und benötigt keine Administratorrechte. Der Dienst-Installer hat
 eine andere App-ID, verlangt Administratorrechte und registriert niemals eine ausführbare Datei aus
 `%LOCALAPPDATA%` als Dienst. Beide Installer enthalten dieselbe Anwendung sowie die festgeschriebenen
-KoSIT-/XRechnung-Komponenten. Windows ARM64 ist kein Ziel dieser Pakete.
+KoSIT-/XRechnung-Komponenten. Der Desktop-Installer unterstützt weiterhin einen benutzerdefinierten Zielordner
+und behält ihn bei Updates bei. Windows ARM64 ist kein Ziel dieser Pakete.
 
 Zusätzlich entsteht
 `E-Rechnungs-Pruefer-<Version>-Windows-x64-Binaries.zip` sowie
@@ -198,13 +199,20 @@ Betriebsart noch deren API-Token, Autostart, SCM-Zustand oder ProgramData verän
 
 Der erhöhte Dienst-Preflight inventarisiert den Desktop-Gegenmodus read-only über alle in der Windows-
 `ProfileList` registrierten lokalen und Entra-ID-Profile. Er prüft jeweils den Standardinstallationsordner, den
-produktspezifischen Uninstall-Key und den HKCU-Autostart. Geladene Hives werden über `HKEY_USERS` gelesen. Bei
-einem abgemeldeten Profil muss genau einer der beiden zulässigen Hives `NTUSER.DAT` oder `NTUSER.MAN` vorhanden
-und no-follow prüfbar sein; er wird mit `RegLoadAppKeyW` ausschließlich als privater
-`KEY_READ`-Anwendungshive geöffnet und danach geschlossen, nicht systemweit eingehängt. Ein fehlender, doppelter,
-umgeleiteter oder während der Prüfung verschwindender Hive blockiert ebenso wie ein nicht kanonischer oder nicht
-fester Profilpfad, Reparse-Points, Junctions, Hardlinks, unlesbare Profile oder eine unvollständige Inventur die
-Dienstinstallation geschlossen. Diese Prüfung entfernt oder repariert keinen Gegenmodus.
+produktspezifischen Uninstall-Key und den HKCU-Autostart. Geladene Hives liest er über `HKEY_USERS`. Für ein
+abgemeldetes Profil muss genau einer der beiden zulässigen Hives `NTUSER.DAT` oder `NTUSER.MAN` vorhanden und
+no-follow prüfbar sein. Er wird mit einem gegen Schreiben und Löschen gesperrten Lesehandle größenbegrenzt in
+einen einmaligen Speicher-Snapshot eingelesen und dort mit der exakt gepinnten Komponente Regipy ausgewertet.
+Der Parser läuft in einem eigenen Hilfsprozess, den der erhöhte Preflight je Hive nach spätestens 30 Sekunden
+beendet; die gesamte Offline-Inventur ist auf 60 Sekunden begrenzt. Timeout, Prozessfehler oder
+Speichererschöpfung blockieren die Installation geschlossen. Der Scanner mountet den Hive nicht, verwendet
+insbesondere kein `RegLoadAppKeyW` und legt keine temporäre Hive-Kopie an.
+
+Eine unvollständige Profilinventur, ungültige oder nicht feste Profilpfade, Reparse-Points, Junctions, Hardlinks,
+mehrdeutige Hives, ein Identitätswechsel während des Lesens, inkonsistente REGF-Prüfsummen, Sequenznummern oder
+HBin-Ketten sowie ein ungültiger Root-Key-Verweis oder unvollständig auswertbare relevante Schlüssel und Werte
+führen zum geschlossenen Abbruch. Die Registryprüfung erkennt dadurch auch vorhandene Desktopversionen in
+benutzerdefinierten Zielordnern abgemeldeter Profile. Diese Prüfung entfernt oder repariert keinen Gegenmodus.
 
 Das Diensttoken ist ein eigenständiges Maschinentoken und wird nicht aus dem Desktopprofil übernommen. Die
 frühere Inno-Option `/MIGRATEDESKTOPTOKEN=1` wird ersatzlos nicht mehr unterstützt. Nach einem Wechsel müssen
@@ -345,7 +353,10 @@ schreibfreier ACE über Rotation, Update und Neuinstallation erhalten bleibt.
 
 Der Modusausschlusstest installiert den aktuellen Desktopmodus mit Autostart, startet ihn bis zur Tokenanlage und
 weist nach, dass der Dienst-Installer mit einem Fehlercode abbricht, ohne Desktopprozess, Dateien, Token oder
-Autostart zu verändern. Nach der regulären Desktopdeinstallation muss der Dienst installierbar sein. Bei
+Autostart zu verändern. Zusätzlich prüft er einen abgemeldeten Benutzerhive mit benutzerdefiniertem
+v1.3-Installationspfad und getrennt mit reinem Autostart-Footprint. Der Hive darf dabei weder geladen noch
+byteinhaltlich verändert werden. Nach der regulären Desktopdeinstallation und Bereinigung der Testfootprints
+muss derselbe saubere Offline-Hive eine Dienstinstallation zulassen. Bei
 registriertem, für eine stabile Inhaltsprüfung gestopptem Dienst muss der Desktop-Installer seinerseits mit einem
 Fehlercode abbrechen und Dienstbundle, SCM-Metadaten sowie ProgramData byteinhaltlich unverändert lassen. Der Test
 übernimmt keine Tokens zwischen den Betriebsarten. Anschließend deinstalliert er den Dienst unter Erhalt von
@@ -405,11 +416,12 @@ Windows-11-x64-VM zu prüfen:
 1. Bundle-ZIP entpacken und Signaturen sowie SHA-256-Datei aller fünf eigenen Dateien und des ZIPs prüfen.
 2. Desktopmodus einschließlich Tray, Standardbrowser und optionalem HKCU-Autostart prüfen und anschließend
    regulär deinstallieren.
-3. Unter einer echten zweiten lokalen Testidentität den Desktopmodus mit Autostart installieren, diese Identität
-   abmelden und bestätigen, dass ihr `NTUSER.DAT`- beziehungsweise `NTUSER.MAN`-Hive nicht mehr unter
-   `HKEY_USERS` geladen ist. Aus der administrativen Testidentität muss das Dienstsetup mit Fehlercode abbrechen
-   und Installation, Token und Autostart des abgemeldeten Profils unverändert lassen. Danach den Desktopmodus
-   unter der zweiten Identität regulär entfernen und wieder abmelden.
+3. Unter einer echten zweiten lokalen Testidentität die signierte v1.3.0-Desktopversion in einem
+   benutzerdefinierten Zielordner mit Autostart installieren, diese Identität abmelden und bestätigen, dass ihr
+   Benutzerhive nicht mehr unter `HKEY_USERS` geladen ist. Aus der administrativen Testidentität muss das
+   Dienstsetup mit Fehlercode abbrechen und Installationsbaum, Hive-Datei, Token und Autostart des abgemeldeten
+   Profils unverändert lassen. Danach den Desktopmodus unter der zweiten Identität regulär entfernen und wieder
+   abmelden.
 4. Den Dienst mit verzögertem Systemstart installieren und Windows tatsächlich neu starten.
 5. Vor der ersten Benutzeranmeldung über Dienststatus und technische Logs nachweisen, dass der Dienst erfolgreich
    gestartet und nur an `127.0.0.1` gebunden ist.
