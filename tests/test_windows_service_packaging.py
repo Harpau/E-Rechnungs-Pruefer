@@ -1317,4 +1317,18 @@ def test_mode_exclusion_test_covers_a_real_logged_off_profile_hive() -> None:
     assert cleanup.index("[ModeExclusionNativeProfileApi]::DeleteProfile(") < cleanup.index(
         "Remove-LocalUser -SID $FixtureSidObject"
     )
+    profile_delete = cleanup[
+        cleanup.index("$CleanupProfileImagePath = Get-OptionalRegistryValue") : cleanup.index(
+            "$FixtureProfileRemains = $true"
+        )
+    ]
+    assert (
+        profile_delete.index("Resolve-DiagnosticProfilePath")
+        < profile_delete.index("[string]::Equals(")
+        < profile_delete.index("[ModeExclusionNativeProfileApi]::DeleteProfile(")
+    )
+    assert "$FixtureSid,\n                    $null,\n                    $null" in profile_delete.replace("\r\n", "\n")
+    assert profile_delete.index("$DeleteProfileError = if ($ProfileDeleted)") < profile_delete.index(
+        "Test-Path -LiteralPath $FixtureProfileListPath"
+    )
     assert "Remove-Item -LiteralPath $FixtureProfilePath -Recurse" not in cleanup

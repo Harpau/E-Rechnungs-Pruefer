@@ -1420,20 +1420,45 @@ try {
         -not [string]::IsNullOrWhiteSpace($FixtureSid) -and
         -not [string]::IsNullOrWhiteSpace($FixtureProfilePath)) {
         try {
-            $ProfileDeleted = [ModeExclusionNativeProfileApi]::DeleteProfile(
-                $FixtureSid,
-                $FixtureProfilePath,
+            $CleanupProfileImagePath = Get-OptionalRegistryValue `
+                -Path $FixtureProfileListPath -Name "ProfileImagePath"
+            $ResolvedCleanupProfilePath = if ($CleanupProfileImagePath.Exists) {
+                Resolve-DiagnosticProfilePath `
+                    -Value $CleanupProfileImagePath.Value -Kind $CleanupProfileImagePath.Kind
+            } else {
                 $null
-            )
-            if (-not $ProfileDeleted -and
-                ((Test-Path -LiteralPath $FixtureProfileListPath) -or
-                    (Test-Path -LiteralPath $FixtureProfilePath))) {
-                $DeleteProfileError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-                Write-Warning (
-                    "Das exakt gespeicherte eigene Testprofil konnte nicht mit DeleteProfileW " +
-                    "bereinigt werden (Windows-Fehler $DeleteProfileError)."
+            }
+            if (-not [string]::Equals(
+                $ResolvedCleanupProfilePath,
+                [IO.Path]::GetFullPath($FixtureProfilePath),
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+                $FixtureCleanupProblems.Add(
+                    "Der ProfileList-Pfad der eigenen Testfixture änderte sich vor der Bereinigung."
                 )
-                $FixtureCleanupProblems.Add("Das eigene Testprofil blieb nach DeleteProfileW bestehen.")
+            } else {
+                # Resolve the path from the just-validated ProfileList entry. This
+                # follows the documented local DeleteProfileW contract and keeps
+                # SID and path bound to the same registered fixture.
+                $ProfileDeleted = [ModeExclusionNativeProfileApi]::DeleteProfile(
+                    $FixtureSid,
+                    $null,
+                    $null
+                )
+                $DeleteProfileError = if ($ProfileDeleted) {
+                    0
+                } else {
+                    [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                }
+                if (-not $ProfileDeleted -and
+                    ((Test-Path -LiteralPath $FixtureProfileListPath) -or
+                        (Test-Path -LiteralPath $FixtureProfilePath))) {
+                    Write-Warning (
+                        "Das exakt gespeicherte eigene Testprofil konnte nicht mit DeleteProfileW " +
+                        "bereinigt werden (Windows-Fehler $DeleteProfileError)."
+                    )
+                    $FixtureCleanupProblems.Add("Das eigene Testprofil blieb nach DeleteProfileW bestehen.")
+                }
             }
         } catch {
             Write-Warning "Das exakt gespeicherte eigene Testprofil konnte nicht bereinigt werden."
