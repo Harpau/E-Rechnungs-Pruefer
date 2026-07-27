@@ -779,17 +779,6 @@ public static class ModeExclusionNativeProfileApi
         [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder profilePath,
         uint profilePathCharacters);
 
-    [DllImport(
-        "userenv.dll",
-        EntryPoint = "DeleteProfileW",
-        ExactSpelling = true,
-        CharSet = CharSet.Unicode,
-        SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool DeleteProfile(
-        string sidString,
-        string profilePath,
-        string computerName);
 }
 "@
 Add-Type -TypeDefinition $NativeProfileApiSource -Language CSharp
@@ -1437,27 +1426,39 @@ try {
                     "Der ProfileList-Pfad der eigenen Testfixture änderte sich vor der Bereinigung."
                 )
             } else {
-                # Resolve the path from the just-validated ProfileList entry. This
-                # follows the documented local DeleteProfileW contract and keeps
-                # SID and path bound to the same registered fixture.
-                $ProfileDeleted = [ModeExclusionNativeProfileApi]::DeleteProfile(
-                    $FixtureSid,
-                    $null,
-                    $null
+                $FixtureProfilesForCleanup = @(
+                    Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+                        Where-Object {
+                            [string]::Equals(
+                                [string]$_.SID,
+                                $FixtureSid,
+                                [StringComparison]::Ordinal
+                            )
+                        }
                 )
-                $DeleteProfileError = if ($ProfileDeleted) {
-                    0
-                } else {
-                    [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-                }
-                if (-not $ProfileDeleted -and
-                    ((Test-Path -LiteralPath $FixtureProfileListPath) -or
-                        (Test-Path -LiteralPath $FixtureProfilePath))) {
-                    Write-Warning (
-                        "Das exakt gespeicherte eigene Testprofil konnte nicht mit DeleteProfileW " +
-                        "bereinigt werden (Windows-Fehler $DeleteProfileError)."
+                if ($FixtureProfilesForCleanup.Count -ne 1) {
+                    $FixtureCleanupProblems.Add(
+                        "Der Windows-Profilprovider lieferte die eigene Testfixture nicht eindeutig."
                     )
-                    $FixtureCleanupProblems.Add("Das eigene Testprofil blieb nach DeleteProfileW bestehen.")
+                } else {
+                    $FixtureProfileForCleanup = $FixtureProfilesForCleanup[0]
+                    $CimProfilePath = [IO.Path]::GetFullPath(
+                        [string]$FixtureProfileForCleanup.LocalPath
+                    )
+                    if ($FixtureProfileForCleanup.Loaded -ne $false -or
+                        $FixtureProfileForCleanup.Special -ne $false -or
+                        -not [string]::Equals(
+                            $CimProfilePath,
+                            [IO.Path]::GetFullPath($FixtureProfilePath),
+                            [StringComparison]::OrdinalIgnoreCase
+                        )) {
+                        $FixtureCleanupProblems.Add(
+                            "Der Windows-Profilprovider meldete unerwartete Merkmale der eigenen Testfixture."
+                        )
+                    } else {
+                        Remove-CimInstance -InputObject $FixtureProfileForCleanup `
+                            -ErrorAction Stop
+                    }
                 }
             }
         } catch {

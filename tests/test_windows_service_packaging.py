@@ -1208,7 +1208,6 @@ def test_mode_exclusion_test_covers_a_real_logged_off_profile_hive() -> None:
         "ModeExclusionNativeProfileApi",
         "CreateProfile(",
         'EntryPoint = "CreateProfile"',
-        'EntryPoint = "DeleteProfileW"',
         "[Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder profilePath",
         "$ProfilePathBuffer = [Text.StringBuilder]::new(260)",
         "New-LocalUser -Name $FixtureUserName",
@@ -1300,7 +1299,8 @@ def test_mode_exclusion_test_covers_a_real_logged_off_profile_hive() -> None:
 
     cleanup = script[script.index("} finally {") :]
     assert '"Eigene Offline-Hive-Mountbereinigung"' in cleanup
-    assert "[ModeExclusionNativeProfileApi]::DeleteProfile(" in cleanup
+    assert "Get-CimInstance -ClassName Win32_UserProfile" in cleanup
+    assert "Remove-CimInstance -InputObject $FixtureProfileForCleanup" in cleanup
     assert "Get-LocalUser -SID $FixtureSidObject" in cleanup
     assert "Remove-LocalUser -SID $FixtureSidObject" in cleanup
     assert "$FixtureCleanupProblems.Add(" in cleanup
@@ -1312,9 +1312,9 @@ def test_mode_exclusion_test_covers_a_real_logged_off_profile_hive() -> None:
     )
     assert "Profilrest konnte vor der Benutzerbereinigung nicht geprüft werden" in cleanup
     assert cleanup.index('"Eigene Offline-Hive-Mountbereinigung"') < cleanup.index(
-        "[ModeExclusionNativeProfileApi]::DeleteProfile("
+        "Get-CimInstance -ClassName Win32_UserProfile"
     )
-    assert cleanup.index("[ModeExclusionNativeProfileApi]::DeleteProfile(") < cleanup.index(
+    assert cleanup.index("Remove-CimInstance -InputObject $FixtureProfileForCleanup") < cleanup.index(
         "Remove-LocalUser -SID $FixtureSidObject"
     )
     profile_delete = cleanup[
@@ -1325,10 +1325,10 @@ def test_mode_exclusion_test_covers_a_real_logged_off_profile_hive() -> None:
     assert (
         profile_delete.index("Resolve-DiagnosticProfilePath")
         < profile_delete.index("[string]::Equals(")
-        < profile_delete.index("[ModeExclusionNativeProfileApi]::DeleteProfile(")
+        < profile_delete.index("Get-CimInstance -ClassName Win32_UserProfile")
+        < profile_delete.index("Remove-CimInstance -InputObject $FixtureProfileForCleanup")
     )
-    assert "$FixtureSid,\n                    $null,\n                    $null" in profile_delete.replace("\r\n", "\n")
-    assert profile_delete.index("$DeleteProfileError = if ($ProfileDeleted)") < profile_delete.index(
-        "Test-Path -LiteralPath $FixtureProfileListPath"
-    )
+    assert "$FixtureProfileForCleanup.Loaded -ne $false" in profile_delete
+    assert "$FixtureProfileForCleanup.Special -ne $false" in profile_delete
+    assert "[string]$FixtureProfileForCleanup.LocalPath" in profile_delete
     assert "Remove-Item -LiteralPath $FixtureProfilePath -Recurse" not in cleanup
