@@ -50,6 +50,111 @@ function Wait-SetupUninstallMutexReleased {
     }
 }
 
+function Get-DiagnosticPathMasks {
+    $RepositoryRoot = Split-Path -Parent $PSScriptRoot
+    $Candidates = @(
+        [PSCustomObject]@{ Path = $RepositoryRoot; Mask = "<REPOSITORY>" }
+        [PSCustomObject]@{
+            Path = [Environment]::GetEnvironmentVariable("LOCALAPPDATA")
+            Mask = "<LOCALAPPDATA>"
+        }
+        [PSCustomObject]@{
+            Path = [Environment]::GetEnvironmentVariable("RUNNER_TEMP")
+            Mask = "<TEMP>"
+        }
+        [PSCustomObject]@{
+            Path = [Environment]::GetEnvironmentVariable("TEMP")
+            Mask = "<TEMP>"
+        }
+        [PSCustomObject]@{
+            Path = [Environment]::GetEnvironmentVariable("TMP")
+            Mask = "<TEMP>"
+        }
+        [PSCustomObject]@{ Path = [IO.Path]::GetTempPath(); Mask = "<TEMP>" }
+        [PSCustomObject]@{
+            Path = [Environment]::GetEnvironmentVariable("USERPROFILE")
+            Mask = "<USERPROFILE>"
+        }
+    )
+    return @(
+        $Candidates |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Path) } |
+            Sort-Object @{ Expression = { ([string]$_.Path).Length }; Descending = $true },
+                @{ Expression = { [string]$_.Mask }; Descending = $false }
+    )
+}
+
+function Protect-DiagnosticText {
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$Text
+    )
+    if ($Text -match "(?i)token") {
+        return "<TOKEN-RELATED-LINE-REDACTED>"
+    }
+    $Protected = $Text
+    foreach ($PathMask in Get-DiagnosticPathMasks) {
+        $Protected = [regex]::Replace(
+            $Protected,
+            [regex]::Escape([string]$PathMask.Path),
+            [string]$PathMask.Mask,
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+    }
+    $Protected = [regex]::Replace(
+        $Protected,
+        "(?i)\bS-\d+(?:-\d+){2,}\b",
+        "<SID>"
+    )
+    if ($Protected -match "(?i)(?:[a-z]:[\\/]|\\\\)") {
+        return "<PATH-RELATED-LINE-REDACTED>"
+    }
+    $Protected = [regex]::Replace(
+        $Protected,
+        "(?i)\b(?:[0-9a-f]{32,}|[a-z0-9_-]{40,})\b",
+        "<SECRET>"
+    )
+    if ($Protected.Length -gt 500) {
+        return $Protected.Substring(0, 500) + "<TRUNCATED>"
+    }
+    return $Protected
+}
+
+function Get-SanitizedInnoLogTail {
+    param(
+        [AllowEmptyString()]
+        [string]$LogPath,
+        [ValidateRange(1, 80)]
+        [int]$MaximumLines = 60
+    )
+    if ([string]::IsNullOrWhiteSpace($LogPath)) {
+        return "Kein Inno-Setup-Logpfad wurde übergeben."
+    }
+    try {
+        if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf -ErrorAction Stop)) {
+            return "Kein Inno-Setup-Log vorhanden."
+        }
+        $Lines = @(Get-Content -LiteralPath $LogPath -Tail $MaximumLines -ErrorAction Stop)
+    } catch {
+        return "Der begrenzte Inno-Setup-Logauszug konnte nicht sicher gelesen werden."
+    }
+    if ($Lines.Count -eq 0) {
+        return "Das Inno-Setup-Log ist leer."
+    }
+    return (@($Lines | ForEach-Object { Protect-DiagnosticText -Text ([string]$_) }) -join "`n")
+}
+
+function Get-InnoLogPath {
+    param([string[]]$Arguments)
+    foreach ($Argument in $Arguments) {
+        if ($Argument.StartsWith("/LOG=", [StringComparison]::OrdinalIgnoreCase)) {
+            return $Argument.Substring(5).Trim().Trim('"')
+        }
+    }
+    return ""
+}
+
 function Invoke-Setup {
     param(
         [string]$Path,
@@ -69,7 +174,9 @@ function Invoke-Setup {
     $ExitCode = [int]$Process.ExitCode
     Wait-SetupUninstallMutexReleased
     if ($ExitCode -ne 0) {
-        throw "$Scenario schlug mit Exitcode $ExitCode fehl."
+        $LogTail = Get-SanitizedInnoLogTail -LogPath (Get-InnoLogPath -Arguments $Arguments)
+        throw "$Scenario schlug mit Exitcode $ExitCode fehl.`n" +
+            "Begrenzter, maskierter Inno-Logauszug:`n$LogTail"
     }
 }
 
@@ -93,16 +200,200 @@ function Invoke-SetupExpectedFailure {
     $ExitCode = [int]$Process.ExitCode
     Wait-SetupUninstallMutexReleased
     if ($ExitCode -eq 0) {
-        $LogTail = if (Test-Path -LiteralPath $LogPath) {
-            (Get-Content -LiteralPath $LogPath -Tail 80) -join "`n"
-        } else {
-            "Kein Inno-Setup-Log vorhanden."
-        }
+        $LogTail = Get-SanitizedInnoLogTail -LogPath $LogPath
         throw "$Scenario wurde unerwartet akzeptiert.`n$LogTail"
     }
     if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
         throw "$Scenario erzeugte trotz Exitcode $ExitCode keinen Setup-Log."
     }
+}
+
+function Resolve-DiagnosticProfilePath {
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [object]$Value,
+        [Microsoft.Win32.RegistryValueKind]$Kind
+    )
+    if ($Kind -notin @(
+        [Microsoft.Win32.RegistryValueKind]::String,
+        [Microsoft.Win32.RegistryValueKind]::ExpandString
+    ) -or
+        $Value -isnot [string] -or
+        [string]::IsNullOrWhiteSpace([string]$Value) -or
+        ([string]$Value).Contains([char]0)) {
+        return $null
+    }
+    try {
+        $Expanded = [Environment]::ExpandEnvironmentVariables([string]$Value)
+        $FullPath = [IO.Path]::GetFullPath($Expanded)
+        $Root = [IO.Path]::GetPathRoot($FullPath)
+        if ($Root -notmatch "^[a-zA-Z]:\\$") {
+            return $null
+        }
+        if (Test-Path -LiteralPath $FullPath -ErrorAction Stop) {
+            $Item = Get-Item -LiteralPath $FullPath -Force -ErrorAction Stop
+            if (-not $Item.PSIsContainer -or
+                ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return $null
+            }
+        }
+        return $FullPath
+    } catch {
+        return $null
+    }
+}
+
+function Get-DiagnosticHiveFileState {
+    param([string]$Path)
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf -ErrorAction Stop)) {
+            return "missing"
+        }
+        $Item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if ($Item -isnot [IO.FileInfo] -or
+            ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return "unsafe"
+        }
+        return "present"
+    } catch {
+        return "unsafe"
+    }
+}
+
+function Write-ProfileHiveCategoryDiagnostic {
+    $Counts = [ordered]@{
+        loaded = 0
+        "offline DAT" = 0
+        "offline MAN" = 0
+        missing = 0
+        ambiguous = 0
+        unsafe = 0
+    }
+    $MachineRoot = $null
+    $UsersRoot = $null
+    $ProfileList = $null
+    try {
+        $MachineRoot = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            [Microsoft.Win32.RegistryView]::Registry64
+        )
+        $UsersRoot = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::Users,
+            [Microsoft.Win32.RegistryView]::Registry64
+        )
+        $ProfileList = $MachineRoot.OpenSubKey(
+            "SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList",
+            $false
+        )
+        if ($null -eq $ProfileList) {
+            $Counts.unsafe++
+        } else {
+            foreach ($ProfileKeyName in $ProfileList.GetSubKeyNames()) {
+                if ($ProfileKeyName -in @("S-1-5-18", "S-1-5-19", "S-1-5-20")) {
+                    continue
+                }
+                $Category = "unsafe"
+                $ProfileKey = $null
+                $LoadedHive = $null
+                try {
+                    $ProfileKey = $ProfileList.OpenSubKey($ProfileKeyName, $false)
+                    if ($null -ne $ProfileKey) {
+                        $Kind = $ProfileKey.GetValueKind("ProfileImagePath")
+                        $Value = $ProfileKey.GetValue(
+                            "ProfileImagePath",
+                            $null,
+                            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+                        )
+                        $ProfilePath = Resolve-DiagnosticProfilePath -Value $Value -Kind $Kind
+                        if ($null -ne $ProfilePath) {
+                            $LoadedHive = $UsersRoot.OpenSubKey($ProfileKeyName, $false)
+                            if ($null -ne $LoadedHive) {
+                                $Category = "loaded"
+                            } else {
+                                $DatState = Get-DiagnosticHiveFileState -Path (
+                                    Join-Path $ProfilePath "NTUSER.DAT"
+                                )
+                                $ManState = Get-DiagnosticHiveFileState -Path (
+                                    Join-Path $ProfilePath "NTUSER.MAN"
+                                )
+                                if ($DatState -eq "unsafe" -or $ManState -eq "unsafe") {
+                                    $Category = "unsafe"
+                                } elseif ($DatState -eq "present" -and $ManState -eq "present") {
+                                    $Category = "ambiguous"
+                                } elseif ($DatState -eq "present") {
+                                    $Category = "offline DAT"
+                                } elseif ($ManState -eq "present") {
+                                    $Category = "offline MAN"
+                                } else {
+                                    $Category = "missing"
+                                }
+                            }
+                        }
+                    }
+                } catch {
+                    $Category = "unsafe"
+                } finally {
+                    if ($null -ne $LoadedHive) {
+                        $LoadedHive.Dispose()
+                    }
+                    if ($null -ne $ProfileKey) {
+                        $ProfileKey.Dispose()
+                    }
+                }
+                $Counts[$Category]++
+            }
+        }
+    } catch {
+        $Counts.unsafe++
+    } finally {
+        if ($null -ne $ProfileList) {
+            $ProfileList.Dispose()
+        }
+        if ($null -ne $UsersRoot) {
+            $UsersRoot.Dispose()
+        }
+        if ($null -ne $MachineRoot) {
+            $MachineRoot.Dispose()
+        }
+    }
+    Write-Host (
+        "ProfileList/Hive-Diagnose (nur Kategorien): " +
+        "loaded=$($Counts.loaded); offline DAT=$($Counts['offline DAT']); " +
+        "offline MAN=$($Counts['offline MAN']); missing=$($Counts.missing); " +
+        "ambiguous=$($Counts.ambiguous); unsafe=$($Counts.unsafe)"
+    )
+}
+
+function Write-LoopbackPortCategoryDiagnostic {
+    $Counts = [ordered]@{
+        listen = 0
+        timeWait = 0
+        closeWait = 0
+        other = 0
+        inventoryError = 0
+    }
+    try {
+        $Connections = @(
+            Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 8765 `
+                -ErrorAction SilentlyContinue
+        )
+        foreach ($Connection in $Connections) {
+            switch ([string]$Connection.State) {
+                "Listen" { $Counts.listen++; break }
+                "TimeWait" { $Counts.timeWait++; break }
+                "CloseWait" { $Counts.closeWait++; break }
+                default { $Counts.other++ }
+            }
+        }
+    } catch {
+        $Counts.inventoryError++
+    }
+    Write-Host (
+        "TCP-Portdiagnose (nur Zähler): listen=$($Counts.listen); " +
+        "timeWait=$($Counts.timeWait); closeWait=$($Counts.closeWait); " +
+        "other=$($Counts.other); inventoryError=$($Counts.inventoryError)"
+    )
 }
 
 function Wait-ServiceState {
@@ -585,6 +876,8 @@ try {
         "/TASKS=`"systemstart`"",
         "/LOG=`"$ServiceInstallLog`""
     )
+    Write-ProfileHiveCategoryDiagnostic
+    Write-LoopbackPortCategoryDiagnostic
     Invoke-Setup -Path $ServiceSetup -Scenario "Dienstinstallation nach Desktopdeinstallation" `
         -Arguments $ServiceInstallArguments
     Wait-ServiceState -Name $ServiceName -State "Running"

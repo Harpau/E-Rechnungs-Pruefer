@@ -990,6 +990,9 @@ def test_mode_exclusion_test_proves_manual_switch_and_no_mutation_on_rejection()
         "Desktopinstallation bei reinem erhaltenem ProgramData",
         "Dienstneuinstallation mit erhaltenem ProgramData",
         "ProgramData oder das Diensttoken",
+        "Get-SanitizedInnoLogTail",
+        "Write-ProfileHiveCategoryDiagnostic",
+        "Write-LoopbackPortCategoryDiagnostic",
     ):
         assert expected in script
 
@@ -1014,6 +1017,81 @@ def test_mode_exclusion_test_proves_manual_switch_and_no_mutation_on_rejection()
         "Wait-SetupUninstallMutexReleased"
     )
     assert "$ExitCode -eq 0" in invoke_expected_failure
+    assert "Get-SanitizedInnoLogTail" in invoke_setup
+    assert "Get-SanitizedInnoLogTail" in invoke_expected_failure
+
+    sanitizer = script[script.index("function Get-DiagnosticPathMasks") : script.index("function Invoke-Setup")]
+    for expected in (
+        "<REPOSITORY>",
+        "<USERPROFILE>",
+        "<LOCALAPPDATA>",
+        "<TEMP>",
+        "<TOKEN-RELATED-LINE-REDACTED>",
+        "<PATH-RELATED-LINE-REDACTED>",
+        "<SID>",
+        "<SECRET>",
+        "[ValidateRange(1, 80)]",
+        "[int]$MaximumLines = 60",
+        "$Protected.Length -gt 500",
+    ):
+        assert expected in sanitizer
+    assert "Get-Content -LiteralPath $LogPath -Tail $MaximumLines" in sanitizer
+    assert "return $Argument.Substring(5).Trim().Trim('\"')" in sanitizer
+
+    profile_diagnostic = script[
+        script.index("function Resolve-DiagnosticProfilePath") : script.index("function Wait-ServiceState")
+    ]
+    for expected in (
+        "[Microsoft.Win32.RegistryHive]::LocalMachine",
+        "[Microsoft.Win32.RegistryHive]::Users",
+        "ProfileImagePath",
+        '"S-1-5-18", "S-1-5-19", "S-1-5-20"',
+        "loaded = 0",
+        '"offline DAT" = 0',
+        '"offline MAN" = 0',
+        "missing = 0",
+        "ambiguous = 0",
+        "unsafe = 0",
+        "ProfileList/Hive-Diagnose (nur Kategorien)",
+    ):
+        assert expected in profile_diagnostic
+    assert "Write-Host $_" not in profile_diagnostic
+    assert "Write-Warning $_" not in profile_diagnostic
+    port_diagnostic = script[
+        script.index("function Write-LoopbackPortCategoryDiagnostic") : script.index("function Wait-ServiceState")
+    ]
+    for expected in (
+        'Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 8765',
+        "listen = 0",
+        "timeWait = 0",
+        "closeWait = 0",
+        "other = 0",
+        "TCP-Portdiagnose (nur Zähler)",
+    ):
+        assert expected in port_diagnostic
+    for forbidden in (
+        "OwningProcess",
+        "RemoteAddress",
+        "RemotePort",
+        "Test-NetConnection",
+        "TcpListener",
+    ):
+        assert forbidden not in port_diagnostic
+    legitimate_service_install = script[
+        script.index("$ServiceInstallArguments = @(") : script.index(
+            'Wait-ServiceState -Name $ServiceName -State "Running"'
+        )
+    ]
+    assert legitimate_service_install.index("Write-ProfileHiveCategoryDiagnostic") < (
+        legitimate_service_install.index(
+            'Invoke-Setup -Path $ServiceSetup -Scenario "Dienstinstallation nach Desktopdeinstallation"'
+        )
+    )
+    assert legitimate_service_install.index("Write-LoopbackPortCategoryDiagnostic") < (
+        legitimate_service_install.index(
+            'Invoke-Setup -Path $ServiceSetup -Scenario "Dienstinstallation nach Desktopdeinstallation"'
+        )
+    )
 
     tree_fingerprint = script[
         script.index("function Get-TreeFingerprint") : script.index("function Convert-RegistryValueToStableText")
