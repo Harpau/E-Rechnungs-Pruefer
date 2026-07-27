@@ -79,21 +79,111 @@ Type: dirifempty; Name: "{localappdata}\E-Rechnungs-Pruefer"
 const
   AppMutexName = 'Local\E-Rechnungs-Pruefer-Desktop';
   BackendMutexName = 'Global\E-Rechnungs-Pruefer-Backend';
+  SetupUninstallMutexName = 'Global\E-Rechnungs-Pruefer-Setup-Uninstall';
   ShutdownEventName = 'Local\E-Rechnungs-Pruefer-Desktop-Shutdown';
   EventModifyState = $0002;
+  WaitObject0 = $00000000;
+  WaitAbandoned0 = $00000080;
+  WaitTimeout = $00000102;
+  WaitFailed = $FFFFFFFF;
   ShutdownTimeoutMilliseconds = 30000;
   ShutdownPollMilliseconds = 250;
 
 var
   ShutdownPrepared: Boolean;
   RestartBackgroundAfterUpdate: Boolean;
+  SetupUninstallMutexHandle: Cardinal;
+  SetupUninstallMutexOwned: Boolean;
 
+function CreateMutexW(
+  SecurityAttributes: Integer; InitialOwner: BOOL; Name: String): Cardinal;
+  external 'CreateMutexW@kernel32.dll stdcall';
+function WaitForSingleObject(Handle: Cardinal; Milliseconds: Cardinal): Cardinal;
+  external 'WaitForSingleObject@kernel32.dll stdcall';
+function ReleaseMutex(Handle: Cardinal): BOOL;
+  external 'ReleaseMutex@kernel32.dll stdcall';
 function OpenEvent(DesiredAccess: DWORD; InheritHandle: BOOL; Name: String): Cardinal;
   external 'OpenEventW@kernel32.dll stdcall';
 function SetEvent(EventHandle: Cardinal): BOOL;
   external 'SetEvent@kernel32.dll stdcall';
 function CloseHandle(Handle: Cardinal): BOOL;
   external 'CloseHandle@kernel32.dll stdcall';
+
+function AcquireSetupUninstallMutex: Boolean;
+var
+  ErrorCode: LongInt;
+  WaitResult: Cardinal;
+begin
+  Result := False;
+  if SetupUninstallMutexOwned then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if SetupUninstallMutexHandle <> 0 then
+  begin
+    Log('Die gemeinsame Installationssperre besitzt einen widersprüchlichen lokalen Zustand.');
+    Exit;
+  end;
+
+  SetupUninstallMutexHandle :=
+    CreateMutexW(0, False, SetupUninstallMutexName);
+  ErrorCode := DLLGetLastError;
+  if SetupUninstallMutexHandle = 0 then
+  begin
+    Log(
+      'Die gemeinsame Installationssperre konnte nicht geöffnet werden ' +
+      '(Windows-Fehler ' + IntToStr(ErrorCode) + ').');
+    Exit;
+  end;
+
+  WaitResult := WaitForSingleObject(SetupUninstallMutexHandle, 0);
+  ErrorCode := DLLGetLastError;
+  if (WaitResult = WaitObject0) or (WaitResult = WaitAbandoned0) then
+  begin
+    SetupUninstallMutexOwned := True;
+    if WaitResult = WaitAbandoned0 then
+      Log('Eine abgebrochene Installationssperre wurde übernommen.');
+    Result := True;
+    Exit;
+  end;
+
+  if WaitResult = WaitFailed then
+    Log(
+      'Die gemeinsame Installationssperre konnte nicht geprüft werden ' +
+      '(Windows-Fehler ' + IntToStr(ErrorCode) + ').')
+  else if WaitResult = WaitTimeout then
+    Log('Eine andere Installation oder Deinstallation ist bereits aktiv.')
+  else
+    Log(
+      'Die gemeinsame Installationssperre lieferte einen unbekannten ' +
+      'Wartezustand (' + IntToStr(WaitResult) + ').');
+  CloseHandle(SetupUninstallMutexHandle);
+  SetupUninstallMutexHandle := 0;
+end;
+
+procedure ReleaseSetupUninstallMutex;
+begin
+  if SetupUninstallMutexHandle = 0 then
+    Exit;
+  if SetupUninstallMutexOwned then
+    ReleaseMutex(SetupUninstallMutexHandle);
+  SetupUninstallMutexOwned := False;
+  CloseHandle(SetupUninstallMutexHandle);
+  SetupUninstallMutexHandle := 0;
+end;
+
+function ServiceFootprintExists: Boolean;
+begin
+  Result :=
+    RegKeyExists(
+      HKLM64,
+      'SYSTEM\CurrentControlSet\Services\ERechnungsPrueferService') or
+    RegKeyExists(
+      HKLM64,
+      'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8824D15C-7F4E-4CB2-B957-FBC26B923363}_is1') or
+    DirExists(ExpandConstant('{autopf64}\E-Rechnungs-Pruefer-Dienst'));
+end;
 
 function SignalApplicationShutdown: Boolean;
 var
@@ -165,25 +255,36 @@ var
   WasRunning: Boolean;
   ExistingInstallation: Boolean;
 begin
+  if not AcquireSetupUninstallMutex then
+  begin
+    Result :=
+      'Eine andere Installation oder Deinstallation ist aktiv oder die gemeinsame ' +
+      'Vorgangssperre konnte nicht sicher erworben werden. Versuchen Sie es nach ' +
+      'Abschluss des anderen Vorgangs erneut.';
+    Exit;
+  end;
+
   if ShutdownPrepared then
   begin
     Result := '';
     Exit;
   end;
 
-  if RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Services\ERechnungsPrueferService') then
+  if ServiceFootprintExists then
   begin
     Result :=
-      'Der systemweite E-Rechnungs-Prüfer-Dienst ist installiert. Desktop- und Dienstmodus sind alternative ' +
-      'Betriebsarten. Deinstallieren Sie den Dienst oder verwenden Sie dessen Öffnen-Client.';
+      'Eine vorhandene oder unvollständig entfernte Dienst-Version wurde gefunden. ' +
+      'Deinstallieren Sie den E-Rechnungs-Prüfer Dienst unter "Installierte Apps" ' +
+      'vollständig und starten Sie dieses Desktop-Setup anschließend erneut.';
     Exit;
   end;
 
   if CheckForMutexes(BackendMutexName) and not CheckForMutexes(AppMutexName) then
   begin
     Result :=
-      'Der E-Rechnungs-Prüfer-Dienst läuft bereits. Desktop- und Dienstmodus dürfen nicht parallel ' +
-      'betrieben werden. Stoppen Sie den Dienst oder verwenden Sie den Dienst-Installer.';
+      'Der systemweite E-Rechnungs-Prüfer-Dienst oder ein fremder Backendprozess läuft. ' +
+      'Desktop- und Dienstmodus dürfen nicht parallel betrieben werden. Deinstallieren Sie ' +
+      'zunächst die Dienst-Version und starten Sie dieses Desktop-Setup anschließend erneut.';
     Exit;
   end;
 
@@ -196,6 +297,11 @@ begin
   end;
 end;
 
+procedure DeinitializeSetup;
+begin
+  ReleaseSetupUninstallMutex;
+end;
+
 function ShouldRestartBackgroundAfterUpdate: Boolean;
 begin
   Result := RestartBackgroundAfterUpdate and WizardIsTaskSelected('autostart');
@@ -206,6 +312,16 @@ var
   WasRunning: Boolean;
   ErrorMessage: String;
 begin
+  if not AcquireSetupUninstallMutex then
+  begin
+    Result := False;
+    if not UninstallSilent then
+      MsgBox(
+        'Eine andere Installation oder Deinstallation ist aktiv. ' +
+        'Versuchen Sie es nach deren Abschluss erneut.',
+        mbError, MB_OK);
+    Exit;
+  end;
   ErrorMessage := StopRunningApplication(WasRunning);
   Result := ErrorMessage = '';
   if not Result then
@@ -213,5 +329,11 @@ begin
     Log(ErrorMessage);
     if not UninstallSilent then
       MsgBox(ErrorMessage, mbError, MB_OK);
+    ReleaseSetupUninstallMutex;
   end;
+end;
+
+procedure DeinitializeUninstall;
+begin
+  ReleaseSetupUninstallMutex;
 end;

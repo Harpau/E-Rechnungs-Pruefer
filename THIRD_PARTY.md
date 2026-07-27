@@ -27,6 +27,10 @@ Pytest, pytest-cov, Ruff, Mypy, Build, Twine, pip-audit, Pre-commit, HTTPX und H
 | Pillow | Erzeugung des Symbols im Windows-Infobereich | MIT-CMU |
 | pystray | Windows-Infobereich und Beenden-Menü | LGPL-3.0 |
 | pywin32 | Windows-SCM, DACLs und lokale Named-Pipe-IPC | Python Software Foundation License 2.0 |
+| Regipy | Rein lesende Auswertung abgemeldeter Windows-Benutzerhives beim gegenseitigen Installationsausschluss | MIT |
+| Construct | Binärformat-Parser für Regipy | MIT |
+| Inflection | Namensnormalisierung für Regipy | MIT |
+| pytz | Zeitzonendaten für Regipy | MIT |
 
 PyInstaller und Inno Setup werden ausschließlich während des Builds verwendet. Für eine kommerzielle Nutzung von Inno Setup sind die jeweils aktuellen Lizenz- und Erwerbsbedingungen zu prüfen.
 

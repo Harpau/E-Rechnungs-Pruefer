@@ -14,8 +14,6 @@ from app.windows_service_config import SERVICE_ACCOUNT, SERVICE_NAME
 
 EXPECTED_EXECUTABLE = Path(r"C:\Program Files\E-Rechnungs-Pruefer-Dienst\service\E-Rechnungs-Pruefer-Dienst.exe")
 TRANSACTION_ID = "8607fab862d54d109b9950b7c8ba3a27"
-DESKTOP_READER_SID = "S-1-5-21-1000"
-DESKTOP_SEAL_SHA256 = "a" * 64
 EXISTING_MACHINE_STATE = transaction.MachineBefore(True, True, True)
 EMPTY_MACHINE_STATE = transaction.MachineBefore(False, False, False)
 
@@ -43,15 +41,12 @@ def _metadata() -> dict[str, object]:
 def _first_install_prepared_bytes() -> bytes:
     prepared = transaction.PreparedTransaction(
         transaction_id=TRANSACTION_ID,
-        desktop_reader_sid=DESKTOP_READER_SID,
-        desktop_seal_sha256=DESKTOP_SEAL_SHA256,
         expected_executable=str(EXPECTED_EXECUTABLE),
         service_existed=False,
         service_running=False,
         service_metadata=None,
         machine_before=EMPTY_MACHINE_STATE,
         target_service_running=True,
-        token_transfer_consent=False,
     )
     return transaction._canonical_json(transaction._prepared_payload(prepared))
 
@@ -93,13 +88,10 @@ def _prepare_update(
     transaction.prepare_transaction(
         EXPECTED_EXECUTABLE,
         transaction_id=TRANSACTION_ID,
-        desktop_reader_sid=DESKTOP_READER_SID,
-        desktop_seal_sha256=DESKTOP_SEAL_SHA256,
         service_existed=True,
         service_running=running,
         machine_before=machine_before,
         target_service_running=target_running,
-        token_transfer_consent=False,
         _state_store=state_store,
     )
     state = transaction.load_transaction(
@@ -116,19 +108,15 @@ def _prepare_first(
     store: _MemoryStore | None = None,
     machine_before: transaction.MachineBefore = EMPTY_MACHINE_STATE,
     target_running: bool = True,
-    token_consent: bool = False,
 ) -> tuple[_MemoryStore, transaction.TransactionState]:
     state_store = store or _MemoryStore()
     transaction.prepare_transaction(
         EXPECTED_EXECUTABLE,
         transaction_id=TRANSACTION_ID,
-        desktop_reader_sid=DESKTOP_READER_SID,
-        desktop_seal_sha256=DESKTOP_SEAL_SHA256,
         service_existed=False,
         service_running=False,
         machine_before=machine_before,
         target_service_running=target_running,
-        token_transfer_consent=token_consent,
         _state_store=state_store,
     )
     state = transaction.load_transaction(
@@ -149,17 +137,14 @@ def test_prepare_persists_immutable_canonical_manifest_with_full_scm_baseline(
     payload = json.loads(encoded)
     assert encoded.endswith(b"\n")
     assert payload["transaction_id"] == TRANSACTION_ID
-    assert payload["desktop_binding"] == {
-        "reader_sid": DESKTOP_READER_SID,
-        "seal_sha256": DESKTOP_SEAL_SHA256,
-    }
+    assert "desktop_binding" not in payload
     assert payload["service_before"] == {
         "existed": True,
         "running": True,
         "metadata": _metadata(),
     }
     assert payload["machine_before"] == {"configuration": True, "token": True, "logs": True}
-    assert payload["target"] == {"service_running": True, "token_transfer_consent": False}
+    assert payload["target"] == {"service_running": True}
     assert state.phase is transaction.TransactionPhase.PREPARED
 
     # The exact same request is idempotent, but neither overwrites nor adopts
@@ -171,13 +156,10 @@ def test_prepare_persists_immutable_canonical_manifest_with_full_scm_baseline(
         transaction.prepare_transaction(
             EXPECTED_EXECUTABLE,
             transaction_id="19b685f4adcd46b3a93ab739957b3a1e",
-            desktop_reader_sid=DESKTOP_READER_SID,
-            desktop_seal_sha256=DESKTOP_SEAL_SHA256,
             service_existed=True,
             service_running=True,
             machine_before=transaction.MachineBefore(True, True, True),
             target_service_running=True,
-            token_transfer_consent=False,
             _state_store=store,
         )
 
@@ -202,13 +184,10 @@ def test_prepare_rejects_noncanonical_128_bit_transaction_ids_before_capture(
         transaction.prepare_transaction(
             EXPECTED_EXECUTABLE,
             transaction_id=invalid_id,
-            desktop_reader_sid=DESKTOP_READER_SID,
-            desktop_seal_sha256=DESKTOP_SEAL_SHA256,
             service_existed=True,
             service_running=False,
             machine_before=transaction.MachineBefore(True, True, False),
             target_service_running=False,
-            token_transfer_consent=False,
             _state_store=_MemoryStore(),
         )
 
@@ -222,8 +201,8 @@ def test_load_rejects_noncanonical_duplicate_unknown_and_oversized_json(
     canonical = store.files[transaction.PREPARED_FILE_NAME]
     invalid_payloads = [
         canonical.rstrip(b"\n"),
-        canonical.replace(b'"schema_version":1', b'"schema_version":1,"schema_version":1'),
-        canonical.replace(b'"schema_version":1', b'"foreign":1,"schema_version":1'),
+        canonical.replace(b'"schema_version":2', b'"schema_version":2,"schema_version":2'),
+        canonical.replace(b'"schema_version":2', b'"foreign":1,"schema_version":2'),
         b"{" + b"x" * transaction.MAXIMUM_TRANSACTION_BYTES + b"}",
     ]
 
@@ -233,16 +212,13 @@ def test_load_rejects_noncanonical_duplicate_unknown_and_oversized_json(
             transaction.load_transaction(EXPECTED_EXECUTABLE, _state_store=store)
 
 
-def test_first_install_manifest_rejects_token_overwrite_and_never_captures_scm(
+def test_first_install_manifest_preserves_existing_machine_baseline_without_scm_capture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     capture = Mock()
     monkeypatch.setattr(transaction.windows_service_metadata, "capture_service_metadata", capture)
-    with pytest.raises(RuntimeError, match="Maschinentoken"):
-        _prepare_first(
-            machine_before=transaction.MachineBefore(True, True, False),
-            token_consent=True,
-        )
+    _store, state = _prepare_first(machine_before=transaction.MachineBefore(True, True, False))
+    assert state.prepared.machine_before.token is True
     capture.assert_not_called()
 
 
@@ -917,15 +893,12 @@ def test_protected_store_rejects_unknown_entries_but_consumes_valid_publish_tail
     state_directory.mkdir()
     prepared = transaction.PreparedTransaction(
         transaction_id=TRANSACTION_ID,
-        desktop_reader_sid=DESKTOP_READER_SID,
-        desktop_seal_sha256=DESKTOP_SEAL_SHA256,
         expected_executable=str(EXPECTED_EXECUTABLE),
         service_existed=False,
         service_running=False,
         service_metadata=None,
         machine_before=EMPTY_MACHINE_STATE,
         target_service_running=True,
-        token_transfer_consent=False,
     )
     encoded = transaction._canonical_json(transaction._prepared_payload(prepared))
     prepared_path = state_directory / transaction.PREPARED_FILE_NAME
@@ -1199,8 +1172,6 @@ def test_partial_prepared_store_rejects_ambiguous_inventory_without_mutation(
 @pytest.mark.parametrize(
     ("validator", "value", "message"),
     [
-        (transaction._strict_desktop_reader_sid, "S-1-5-18", "Benutzeridentität"),
-        (transaction._strict_desktop_reader_sid, "not-a-sid", "Benutzeridentität"),
         (
             lambda value: transaction._strict_sha256(value, description="Testhash"),
             "A" * 64,
@@ -1359,7 +1330,7 @@ def test_canonical_json_rejects_unrepresentable_large_and_noncanonical_documents
     [
         (lambda payload: payload.update({"unknown": True}), "unbekanntes Format"),
         (lambda payload: payload.update({"schema_version": 99}), "Version"),
-        (lambda payload: payload.update({"desktop_binding": []}), "Desktopbindung"),
+        (lambda payload: payload.update({"desktop_binding": []}), "unbekanntes Format"),
         (lambda payload: payload.update({"expected_executable": r"C:\wrong\service.exe"}), "Dienstpfad"),
         (lambda payload: payload.update({"service_before": {}}), "Dienst-Baselineblock"),
         (lambda payload: payload.update({"machine_before": {}}), "Maschinen-Baselineblock"),
@@ -1379,7 +1350,7 @@ def test_prepared_decoder_rejects_unknown_or_malformed_structural_blocks(
         )
 
 
-def test_prepared_decoder_enforces_service_and_token_baseline_invariants(
+def test_prepared_decoder_enforces_service_baseline_invariants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = json.loads(_first_install_prepared_bytes())
@@ -1398,15 +1369,10 @@ def test_prepared_decoder_enforces_service_and_token_baseline_invariants(
         lambda _path, metadata: metadata,
     )
     payload["service_before"]["metadata"] = {"baseline": True}
-    payload["target"]["token_transfer_consent"] = True
-    with pytest.raises(RuntimeError, match="Update-Transaktion"):
-        transaction._decode_prepared(transaction._canonical_json(payload), EXPECTED_EXECUTABLE)
-
-    payload = json.loads(_first_install_prepared_bytes())
-    payload["machine_before"]["token"] = True
-    payload["target"]["token_transfer_consent"] = True
-    with pytest.raises(RuntimeError, match="Maschinentoken"):
-        transaction._decode_prepared(transaction._canonical_json(payload), EXPECTED_EXECUTABLE)
+    assert transaction._decode_prepared(
+        transaction._canonical_json(payload),
+        EXPECTED_EXECUTABLE,
+    ).service_existed
 
     payload = json.loads(_first_install_prepared_bytes())
     payload["target"]["service_running"] = 1
@@ -1539,7 +1505,6 @@ def test_atomic_publish_is_exclusive_and_wraps_filesystem_errors(
         ({"service_existed": 1}, "strikt boolesch"),
         ({"target_service_running": 1}, "strikt boolesch"),
         ({"service_existed": False, "service_running": True}, "nicht vorhandener Dienst"),
-        ({"service_existed": True, "token_transfer_consent": True}, "Update-Transaktion"),
     ],
 )
 def test_prepare_rejects_inconsistent_boolean_service_inputs(
@@ -1551,7 +1516,6 @@ def test_prepare_rejects_inconsistent_boolean_service_inputs(
         "service_existed": False,
         "service_running": False,
         "target_service_running": True,
-        "token_transfer_consent": False,
     }
     values.update(options)
     capture = Mock()
@@ -1560,8 +1524,6 @@ def test_prepare_rejects_inconsistent_boolean_service_inputs(
         transaction.prepare_transaction(
             EXPECTED_EXECUTABLE,
             transaction_id=TRANSACTION_ID,
-            desktop_reader_sid=DESKTOP_READER_SID,
-            desktop_seal_sha256=DESKTOP_SEAL_SHA256,
             machine_before=EMPTY_MACHINE_STATE,
             _state_store=_MemoryStore(),
             **values,  # type: ignore[arg-type]
@@ -1776,14 +1738,11 @@ def test_executor_covers_new_rollback_move_and_rejects_malicious_plans(
     missing_metadata = transaction.TransactionState(
         transaction.PreparedTransaction(
             state.prepared.transaction_id,
-            state.prepared.desktop_reader_sid,
-            state.prepared.desktop_seal_sha256,
             state.prepared.expected_executable,
             True,
             False,
             None,
             state.prepared.machine_before,
-            False,
             False,
         ),
         transaction.TransactionPhase.PREPARED,

@@ -3,7 +3,7 @@ param(
     [string]$Setup = "",
     [switch]$RequireSignature,
     [switch]$ConfirmIsolatedEnvironment,
-    [switch]$AllowElevatedMigrationTestContext,
+    [switch]$AllowElevatedRecoveryTestContext,
     [switch]$PreflightOnly,
     [ValidateSet("None", "Immediate", "LeaveForReboot")]
     [string]$CommitHardKillRecovery = "None"
@@ -151,7 +151,7 @@ function Invoke-ServiceInstaller {
         "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
         "/TASKS=`"$Tasks`"", "/LOG=`"$LogPath`""
     ) + $ExtraArguments
-    if ($AllowElevatedMigrationTestContext) {
+    if ($AllowElevatedRecoveryTestContext) {
         $Arguments += "/ALLOWELEVATEDTESTCONTEXT=1"
     }
     $Process = Start-Process $Path -ArgumentList $Arguments -PassThru
@@ -192,7 +192,7 @@ function Invoke-ServiceInstallerExpectedFailure {
         "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
         "/TASKS=`"systemstart`"", "/LOG=`"$LogPath`""
     ) + $ExtraArguments
-    if ($AllowElevatedMigrationTestContext) {
+    if ($AllowElevatedRecoveryTestContext) {
         $Arguments += "/ALLOWELEVATEDTESTCONTEXT=1"
     }
     $Process = Start-Process $Path -ArgumentList $Arguments -PassThru
@@ -361,8 +361,7 @@ function Invoke-CommitCheckpointHardKill {
         [string]$Path,
         [string[]]$Arguments,
         [string]$ExpectedServiceExecutable,
-        [string]$ExpectedServiceName,
-        [string]$ExpectedReaderSid
+        [string]$ExpectedServiceName
     )
     $ServiceDirectory = Split-Path $ExpectedServiceExecutable -Parent
     $InstallationDirectory = Split-Path $ServiceDirectory -Parent
@@ -395,20 +394,18 @@ function Invoke-CommitCheckpointHardKill {
                     [IO.FileShare]::Read
                 )
                 $Prepared = Read-StrictJsonMarker -Path $PreparedPath -ExpectedProperties @(
-                    "desktop_binding", "expected_executable", "machine_before", "schema_version",
-                    "service_before", "target", "transaction_id"
+                    "expected_executable", "machine_before", "schema_version", "service_before",
+                    "target", "transaction_id"
                 )
                 $Phase = Read-StrictJsonMarker -Path $PhasePath -ExpectedProperties @(
                     "phase", "prepared_sha256", "schema_version", "transaction_id"
                 )
                 if ($Phase.phase -eq "commit_started") {
                     $PreparedHash = (Get-FileHash -LiteralPath $PreparedPath -Algorithm SHA256).Hash.ToLowerInvariant()
-                    if ($Prepared.schema_version -ne 1 -or $Phase.schema_version -ne 1 -or
+                    if ($Prepared.schema_version -ne 2 -or $Phase.schema_version -ne 1 -or
                         $Prepared.transaction_id -notmatch "^[0-9a-f]{32}$" -or
                         $Phase.transaction_id -ne $Prepared.transaction_id -or
                         $Phase.prepared_sha256 -ne $PreparedHash -or
-                        $Prepared.desktop_binding.reader_sid -ne $ExpectedReaderSid -or
-                        $Prepared.desktop_binding.seal_sha256 -notmatch "^[0-9a-f]{64}$" -or
                         -not $Prepared.service_before.existed -or
                         -not $Prepared.service_before.running -or
                         $null -eq $Prepared.service_before.metadata -or
@@ -416,7 +413,6 @@ function Invoke-CommitCheckpointHardKill {
                         -not $Prepared.machine_before.token -or
                         -not $Prepared.machine_before.logs -or
                         -not $Prepared.target.service_running -or
-                        $Prepared.target.token_transfer_consent -or
                         -not [string]::Equals(
                             [string]$Prepared.expected_executable,
                             [IO.Path]::GetFullPath($ExpectedServiceExecutable),
@@ -499,7 +495,7 @@ function Invoke-ServiceUninstaller {
 
 function Wait-SetupUninstallMutexReleased {
     param(
-        [string]$Name = "Global\E-Rechnungs-Pruefer-Service-Setup-Uninstall",
+        [string]$Name = "Global\E-Rechnungs-Pruefer-Setup-Uninstall",
         [ValidateRange(1, 600)]
         [int]$Seconds = 60
     )
@@ -780,8 +776,8 @@ $ExplorerAdministratorSid = if ($CurrentDirectAdministrator.Count -eq 1) {
 } else {
     [Security.Principal.SecurityIdentifier]$DirectAdministratorUsers[0].SID
 }
-if ($CommitHardKillRecovery -ne "None" -and -not $AllowElevatedMigrationTestContext) {
-    throw "Hard-Kill-Recovery darf nur mit dem isolierten Testinstaller und -AllowElevatedMigrationTestContext laufen."
+if ($CommitHardKillRecovery -ne "None" -and -not $AllowElevatedRecoveryTestContext) {
+    throw "Hard-Kill-Recovery darf nur mit dem isolierten Testinstaller und -AllowElevatedRecoveryTestContext laufen."
 }
 if ($PreflightOnly -and $CommitHardKillRecovery -ne "None") {
     throw "-PreflightOnly und -CommitHardKillRecovery schließen einander aus."
@@ -789,9 +785,8 @@ if ($PreflightOnly -and $CommitHardKillRecovery -ne "None") {
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Version = (Get-Content (Join-Path $ProjectRoot "VERSION") -Raw).Trim()
-$ProductionSetup = Join-Path $ProjectRoot "dist\E-Rechnungs-Pruefer-$Version-Windows-x64-Dienst-Setup.exe"
 if (-not $Setup) {
-    $SetupRoot = if ($AllowElevatedMigrationTestContext) {
+    $SetupRoot = if ($AllowElevatedRecoveryTestContext) {
         Join-Path $ProjectRoot "build\windows\test-installer"
     } else {
         Join-Path $ProjectRoot "dist"
@@ -811,12 +806,12 @@ $LogDir = Join-Path $DataDir "logs"
 $LogFile = Join-Path $LogDir "service.log"
 $ServiceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
 $UninstallKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{8824D15C-7F4E-4CB2-B957-FBC26B923363}_is1"
-$DesktopMigrationStateDir = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-State"
-$DesktopMigrationTransferRoot = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-Transfer"
+$UnsupportedLegacyMigrationStateDir = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-State"
+$UnsupportedLegacyMigrationTransferRoot = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-Transfer"
 $ServiceInstallerStateDir = Join-Path $InstallDir ".installer-state"
 $EarlyInstallerStatePaths = @(
-    $DesktopMigrationStateDir,
-    $DesktopMigrationTransferRoot,
+    $UnsupportedLegacyMigrationStateDir,
+    $UnsupportedLegacyMigrationTransferRoot,
     $ServiceInstallerStateDir
 )
 
@@ -826,7 +821,14 @@ $DesktopUninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstal
 $DesktopRunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $Existing = @()
 if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) { $Existing += "Dienst $ServiceName" }
-foreach ($Path in @($InstallDir, $DataDir, $UninstallKey, $DesktopDir, $DesktopData, $DesktopUninstallKey)) {
+foreach ($Path in @(
+    $InstallDir,
+    $DataDir,
+    $UninstallKey,
+    $DesktopDir,
+    $DesktopData,
+    $DesktopUninstallKey
+) + $EarlyInstallerStatePaths) {
     if (Test-Path -LiteralPath $Path) { $Existing += $Path }
 }
 if (Get-ItemProperty $DesktopRunKey -Name "E-Rechnungs-Pruefer" -ErrorAction SilentlyContinue) {
@@ -836,7 +838,8 @@ if (Get-Process -Name "E-Rechnungs-Pruefer" -ErrorAction SilentlyContinue) {
     $Existing += "laufender Desktopprozess E-Rechnungs-Pruefer.exe"
 }
 if ($Existing.Count -gt 0) {
-    throw "Vorhandener Produktzustand; Abbruch ohne Änderung:`n$($Existing -join "`n")"
+    throw "Vorhandener Produkt- oder nicht unterstützter v1.4.0-Altzustand; Abbruch ohne Änderung:`n" +
+        ($Existing -join "`n")
 }
 if ($PreflightOnly) { return }
 if (-not (Test-Path -LiteralPath $Setup)) { throw "Dienst-Installer fehlt: $Setup" }
@@ -878,21 +881,6 @@ $PdfOutput = Join-Path $TestRoot "report.pdf"
 $XmlOutput = Join-Path $TestRoot "export.xml"
 New-Item $TestRoot -ItemType Directory | Out-Null
 Assert-ValidSignature $Setup
-if ($AllowElevatedMigrationTestContext) {
-    if (-not (Test-Path -LiteralPath $ProductionSetup)) {
-        throw "Produktiver Dienst-Installer für den Testkontext-Schutz fehlt: $ProductionSetup"
-    }
-    Assert-ValidSignature $ProductionSetup
-    Invoke-ServiceInstallerExpectedFailure -Path $ProductionSetup `
-        -LogPath (Join-Path $TestRoot "production-context-guard.log") -ExtraArguments @() `
-        -ExpectedLogReason "Die ursprüngliche interaktive Benutzeridentität konnte nicht sicher bestätigt werden."
-    if ((Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -or
-        (Test-Path -LiteralPath $InstallDir) -or (Test-Path -LiteralPath $DataDir) -or
-        (Test-Path -LiteralPath $UninstallKey)) {
-        throw "Der produktive Dienst-Installer akzeptierte den erhöhten internen Testkontext."
-    }
-    Assert-NoEarlyInstallerState -Scenario "Produktiver Testkontext-Schutz" -Paths $EarlyInstallerStatePaths
-}
 $JunctionTarget = Join-Path $TestRoot "programdata-junction-target"
 $JunctionSentinel = Join-Path $JunctionTarget "sentinel.txt"
 New-Item $JunctionTarget -ItemType Directory | Out-Null
@@ -1102,8 +1090,7 @@ if ($CommitHardKillRecovery -ne "None") {
         "/ALLOWELEVATEDTESTCONTEXT=1"
     )
     Invoke-CommitCheckpointHardKill -Path $Setup -Arguments $CommitHardKillArguments `
-        -ExpectedServiceExecutable $ServiceExe -ExpectedServiceName $ServiceName `
-        -ExpectedReaderSid $ReaderSid
+        -ExpectedServiceExecutable $ServiceExe -ExpectedServiceName $ServiceName
     if ($CommitHardKillRecovery -eq "LeaveForReboot") {
         Write-Warning (
             "Der beweisbare COMMIT_STARTED-Zustand bleibt absichtlich erhalten. VM jetzt hart neu starten; " +

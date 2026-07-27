@@ -18,7 +18,7 @@ def _load_script(name: str):
 
 def test_version_declarations_are_synchronized():
     module = _load_script("verify_version.py")
-    assert module.verify() == "1.4.0"
+    assert module.verify() == "1.5.0"
 
 
 def test_release_filter_excludes_local_and_sensitive_files():
@@ -63,4 +63,6 @@ def test_dependency_audit_uses_strict_local_project_mode():
     workflow = (PROJECT_ROOT / ".github" / "workflows" / "dependency-audit.yml").read_text(encoding="utf-8")
 
     assert "python -m pip_audit --strict ." in workflow
+    assert "python -m pip_audit --strict --disable-pip --require-hashes" in workflow
+    assert "-r packaging/windows/requirements-release.txt" in workflow
     assert "--ignore-vuln" not in workflow

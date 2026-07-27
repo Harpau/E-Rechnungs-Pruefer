@@ -10,7 +10,7 @@ from unittest.mock import ANY, Mock, call
 
 import pytest
 
-from app import server_runtime, windows_desktop_migration, windows_service
+from app import server_runtime, windows_service
 from app.windows_service import ERechnungsPrueferService, WindowsServiceHost
 from app.windows_service_config import ServiceConfiguration
 from app.windows_service_ipc import IpcServerDiagnostic
@@ -569,8 +569,6 @@ def _management_options(**overrides: object) -> Namespace:
         "verify_state": False,
         "preflight_port": False,
         "health_check": False,
-        "import_token": None,
-        "consent_token_import": False,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -603,15 +601,6 @@ def _mock_management_dependencies(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     ("options", "expected_method", "expected_arguments"),
     [
         (_management_options(initialize=True), "load_or_create", ()),
-        (
-            _management_options(
-                initialize=True,
-                import_token="desktop-token.txt",
-                consent_token_import=True,
-            ),
-            "import_value",
-            ("m" * 43,),
-        ),
         (_management_options(grant_token_read=r"DOMAIN\\NodeRed"), "load", ()),
         (_management_options(verify_state=True), "load", ()),
     ],
@@ -626,8 +615,6 @@ def test_service_management_commands(
     paths, acl, store, _factory, _configuration = _mock_management_dependencies(monkeypatch, tmp_path)
     if options.initialize:
         monkeypatch.setattr(windows_service, "_service_is_stopped", Mock(return_value=True))
-    token_reader = Mock(return_value="m" * 43)
-    monkeypatch.setattr(windows_desktop_migration, "read_desktop_migration_token", token_reader)
 
     windows_service._manage_service(options)
 
@@ -635,11 +622,7 @@ def test_service_management_commands(
         administrative=not options.verify_state
     )
     method = getattr(store, expected_method)
-    if expected_method == "import_value":
-        method.assert_called_once_with(*expected_arguments, consent=True)
-        token_reader.assert_called_once_with(Path("desktop-token.txt"))
-    else:
-        method.assert_called_once_with(*expected_arguments)
+    method.assert_called_once_with(*expected_arguments)
     if options.grant_token_read:
         acl.grant_token_reader.assert_called_once_with(paths.token, options.grant_token_read)
     if options.verify_state:
@@ -697,57 +680,21 @@ def test_verify_state_never_reads_machine_content_after_failed_directory_repair(
     acl.verify_service_paths.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "options",
-    [
-        _management_options(initialize=True),
-        _management_options(
-            initialize=True,
-            import_token="desktop-token.txt",
-            consent_token_import=True,
-        ),
-    ],
-)
 def test_initialization_requires_stopped_service_before_programdata_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    options: Namespace,
 ) -> None:
     paths, acl, store, _factory, _configuration = _mock_management_dependencies(monkeypatch, tmp_path)
     monkeypatch.setattr(windows_service, "_service_is_stopped", Mock(return_value=False))
 
     with pytest.raises(RuntimeError, match="gestopptem Dienst"):
-        windows_service._manage_service(options)
+        windows_service._manage_service(_management_options(initialize=True))
 
     acl.verify_existing_service_paths.assert_called_once_with(paths)
     acl.protect_directory.assert_not_called()
     windows_service.load_or_create_configuration.assert_not_called()  # type: ignore[attr-defined]
     windows_service.load_service_configuration.assert_not_called()  # type: ignore[attr-defined]
     store.load_or_create.assert_not_called()
-    store.import_value.assert_not_called()
-
-
-def test_token_import_requires_consent_before_source_read_or_programdata_access(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _paths, acl, store, _factory, _configuration = _mock_management_dependencies(monkeypatch, tmp_path)
-    token_reader = Mock()
-    monkeypatch.setattr(windows_desktop_migration, "read_desktop_migration_token", token_reader)
-
-    with pytest.raises(RuntimeError, match="ausdrückliche Zustimmung"):
-        windows_service._manage_service(
-            _management_options(
-                initialize=True,
-                import_token="desktop-token.txt",
-                consent_token_import=False,
-            )
-        )
-
-    token_reader.assert_not_called()
-    acl.verify_existing_service_paths.assert_not_called()
-    acl.protect_directory.assert_not_called()
-    store.import_value.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -874,12 +821,8 @@ def test_port_preflight_and_health_management_fail_closed(
 
 
 def test_management_argument_contract_and_windows_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    parsed = windows_service._parse_management_arguments(
-        ["--initialize", "--import-token", "token.txt", "--consent-token-import"]
-    )
+    parsed = windows_service._parse_management_arguments(["--initialize"])
     assert parsed.initialize is True
-    assert parsed.import_token == "token.txt"
-    assert parsed.consent_token_import is True
 
     with pytest.raises(SystemExit):
         windows_service._parse_management_arguments(["--health-check", "--import-token", "token.txt"])

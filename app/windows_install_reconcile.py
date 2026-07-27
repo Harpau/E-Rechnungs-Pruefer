@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import secrets
 import subprocess
 from collections.abc import Callable
 from enum import IntEnum
 from pathlib import Path
 
 from . import (
-    windows_desktop_migration,
     windows_install_transaction,
     windows_service_metadata,
     windows_service_preflight,
@@ -37,10 +37,6 @@ def _default_observation_reader(path: Path) -> windows_install_transaction.Recov
     return observe_installation(path)
 
 
-def _desktop_binding() -> windows_desktop_migration.DesktopMigrationBinding | None:
-    return windows_desktop_migration.load_desktop_migration_binding(require_current_user=False)
-
-
 def _transaction_and_orphan(
     expected_executable: Path,
 ) -> tuple[
@@ -51,25 +47,6 @@ def _transaction_and_orphan(
     if orphan is not None:
         return None, orphan
     return windows_install_transaction.load_transaction(expected_executable), None
-
-
-def _require_matching_binding(
-    desktop: windows_desktop_migration.DesktopMigrationBinding,
-    state: windows_install_transaction.TransactionState,
-) -> None:
-    _require_matching_prepared_binding(desktop, state.prepared)
-
-
-def _require_matching_prepared_binding(
-    desktop: windows_desktop_migration.DesktopMigrationBinding,
-    prepared: windows_install_transaction.PreparedTransaction,
-) -> None:
-    if (
-        prepared.transaction_id != desktop.transaction_id
-        or prepared.desktop_reader_sid != desktop.reader_sid
-        or prepared.desktop_seal_sha256 != desktop.seal_sha256
-    ):
-        raise RuntimeError("Desktop- und Dienstzustand gehören nicht zur selben geschützten Installations-Transaktion.")
 
 
 def _expected_terminal_observation(
@@ -104,13 +81,13 @@ def _expected_terminal_observation(
 def _validate_observation_for_phase(
     state: windows_install_transaction.TransactionState,
     observation: windows_install_transaction.RecoveryObservation,
-) -> None:
+) -> windows_install_transaction.RecoveryPlan | None:
     if state.phase is windows_install_transaction.TransactionPhase.SERVICE_ROLLBACK_COMPLETE:
         expected = _expected_terminal_observation(state.prepared, committed=False)
         if observation != expected:
             raise RuntimeError("Der als zurückgerollt markierte Dienstzustand ist nicht exakt wiederhergestellt.")
-        return
-    windows_install_transaction.plan_recovery(state, observation)
+        return None
+    return windows_install_transaction.plan_recovery(state, observation)
 
 
 def classify_install_reconcile(
@@ -118,67 +95,28 @@ def classify_install_reconcile(
     *,
     _observe: ObservationReader = _default_observation_reader,
 ) -> ReconcileDirection:
-    """Classify a pending durable transaction without changing external state."""
+    """Classify a pending service-only transaction without changing external state."""
 
-    partial_desktop = windows_desktop_migration.desktop_migration_state_is_partial()
     partial_prepared = windows_install_transaction.load_partial_prepared_transaction(expected_executable)
-    desktop = None if partial_desktop else _desktop_binding()
     state, orphan = _transaction_and_orphan(expected_executable)
-    if partial_desktop:
-        if partial_prepared is not None or state is not None or orphan is not None:
-            raise RuntimeError("Ein partieller Desktop-Seal steht einem Dienst-Transaktionszustand gegenüber.")
-        return ReconcileDirection.CLEANUP
     if partial_prepared is not None:
         if state is not None or orphan is not None:
             raise RuntimeError("Ein partielles PREPARED-Manifest steht einem Dienst-Transaktionszustand gegenüber.")
-        if desktop is None:
-            return ReconcileDirection.CLEANUP
-        if partial_prepared.prepared is not None:
-            _require_matching_prepared_binding(desktop, partial_prepared.prepared)
-        if desktop.phase is not windows_desktop_migration.MigrationPhase.ROLLBACKABLE:
-            raise RuntimeError("Ein partielles PREPARED-Manifest besitzt keine rollbackfähige Desktopphase.")
-        return ReconcileDirection.ROLLBACK
+        return ReconcileDirection.CLEANUP
     if orphan is not None:
-        if desktop is not None:
-            raise RuntimeError("Ein verwaister Dienstmarker steht einem Desktop-Migrationszustand gegenüber.")
         return ReconcileDirection.CLEANUP
     if state is None:
-        if desktop is None:
-            return ReconcileDirection.NONE
-        if desktop.phase is windows_desktop_migration.MigrationPhase.ROLLBACKABLE:
-            return ReconcileDirection.ROLLBACK
-        raise RuntimeError("Eine fortgeschrittene Desktopmigration besitzt kein gebundenes Dienstmanifest.")
-    if desktop is None:
-        if state.phase is windows_install_transaction.TransactionPhase.PREPARED:
-            raise RuntimeError("Ein rollbackfähiges Dienstmanifest besitzt keinen Desktop-Migrationszustand.")
-        observation = _observe(expected_executable)
-        _validate_observation_for_phase(state, observation)
-        return ReconcileDirection.CLEANUP
+        return ReconcileDirection.NONE
 
-    _require_matching_binding(desktop, state)
     observation = _observe(expected_executable)
-    _validate_observation_for_phase(state, observation)
+    plan = _validate_observation_for_phase(state, observation)
     if state.phase is windows_install_transaction.TransactionPhase.PREPARED:
-        if desktop.phase not in {
-            windows_desktop_migration.MigrationPhase.ROLLBACKABLE,
-            windows_desktop_migration.MigrationPhase.SERVICE_TRANSITION,
-        }:
-            raise RuntimeError("Desktop- und Dienstphase widersprechen sich vor dem Commit.")
         return ReconcileDirection.ROLLBACK
-    if state.phase is windows_install_transaction.TransactionPhase.SERVICE_ROLLBACK_COMPLETE:
-        if desktop.phase not in {
-            windows_desktop_migration.MigrationPhase.ROLLBACKABLE,
-            windows_desktop_migration.MigrationPhase.SERVICE_TRANSITION,
-            windows_desktop_migration.MigrationPhase.SERVICE_ROLLBACK_COMPLETE,
-        }:
-            raise RuntimeError("Eine zurückgerollte Dienstphase widerspricht der Desktopphase.")
-        return ReconcileDirection.ROLLBACK
-    if desktop.phase not in {
-        windows_desktop_migration.MigrationPhase.SERVICE_TRANSITION,
-        windows_desktop_migration.MigrationPhase.SERVICE_COMMITTED,
-    }:
-        raise RuntimeError("Eine committed Dienstphase widerspricht der Desktopphase.")
-    return ReconcileDirection.COMMIT
+    if state.phase is windows_install_transaction.TransactionPhase.COMMIT_STARTED:
+        if plan is None:
+            raise RuntimeError("Für den committed Dienstzustand fehlt ein Recovery-Plan.")
+        return ReconcileDirection.COMMIT if plan.actions else ReconcileDirection.CLEANUP
+    return ReconcileDirection.CLEANUP
 
 
 def _machine_before() -> windows_install_transaction.MachineBefore:
@@ -208,21 +146,13 @@ def _require_baseline_topology(
 def begin_service_transition(
     expected_executable: Path,
     *,
-    token_transfer_consent: bool,
     target_service_running: bool,
 ) -> None:
-    """Seal a fresh service baseline before the first service-side mutation."""
+    """Persist a fresh service baseline before the first service-side mutation."""
 
-    if type(token_transfer_consent) is not bool or type(target_service_running) is not bool:
-        raise RuntimeError("Die Zielparameter der Diensttransaktion müssen strikt boolesch sein.")
+    if type(target_service_running) is not bool:
+        raise RuntimeError("Der Zielparameter der Diensttransaktion muss strikt boolesch sein.")
     windows_service_metadata.assert_no_pending_service_uninstall(expected_executable)
-    desktop = _desktop_binding()
-    if desktop is None or desktop.phase is not windows_desktop_migration.MigrationPhase.ROLLBACKABLE:
-        raise RuntimeError("Der Dienstübergang benötigt eine rollbackfähige geschützte Desktopmigration.")
-
-    token_path = windows_desktop_migration.protected_desktop_migration_token_path()
-    if token_transfer_consent != (token_path is not None):
-        raise RuntimeError("Tokenzustimmung und geschützter Desktop-Tokenbeleg stimmen nicht überein.")
 
     owned_service = windows_service_metadata.inspect_owned_service_metadata(expected_executable)
     service_existed = owned_service is not None
@@ -235,8 +165,7 @@ def begin_service_transition(
             )
         if service_metadata.get("service_sid_type") == 0:
             raise RuntimeError("Ein laufender Dienst ohne Dienst-SID besitzt keine rollbackfähige SCM-Baseline.")
-    if desktop.receipt.was_running and service_running:
-        raise RuntimeError("Desktop-App und Windows-Dienst dürfen vor der Migration nicht gleichzeitig laufen.")
+
     expected_target_running = not service_existed or service_running
     if target_service_running != expected_target_running:
         raise RuntimeError("Der angeforderte Dienst-Zielzustand bewahrt den stabilen Ausgangszustand nicht.")
@@ -247,64 +176,20 @@ def begin_service_transition(
     windows_service_metadata.assert_no_pending_service_uninstall(expected_executable)
     prepared = windows_install_transaction.prepare_transaction(
         expected_executable,
-        transaction_id=desktop.transaction_id,
-        desktop_reader_sid=desktop.reader_sid,
-        desktop_seal_sha256=desktop.seal_sha256,
+        transaction_id=secrets.token_hex(16),
         service_existed=service_existed,
         service_running=service_running,
         machine_before=machine_before,
         target_service_running=target_service_running,
-        token_transfer_consent=token_transfer_consent,
     )
     if owned_service is not None and prepared.service_metadata != owned_service[0]:
-        raise RuntimeError("Die SCM-Baseline änderte sich während der geschützten Übernahme.")
+        raise RuntimeError("Die SCM-Baseline änderte sich während der geschützten Vorbereitung.")
     if windows_service_metadata.inspect_owned_service_metadata(expected_executable) != owned_service:
-        raise RuntimeError("Der Dienstzustand änderte sich während der geschützten Übernahme.")
+        raise RuntimeError("Der Dienstzustand änderte sich während der geschützten Vorbereitung.")
     if windows_install_transaction.inspect_bundle_topology(expected_executable) != topology:
-        raise RuntimeError("Die Dienst-Bundles änderten sich während der geschützten Übernahme.")
+        raise RuntimeError("Die Dienst-Bundles änderten sich während der geschützten Vorbereitung.")
     if _machine_before() != machine_before:
-        raise RuntimeError("Der Maschinenzustand änderte sich während der geschützten Übernahme.")
-    windows_desktop_migration.advance_desktop_migration_phase(
-        windows_desktop_migration.MigrationPhase.SERVICE_TRANSITION
-    )
-
-
-def _synchronize_desktop_phase(
-    expected_executable: Path,
-    *,
-    direction: ReconcileDirection,
-) -> None:
-    state = windows_install_transaction.load_transaction(expected_executable)
-    desktop = _desktop_binding()
-    if state is None or desktop is None:
-        raise RuntimeError("Der nachzuweisende Phasenübergang besitzt keine vollständige Transaktionsbindung.")
-    _require_matching_binding(desktop, state)
-    if direction is ReconcileDirection.ROLLBACK:
-        if state.phase is not windows_install_transaction.TransactionPhase.SERVICE_ROLLBACK_COMPLETE:
-            raise RuntimeError("Die Desktop-Rollbackphase darf erst nach bewiesenem Dienst-Rollback fortschreiten.")
-        if desktop.phase is windows_desktop_migration.MigrationPhase.ROLLBACKABLE:
-            windows_desktop_migration.advance_desktop_migration_phase(
-                windows_desktop_migration.MigrationPhase.SERVICE_TRANSITION
-            )
-            desktop = _desktop_binding()
-            assert desktop is not None
-        if desktop.phase is windows_desktop_migration.MigrationPhase.SERVICE_TRANSITION:
-            windows_desktop_migration.advance_desktop_migration_phase(
-                windows_desktop_migration.MigrationPhase.SERVICE_ROLLBACK_COMPLETE
-            )
-        elif desktop.phase is not windows_desktop_migration.MigrationPhase.SERVICE_ROLLBACK_COMPLETE:
-            raise RuntimeError("Die Desktopphase ist nicht rollbackfähig.")
-        return
-    if direction is not ReconcileDirection.COMMIT:
-        raise RuntimeError("Eine unbekannte Desktop-Synchronisationsrichtung wurde angefordert.")
-    if state.phase is not windows_install_transaction.TransactionPhase.COMMIT_STARTED:
-        raise RuntimeError("Die Desktop-Commitphase darf erst nach persistentem Dienst-Commit fortschreiten.")
-    if desktop.phase is windows_desktop_migration.MigrationPhase.SERVICE_TRANSITION:
-        windows_desktop_migration.advance_desktop_migration_phase(
-            windows_desktop_migration.MigrationPhase.SERVICE_COMMITTED
-        )
-    elif desktop.phase is not windows_desktop_migration.MigrationPhase.SERVICE_COMMITTED:
-        raise RuntimeError("Die Desktopphase ist nicht commitfähig.")
+        raise RuntimeError("Der Maschinenzustand änderte sich während der geschützten Vorbereitung.")
 
 
 def _execute_service_recovery(
@@ -333,7 +218,6 @@ def _execute_service_recovery(
         plan=plan,
         operations=operations,
     )
-    _synchronize_desktop_phase(expected_executable, direction=direction)
 
 
 def finish_install_reconcile(
@@ -355,17 +239,7 @@ def finish_install_reconcile(
         )
         return direction
 
-    partial_desktop = windows_desktop_migration.desktop_migration_state_is_partial()
     partial_prepared = windows_install_transaction.load_partial_prepared_transaction(expected_executable)
-    if partial_desktop:
-        state, orphan = _transaction_and_orphan(expected_executable)
-        if partial_prepared is not None or state is not None or orphan is not None:
-            raise RuntimeError("Ein partieller Desktop-Seal darf keine Diensttransaktion finalisieren.")
-        windows_desktop_migration.clear_desktop_migration_seal()
-        return ReconcileDirection.CLEANUP
-    desktop = _desktop_binding()
-    if desktop is not None:
-        raise RuntimeError("Die Diensttransaktion darf nicht vor Abschluss der Desktopmigration finalisiert werden.")
     state, orphan = _transaction_and_orphan(expected_executable)
     if partial_prepared is not None:
         if state is not None or orphan is not None:
@@ -377,6 +251,7 @@ def finish_install_reconcile(
         return ReconcileDirection.CLEANUP
     if state is None:
         return ReconcileDirection.NONE
+
     operations = _recovery_factory(expected_executable)
     plan = windows_install_transaction.plan_recovery(state, operations.observe())
     windows_install_transaction.execute_recovery(
@@ -448,18 +323,11 @@ def mark_service_committed(
     _recovery_factory: RecoveryFactory = _default_recovery_factory,
     _commit_verifier: CommitVerifier = _verify_committed_service_state,
 ) -> ReconcileDirection:
-    desktop = _desktop_binding()
     state = windows_install_transaction.load_transaction(expected_executable)
-    if desktop is None or state is None:
-        raise RuntimeError("Der Dienst-Commit besitzt keine vollständige Desktop-/Diensttransaktion.")
-    _require_matching_binding(desktop, state)
+    if state is None:
+        raise RuntimeError("Der Dienst-Commit besitzt keine vollständige Diensttransaktion.")
     if state.phase is windows_install_transaction.TransactionPhase.SERVICE_ROLLBACK_COMPLETE:
         raise RuntimeError("Eine zurückgerollte Diensttransaktion darf nicht committed werden.")
-    if desktop.phase not in {
-        windows_desktop_migration.MigrationPhase.SERVICE_TRANSITION,
-        windows_desktop_migration.MigrationPhase.SERVICE_COMMITTED,
-    }:
-        raise RuntimeError("Die Desktopphase ist nicht für den Dienst-Commit vorbereitet.")
     operations = _recovery_factory(expected_executable)
     before_verification = operations.observe()
     _commit_verifier(expected_executable, state.prepared)
@@ -475,11 +343,4 @@ def mark_service_committed(
         transaction_id=state.prepared.transaction_id,
         observation=observation,
     )
-    _synchronize_desktop_phase(expected_executable, direction=ReconcileDirection.COMMIT)
     return ReconcileDirection.COMMIT
-
-
-def protected_token_transfer_path() -> Path | None:
-    """Expose only the hash-verified, admin-protected token source for setup."""
-
-    return windows_desktop_migration.protected_desktop_migration_token_path()

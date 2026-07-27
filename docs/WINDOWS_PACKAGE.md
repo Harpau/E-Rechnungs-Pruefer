@@ -2,18 +2,19 @@
 
 ## Betriebsarten und Artefakte
 
-Das Endbenutzerpaket läuft auf Windows x64 ohne separat installiertes Python, Java oder KoSIT. Version 1.4.0
-stellt zwei bewusst getrennte Betriebsarten bereit:
+Das Endbenutzerpaket läuft auf Windows x64 ohne separat installiertes Python, Java oder KoSIT. Seit Version 1.4.0
+stehen zwei bewusst getrennte Betriebsarten bereit:
 
 | Betriebsart | Installer | Installation | Start |
 |---|---|---|---|
-| Desktop/Tray | `E-Rechnungs-Pruefer-<Version>-Windows-x64-Setup.exe` | benutzerbezogen unter `%LOCALAPPDATA%\Programs\E-Rechnungs-Pruefer` | manuell oder optional nach Benutzeranmeldung |
+| Desktop/Tray | `E-Rechnungs-Pruefer-<Version>-Windows-x64-Setup.exe` | benutzerbezogen, standardmäßig unter `%LOCALAPPDATA%\Programs\E-Rechnungs-Pruefer` | manuell oder optional nach Benutzeranmeldung |
 | Windows-Dienst | `E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe` | systemweit unter `%ProgramFiles%\E-Rechnungs-Pruefer-Dienst` | manuell oder standardmäßig `Automatic (Delayed Start)` |
 
 Der Desktop-Installer behält seine eigene App-ID und benötigt keine Administratorrechte. Der Dienst-Installer hat
 eine andere App-ID, verlangt Administratorrechte und registriert niemals eine ausführbare Datei aus
 `%LOCALAPPDATA%` als Dienst. Beide Installer enthalten dieselbe Anwendung sowie die festgeschriebenen
-KoSIT-/XRechnung-Komponenten. Windows ARM64 ist kein Ziel dieser Pakete.
+KoSIT-/XRechnung-Komponenten. Der Desktop-Installer unterstützt weiterhin einen benutzerdefinierten Zielordner
+und behält ihn bei Updates bei. Windows ARM64 ist kein Ziel dieser Pakete.
 
 Zusätzlich entsteht
 `E-Rechnungs-Pruefer-<Version>-Windows-x64-Binaries.zip` sowie
@@ -171,7 +172,7 @@ Schreibberechtigungen führen zum geschlossenen Abbruch. Danach müssen die gesc
 dem neuen Token aktualisiert und der Node-RED-Prozess neu gestartet werden.
 Weitere Hinweise zur Identität und zum Betrieb vor Anmeldung stehen in [`NODE_RED.md`](NODE_RED.md).
 
-## Installation, Moduswechsel, Update und Deinstallation
+## Installation, Wechsel der Betriebsart, Update und Deinstallation
 
 Nach dem UAC-Wechsel wartet der Dienst-Installer, bis sein Assistent tatsächlich sichtbar ist, und versucht
 einmalig, ihn zu aktivieren. Windows darf diese Fokusübernahme ablehnen. In diesem Fall wird das Setup ohne
@@ -184,56 +185,46 @@ Installationspfad benötigt.
 Dienst-Setup und -Deinstaller erwerben vor ihrem ersten Recovery- oder Änderungsschritt atomar denselben
 systemweiten Named Mutex. Sie halten ihn über die vollständige mutierende Laufzeit einschließlich Commit,
 Rollback und Cleanup. Dadurch können auch aus verschiedenen interaktiven Windows-Sitzungen gestartete Installations-,
-Update- und Deinstallationsläufe nicht gleichzeitig auf SCM-, Bundle-, Migrations- oder Maschinenzustand zugreifen.
+Update- und Deinstallationsläufe nicht gleichzeitig auf SCM-, Bundle- oder Maschinenzustand zugreifen.
 Ein belegter oder nicht sicher prüfbarer Mutex bricht den neuen Lauf geschlossen ab. Ein nach einem Prozessabbruch
 übernommener Mutex führt weiterhin zuerst durch die persistente Recovery. Diese Vorgangssperre ist vom
 Backend-Mutex getrennt, der den gleichzeitigen Anwendungsbetrieb verhindert.
 
-Der Dienst-Installer prüft vor Änderungen vorhandene Desktop- und Dienstinstallationen, Autostarts,
-laufende Backends in allen Sitzungen, den festen Port, ProgramData und Tokens. Die registrierten und die bekannten
-standardmäßigen Desktoppfade aller lokalen Benutzerprofile einschließlich Entra-ID-Profilen werden inventarisiert.
-Dazu werden auch nicht geladene Benutzerhives unter einem Komponenten-Lock in eine administrative, temporäre
-Momentaufnahme kopiert, nur diese Kopie unter einem zufälligen installationsspezifischen Namen eingehängt und
-wieder ausgehängt; `NTUSER.DAT` und verpflichtende `NTUSER.MAN`-Hives werden berücksichtigt, ein
-nicht eindeutig prüfbares Profil bricht den Wechsel ab. Profil-, Registrierungs- und Quarantänepfade müssen auf
-einem festen lokalen Laufwerk liegen. Alle vorhandenen Komponenten werden no-follow geöffnet und ohne Schreib-
-oder Löschfreigabe bis zum Abschluss der jeweiligen Prüfung gehalten; UNC-/Gerätepfade, Reparse-Points/Junctions und
-Hardlinks werden vor einem tieferen Zugriff abgewiesen. Ein verbliebener produktspezifischer `Run`-Wert oder eine weitere
-v1.3-Installation bricht den Moduswechsel geschlossen ab und muss zunächst entfernt werden. Der im ursprünglichen
-interaktiven Benutzerkontext erzeugte Migrationsbeleg wird nach der erhöhten Inventur in einem festen,
-administratorgeschützten Installer-Zustand versiegelt. Der Originalbenutzer besitzt dort ausschließlich
-Leserechte, aber keine Lösch-, Schreib- oder Erstellrechte. Nach Commit oder Rollback entfernt nur der erhöhte,
-signierte Verwaltungsclient den Beleg. Commit und Rollback verwenden ausschließlich diese Momentaufnahme und
-nicht erneut den veränderbaren Tempbeleg oder HKCU-Pfad; so gibt eine UAC-Anmeldung mit abweichendem
-Administratorkonto nicht versehentlich dessen HKCU-Pfad frei. Ein Desktop-Backend und der Dienst dürfen nicht
-parallel betrieben werden. Maschinenzustand und Port werden durch den vorab aus dem signierten Setup extrahierten
-Öffnen-Client geprüft, bevor Produktdateien ersetzt werden. Das Setup muss normal aus der interaktiven
-Benutzeridentität gestartet werden; ein bereits erhöht gestarteter Migrationskontext wird geschlossen abgewiesen.
+Desktop und Dienst werden nicht automatisch ineinander überführt. Vor der Installation des Dienstmodus muss der
+Desktopmodus über seinen registrierten Uninstaller vollständig entfernt werden; dies umfasst den
+produktspezifischen HKCU-Autostart und den benutzerbezogenen Desktopzustand. Der Dienst-Installer beendet,
+quarantänisiert oder verändert keine Desktopinstallation. Umgekehrt verweigert der Desktop-Installer die
+Installation, solange der eigene Dienst registriert ist. Ein abgewiesener Installer darf weder die aktive
+Betriebsart noch deren API-Token, Autostart, SCM-Zustand oder ProgramData verändern.
 
-Plan und optionale Tokenübergabe werden nicht in Inno Setups privatem `{tmp}` erzeugt. Das erhöhte Setup stellt
-den Hilfsclient stattdessen in einem eindeutigen, kurzlebigen Transferbaum unter
-`%ProgramData%\E-Rechnungs-Pruefer-Installer-Transfer\<Setup-ID>` bereit. Geschützte DACLs geben `SYSTEM` und
-lokalen Administratoren Vollzugriff; `INTERACTIVE` erhält am Baum nur Durchquerung, am Blatt zusätzlich das
-Anlegen neuer Dateien und am Client Lesen/Ausführen. Vorhandene Transferdateien können dadurch nicht geändert
-oder gelöscht werden, und Tokeninhalte sind nicht allgemein lesbar. Beleg und Token besitzen eigene exakte DACLs
-für die konkrete Originalbenutzer-SID sowie `SYSTEM` und lokale Administratoren. Vor der Übernahme prüft der
-erhöhte Client exaktes Inventar, Besitzer, alle Pfadkomponenten no-follow und Hardlinkfreiheit. Danach entfernt
-das Setup nur die bekannten Dateien und leeren Verzeichnisse nichtrekursiv; unbekannte Einträge lassen die
-Bereinigung geschlossen fehlschlagen. Nach einem unterbrochenen Setup entfernt der nächste serialisierte
-Setup-Lauf ältere Transferblätter nur dann, wenn ihre DACL und ihr begrenztes Inventar exakt einem veröffentlichten
-Transfer oder einem noch privaten Vorbereitungsschritt entsprechen; jeder abweichende Rest blockiert weiterhin.
+Der erhöhte Dienst-Preflight inventarisiert den Desktop-Gegenmodus read-only über alle in der Windows-
+`ProfileList` registrierten lokalen und Entra-ID-Profile. Er prüft jeweils den Standardinstallationsordner, den
+produktspezifischen Uninstall-Key und den HKCU-Autostart. Geladene Hives liest er über `HKEY_USERS`. Für ein
+abgemeldetes Profil muss genau einer der beiden zulässigen Hives `NTUSER.DAT` oder `NTUSER.MAN` vorhanden und
+no-follow prüfbar sein. Er wird mit einem gegen Schreiben und Löschen gesperrten Lesehandle größenbegrenzt in
+einen einmaligen Speicher-Snapshot eingelesen und dort mit der exakt gepinnten Komponente Regipy ausgewertet.
+Der Parser läuft in einem eigenen Hilfsprozess, den der erhöhte Preflight je Hive nach spätestens 30 Sekunden
+beendet; die gesamte Offline-Inventur ist auf 60 Sekunden begrenzt. Timeout, Prozessfehler oder
+Speichererschöpfung blockieren die Installation geschlossen. Der Scanner mountet den Hive nicht, verwendet
+insbesondere kein `RegLoadAppKeyW` und legt keine temporäre Hive-Kopie an.
 
-Beim Wechsel **Desktop → Dienst** beendet ein Hilfsprozess in der ursprünglichen interaktiven Benutzeridentität
-die Tray-App kontrolliert und entfernt nur den erwarteten HKCU-Autostartwert. Die Übernahme eines vorhandenen,
-gültigen Desktop-API-Tokens ist eine eigene, standardmäßig nicht ausgewählte Option. Nur nach ausdrücklicher
-Zustimmung wird es kopiert und vor der Veröffentlichung mit der Maschinen-DACL neu geschützt. Bei einem
-Installationsfehler stellt das Setup den zuvor erfassten Autostartzustand wieder her. Die alte Desktopinstallation
-wird während der Transaktion durch Umbenennen ihrer Backend-EXE portunabhängig deaktiviert. Bei einem Fehler wird
-die EXE atomar zurückbenannt und ein zuvor laufender Desktop neu gestartet; nach erfolgreichem Wechsel wird die
-quarantänisierte Alt-EXE entfernt. Ein noch laufender Altprozess oder eine Installation in einem anderen Profil
-wird dabei nicht automatisch beendet oder verändert, sondern verhindert den Dienstmodus. Der registrierte
-Desktop-Uninstaller bleibt für die übrigen Desktopdateien
-verfügbar. Für die spätere Rückkehr nach Deinstallation des Dienstmodus wird der Desktopmodus neu installiert.
+Eine unvollständige Profilinventur, ungültige oder nicht feste Profilpfade, Reparse-Points, Junctions, Hardlinks,
+mehrdeutige Hives, ein Identitätswechsel während des Lesens, inkonsistente REGF-Prüfsummen, Sequenznummern oder
+HBin-Ketten sowie ein ungültiger Root-Key-Verweis oder unvollständig auswertbare relevante Schlüssel und Werte
+führen zum geschlossenen Abbruch. Die Registryprüfung erkennt dadurch auch vorhandene Desktopversionen in
+benutzerdefinierten Zielordnern abgemeldeter Profile. Diese Prüfung entfernt oder repariert keinen Gegenmodus.
+
+Das Diensttoken ist ein eigenständiges Maschinentoken und wird nicht aus dem Desktopprofil übernommen. Die
+frühere Inno-Option `/MIGRATEDESKTOPTOKEN=1` wird ersatzlos nicht mehr unterstützt. Nach einem Wechsel müssen
+Node-RED und andere Automatisierungen kontrolliert mit dem Token der neu installierten Betriebsart provisioniert
+werden. Für die Rückkehr zum Desktopmodus wird zuerst der Dienst deinstalliert und anschließend der
+Desktopmodus neu installiert.
+
+Unvollständige v1.4.0-Migrations-, Transfer-, Seal-, Quarantäne- oder daran gebundene Alttransaktionszustände
+werden von neueren Installern nicht übernommen und nicht automatisch wiederhergestellt. Eine betroffene
+Produktivmaschine muss anhand einer gesicherten Diagnose in einen dokumentiert sauberen Ausgangszustand gebracht
+werden; eine neue Installation darf nicht durch manuelles Löschen einzelner Transaktionsmarker erzwungen werden.
+Automatisierte Paket- und Freigabetests beginnen deshalb immer auf einer sauberen Wegwerf-VM ohne v1.4.0-Altzustand.
 
 Bei einem Dienstupdate wird der Dienst über SCM vor dem Ersetzen von Dateien deaktiviert und gestoppt; das Setup
 wartet auf `STOPPED`. Konfiguration und Token bleiben erhalten. Nur ein vor dem Update laufender Dienst wird nach
@@ -247,16 +238,16 @@ der alte Baum bleibt bis zum Commit als `service.rollback` erhalten. Dadurch ver
 neuen Version nicht mehr enthalten sind. Starttyp, verzögerter Start, Beschreibung, Service-SID und Recovery werden
 ausschließlich über SCM-Abfrage- und Änderungs-APIs gesichert und exakt restauriert.
 
-Plan, Seal und Apply des Desktopwechsels sind von der Diensttransaktion getrennte, dauerhaft belegte Phasen. Vor
-der ersten SCM- oder Maschinenmutation schreibt der Öffnen-Client außerdem ein unveränderliches
+Vor der ersten SCM- oder Maschinenmutation schreibt der Öffnen-Client ein unveränderliches
 `PREPARED`-Manifest unter
-`%ProgramFiles%\E-Rechnungs-Pruefer-Dienst\.installer-state`. Es bindet Transaktions-ID, Desktop-Seal,
-ursprüngliche SCM-Metadaten, Maschinenzustand und Zielzustand. Erst nachdem neuer Bundlebaum, stabiler Dienst,
+`%ProgramFiles%\E-Rechnungs-Pruefer-Dienst\.installer-state`. Es bindet Transaktions-ID, ursprüngliche
+SCM-Metadaten, Maschinenzustand und Zielzustand. Erst nachdem neuer Bundlebaum, stabiler Dienst,
 Maschinenzustand und Healthcheck bewiesen sind, wird dort atomar `COMMIT_STARTED` veröffentlicht. Ein späterer
-Setupstart reconciliert diese Belege vor dem normalen Preflight: vor `COMMIT_STARTED` ausschließlich zurück zur
-exakten Baseline, danach ausschließlich vorwärts zum bereits bewiesenen Ziel. Fehlende, fremde, widersprüchliche
-oder nicht eindeutig zuordenbare Belege beziehungsweise Bundle-/SCM-Zustände blockieren jede Recovery
-geschlossen. Die Belege werden erst nach Desktopabschluss und Servicebereinigung entfernt.
+Setupstart reconciliert einen unterstützten service-only Beleg vor dem normalen Preflight: vor
+`COMMIT_STARTED` ausschließlich zurück zur exakten Baseline, danach ausschließlich vorwärts zum bereits
+bewiesenen Ziel. Fehlende, fremde, widersprüchliche oder nicht eindeutig zuordenbare Belege beziehungsweise
+Bundle-/SCM-Zustände blockieren jede Recovery geschlossen. Die Belege werden erst nach der Servicebereinigung
+entfernt.
 
 Bei der Deinstallation wird der Dienst zuerst gestoppt, aus dem SCM gelöscht und sein vollständiges Verschwinden
 abgewartet; diese Mutation beginnt erst nach bestätigter Deinstallation und nur, wenn ImagePath und Dienstkonto
@@ -327,66 +318,63 @@ Zertifikatsspeicher verwenden. Der Release-Workflow nutzt AzureSignTool und den 
 in Azure Key Vault über GitHub OIDC. PFX-Dateien und dauerhafte Azure-Client-Secrets werden nicht in GitHub
 gespeichert.
 
-## Automatisierte Paket- und Migrationstests
+## Automatisierte Paket-, Modusausschluss- und Recoverytests
 
 Alle folgenden Skripte verändern reale Installer-, Dienst-, Registry- und Tokenzustände. Sie dürfen
 ausschließlich in einer sauberen, entbehrlichen Windows-VM beziehungsweise unter einer eigenen Testidentität
 laufen. `-ConfirmIsolatedEnvironment` bestätigt diese Voraussetzung, hebt die Vorabprüfungen aber nicht auf.
+Insbesondere dürfen keine unvollständigen v1.4.0-Migrations- oder Alttransaktionszustände vorhanden sein.
 
 ```powershell
-.\scripts\build_windows.ps1 -BuildElevatedMigrationTestInstaller
+.\scripts\build_windows.ps1 -BuildElevatedRecoveryTestInstaller
 .\scripts\test_windows_package.ps1 -ConfirmIsolatedEnvironment
-.\scripts\test_windows_service_package.ps1 -ConfirmIsolatedEnvironment -AllowElevatedMigrationTestContext
-.\scripts\test_windows_migration.ps1 -ConfirmIsolatedEnvironment -AllowElevatedMigrationTestContext
+.\scripts\test_windows_mode_exclusion.ps1 -ConfirmIsolatedEnvironment
+.\scripts\test_windows_service_package.ps1 `
+    -ConfirmIsolatedEnvironment -AllowElevatedRecoveryTestContext
 ```
 
-`-BuildElevatedMigrationTestInstaller` erzeugt zusätzlich unter `build\windows\test-installer` einen ausschließlich
-für den erhöhten, unbeaufsichtigten VM-Test bestimmten Dienst-Installer. Nur dieser Build enthält die interne
-Freigabe für `/ALLOWELEVATEDTESTCONTEXT=1`; der produktive Installer unter `dist` enthält und akzeptiert diesen
-Testpfad nicht. Der zusätzliche Test-Installer wird weder in das Prüfsummenmanifest noch in Release-Artefakte
-aufgenommen. Beim signierten Vorab-Probelauf wird jedem Testskript zusätzlich `-RequireSignature` übergeben.
+`-BuildElevatedRecoveryTestInstaller` erzeugt zusätzlich unter `build\windows\test-installer` einen ausschließlich
+für den erhöhten, unbeaufsichtigten VM-Recoverytest bestimmten Dienst-Installer. Nur dieser Build enthält die
+interne Freigabe für `/ALLOWELEVATEDTESTCONTEXT=1`; der produktive Installer unter `dist` enthält und akzeptiert
+diesen Testpfad nicht. Der zusätzliche Test-Installer wird weder in das Prüfsummenmanifest noch in
+Release-Artefakte aufgenommen. Beim signierten Vorab-Probelauf wird jedem Testskript zusätzlich
+`-RequireSignature` übergeben.
 
 Der Desktoptest deckt Installation, Browser-/API-Authentifizierung, PDF, bytegetreuen XML-Export, KoSIT,
 HKCU-Autostart, laufendes Update und Deinstallation ab. Der Diensttest prüft unter anderem Dienstkonto, ImagePath,
 Starttyp, konfigurierte und durch erzwungenen Prozessabbruch ausgelöste Recovery, SCM-Zustände, reine
 Loopback-Bindung, geschützte DACLs samt effektiven Rechten, Browser-IPC, den Global-Mutex, API-Tokenfälle,
-Tokenpersistenz über Stop/Start und Update, einen absichtlich fehlgeschlagenen Update-Rollback sowie
-den vollständigen Bundlebaum, die Entfernung veralteter Dateien, den manuellen Starttyp, einen frühen
-Portkonflikt und Deinstallation mit Erhalt und ausdrücklicher Löschung von ProgramData. Mit `-RequireSignature` werden zusätzlich
+Tokenpersistenz über Stop/Start und Update, einen absichtlich fehlgeschlagenen Update-Rollback sowie den
+vollständigen Bundlebaum, die Entfernung veralteter Dateien, den manuellen Starttyp, einen frühen Portkonflikt und
+Deinstallation mit Erhalt und ausdrücklicher Löschung von ProgramData. Mit `-RequireSignature` werden zusätzlich
 die installierten eigenen EXEs und Installer geprüft. Eine konkrete Windows-Testidentität wird als zusätzlicher
 Tokenleser provisioniert; der Test rotiert das Token bei gestopptem Dienst und weist nach, dass genau ihr
 schreibfreier ACE über Rotation, Update und Neuinstallation erhalten bleibt.
 
-Der Migrationstest installiert den veröffentlichten, signierten Desktopstand v1.3.0, aktiviert Autostart und
-Backend und wechselt dann mit ausdrücklicher Tokenübernahme zum Dienst. Er prüft kontrolliertes Beenden,
-Autostartentfernung, Tokenidentität, neue DACL, den Ausschluss eines parallelen Desktopbackends und zunächst einen
-absichtlich fehlgeschlagenen Moduswechsel mit Wiederherstellung von Desktopprozess, Desktop-EXE und Autostart.
-Nach Erfolg weist er die portunabhängige Entfernung der alten Backend-EXE nach. Ohne
-`-DesktopSetup130` lädt er den offiziellen v1.3.0-Installer vom zugehörigen GitHub Release.
+Der Modusausschlusstest installiert den aktuellen Desktopmodus mit Autostart, startet ihn bis zur Tokenanlage und
+weist nach, dass der Dienst-Installer mit einem Fehlercode abbricht, ohne Desktopprozess, Dateien, Token oder
+Autostart zu verändern. Zusätzlich prüft er einen abgemeldeten Benutzerhive mit benutzerdefiniertem
+v1.3-Installationspfad und getrennt mit reinem Autostart-Footprint. Der Hive darf dabei weder geladen noch
+byteinhaltlich verändert werden. Nach der regulären Desktopdeinstallation und Bereinigung der Testfootprints
+muss derselbe saubere Offline-Hive eine Dienstinstallation zulassen. Bei
+registriertem, für eine stabile Inhaltsprüfung gestopptem Dienst muss der Desktop-Installer seinerseits mit einem
+Fehlercode abbrechen und Dienstbundle, SCM-Metadaten sowie ProgramData byteinhaltlich unverändert lassen. Der Test
+übernimmt keine Tokens zwischen den Betriebsarten. Anschließend deinstalliert er den Dienst unter Erhalt von
+ProgramData, installiert und entfernt den Desktopmodus ohne Änderung dieses Maschinenzustands und weist bei der
+Dienstneuinstallation die Wiederverwendung desselben Maschinentokens nach.
 
-Auf einer Wegwerf-VM können zusätzlich zwei echte Prozessabbruch-Checkpoints gefahren werden:
+Auf einer Wegwerf-VM kann zusätzlich der echte service-only Prozessabbruch-Checkpoint gefahren werden:
 
 ```powershell
-.\scripts\test_windows_migration.ps1 `
-    -ConfirmIsolatedEnvironment -AllowElevatedMigrationTestContext `
-    -DesktopHardKillRecovery Immediate
 .\scripts\test_windows_service_package.ps1 `
-    -ConfirmIsolatedEnvironment -AllowElevatedMigrationTestContext `
+    -ConfirmIsolatedEnvironment -AllowElevatedRecoveryTestContext `
     -CommitHardKillRecovery Immediate
 ```
 
-Der erste Helfer beendet ausschließlich den von ihm gestarteten, anhand PID und kanonischem EXE-Pfad
-identifizierten Setup-Prozessbaum, nachdem Desktop-Seal und `Apply` nachgewiesen sind, aber noch kein
-Dienst-`PREPARED`-Manifest und kein SCM-Dienst existieren. Der isolierte Testinstaller hält diesen Zustand nur bei
-explizitem Hard-Kill-Testparameter an einer vom Testprozess kontrollierten, systemweiten Haltesperre fest; der
-zugehörige Testprozess akzeptiert den Checkpoint erst nach dem Bereitschaftssignal der vollständig abgeschlossenen
-Desktop-Verifikation. Der produktive Installer enthält diesen Pfad nicht. Derselbe Installer wird danach erneut
-gestartet; die frühe Recovery muss den Desktopzustand zunächst vollständig zurückrollen, bevor der separat
-protokollierte transaktionale Testfehler erreicht werden darf. Der zweite Helfer unterbricht ein
-Update erst nach einem hashgebundenen `COMMIT_STARTED`-Marker und startet denselben Installer erneut; dieser muss
-den bereits committed Dienst ausschließlich vorwärts bereinigen. Beide Helfer bestehen nur, wenn der vollständig
-geparste, DACL-geprüfte Marker nach dem harten Abbruch noch unverändert vorhanden ist. Ist das
-Checkpointfenster nicht eindeutig erreicht oder Setup bereits beendet, bricht der Test ab und meldet den
+Der Helfer unterbricht ein Update erst nach einem hashgebundenen `COMMIT_STARTED`-Marker und startet denselben
+Installer erneut; dieser muss den bereits committed Dienst ausschließlich vorwärts bereinigen. Der Test besteht
+nur, wenn der vollständig geparste, DACL-geprüfte Marker nach dem harten Abbruch noch unverändert vorhanden ist.
+Ist das Checkpointfenster nicht eindeutig erreicht oder Setup bereits beendet, bricht der Test ab und meldet den
 Checkpoint ausdrücklich nicht als ausgeführt.
 
 CI verwendet frische Windows-Runner für diese zerstörenden Paketprüfungen. Sie ersetzen keine manuelle
@@ -395,21 +383,16 @@ Endabnahme.
 ### Reboot-Abnahme der persistenten Recovery
 
 Ein realer Stromverlust oder Hypervisor-Reset wird bewusst nicht aus einem Testskript ausgelöst. Für die
-zweistufige VM-Abnahme halten die Hard-Kill-Helfer mit `LeaveForReboot` den exakt verifizierten persistenten
-Zustand fest und beenden sich anschließend absichtlich mit Exitcode `194`, also nicht als bestandener Gesamttest:
+zweistufige VM-Abnahme hält der Hard-Kill-Helfer mit `LeaveForReboot` den exakt verifizierten persistenten
+Zustand fest und beendet sich anschließend absichtlich mit Exitcode `194`, also nicht als bestandener Gesamttest:
 
 ```powershell
-.\scripts\test_windows_migration.ps1 `
-    -ConfirmIsolatedEnvironment -AllowElevatedMigrationTestContext `
-    -DesktopHardKillRecovery LeaveForReboot
-
-# Auf einer zweiten frischen VM beziehungsweise einem zweiten Snapshot:
 .\scripts\test_windows_service_package.ps1 `
-    -ConfirmIsolatedEnvironment -AllowElevatedMigrationTestContext `
+    -ConfirmIsolatedEnvironment -AllowElevatedRecoveryTestContext `
     -CommitHardKillRecovery LeaveForReboot
 ```
 
-Nach jedem Lauf:
+Nach dem Lauf:
 
 1. Vor dem Neustart anhand der Skriptausgabe und Exitcode `194` bestätigen, dass der gewünschte Marker nach dem
    harten Setupabbruch erhalten blieb. Ein anderer Abbruch ist kein durchgeführter Checkpoint.
@@ -417,17 +400,13 @@ Nach jedem Lauf:
    dem Checkpoint zurücksetzen.
 3. Nach Anmeldung exakt denselben Testinstaller erneut mit
    `"/VERYSILENT"`, `"/SUPPRESSMSGBOXES"`, `"/NORESTART"`,
-   `'/TASKS="systemstart"'` und `"/ALLOWELEVATEDTESTCONTEXT=1"` starten. Beim Desktopfall zusätzlich
-   `"/MIGRATEDESKTOPTOKEN=1"` übergeben.
-4. Beim Desktopfall einen laufenden, eigenen Dienst, das entfernte erwartete HKCU-Autostartziel, identische
-   Inhalte von Desktop- und Dienst-API-Token sowie die Abwesenheit der quarantänisierten Desktop-EXE nachweisen.
-   Beim Updatefall den laufenden eigenen Dienst, das unveränderte Token und die Abwesenheit der
+   `'/TASKS="systemstart"'` und `"/ALLOWELEVATEDTESTCONTEXT=1"` starten.
+4. Den laufenden eigenen Dienst, das unveränderte Token und die Abwesenheit der
    `commit-recovery-sentinel.txt` nachweisen.
-5. In beiden Fällen die Abwesenheit von `service.new`, `service.rollback`, `service.obsolete`,
-   `%ProgramFiles%\E-Rechnungs-Pruefer-Dienst\.installer-state` und
-   `%ProgramData%\E-Rechnungs-Pruefer-Installer-State` prüfen. Ein verbliebener oder widersprüchlicher Zustand
-   zählt nicht als erfolgreiche Recovery und darf nicht manuell gelöscht werden, bevor Diagnoseinformationen
-   gesichert sind.
+5. Die Abwesenheit von `service.new`, `service.rollback`, `service.obsolete` und
+   `%ProgramFiles%\E-Rechnungs-Pruefer-Dienst\.installer-state` prüfen. Ein verbliebener oder widersprüchlicher
+   Zustand zählt nicht als erfolgreiche Recovery und darf nicht manuell gelöscht werden, bevor
+   Diagnoseinformationen gesichert sind.
 
 ## Manuelle Windows-11-Abnahme vor Veröffentlichung
 
@@ -435,15 +414,22 @@ Vor einem öffentlichen Release ist das signierte Vorab-Artefakt auf einer saube
 Windows-11-x64-VM zu prüfen:
 
 1. Bundle-ZIP entpacken und Signaturen sowie SHA-256-Datei aller fünf eigenen Dateien und des ZIPs prüfen.
-2. Desktopmodus einschließlich Tray, Standardbrowser und optionalem HKCU-Autostart prüfen.
-3. Den Dienst mit verzögertem Systemstart installieren und Windows tatsächlich neu starten.
-4. Vor der ersten Benutzeranmeldung über Dienststatus und technische Logs nachweisen, dass der Dienst erfolgreich
+2. Desktopmodus einschließlich Tray, Standardbrowser und optionalem HKCU-Autostart prüfen und anschließend
+   regulär deinstallieren.
+3. Unter einer echten zweiten lokalen Testidentität die signierte v1.3.0-Desktopversion in einem
+   benutzerdefinierten Zielordner mit Autostart installieren, diese Identität abmelden und bestätigen, dass ihr
+   Benutzerhive nicht mehr unter `HKEY_USERS` geladen ist. Aus der administrativen Testidentität muss das
+   Dienstsetup mit Fehlercode abbrechen und Installationsbaum, Hive-Datei, Token und Autostart des abgemeldeten
+   Profils unverändert lassen. Danach den Desktopmodus unter der zweiten Identität regulär entfernen und wieder
+   abmelden.
+4. Den Dienst mit verzögertem Systemstart installieren und Windows tatsächlich neu starten.
+5. Vor der ersten Benutzeranmeldung über Dienststatus und technische Logs nachweisen, dass der Dienst erfolgreich
    gestartet und nur an `127.0.0.1` gebunden ist.
-5. Nach Anmeldung den Öffnen-Client, API-Authentifizierung, PDF/XML und echte KoSIT-Annahme und -Ablehnung prüfen.
-6. Falls der gesamte Node-RED-Ablauf vor Anmeldung gefordert ist, auch Node-RED unter der vorgesehenen
+6. Nach Anmeldung den Öffnen-Client, API-Authentifizierung, PDF/XML und echte KoSIT-Annahme und -Ablehnung prüfen.
+7. Falls der gesamte Node-RED-Ablauf vor Anmeldung gefordert ist, auch Node-RED unter der vorgesehenen
    Dienstidentität betreiben und den vollständigen Mailflow vor einer interaktiven Anmeldung abnehmen.
-7. Update, Migration, beide Hard-Kill-/Reboot-Recovery-Richtungen und beide Deinstallationsvarianten sowie
-   Defender/SmartScreen kontrollieren.
+8. Gegenseitigen Installationsausschluss, Update, service-only Hard-Kill-/Reboot-Recovery und beide
+   Deinstallationsvarianten sowie Defender/SmartScreen kontrollieren.
 
 ## Drittkomponenten
 

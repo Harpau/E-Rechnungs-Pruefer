@@ -37,6 +37,20 @@ werden. Im Desktopmodus liegt der Quellwert unter
 `%ProgramData%\E-Rechnungs-Pruefer\api-token.txt`; dessen geschützte DACL erlaubt absichtlich nicht allen lokalen
 Benutzern das Lesen.
 
+### Wechsel zwischen Desktop- und Dienstmodus
+
+Desktop- und Dienstmodus besitzen absichtlich getrennte API-Tokens. Der Dienst-Installer liest oder übernimmt das
+Desktoptoken nicht; die frühere Setupoption `/MIGRATEDESKTOPTOKEN=1` wird ersatzlos nicht mehr unterstützt. Vor
+einem Wechsel wird die bisherige Betriebsart vollständig deinstalliert und danach die andere installiert.
+Anschließend muss `EINVOICE_API_TOKEN` kontrolliert mit dem Token der neuen Betriebsart aktualisiert und Node-RED
+neu gestartet werden. Bis zur Aktualisierung sind `403`-Antworten mit dem alten Token erwartetes Verhalten.
+
+Wird der Dienst ohne Löschung von Maschinenkonfiguration, API-Token und technischen Logs deinstalliert, bleibt
+sein geschütztes ProgramData erhalten. Es gehört weiterhin ausschließlich zum Dienstmodus: Eine zwischenzeitliche
+Desktopinstallation verwendet und verändert dieses Token nicht. Bei einer späteren Dienstneuinstallation wird
+das erhaltene Maschinentoken weiterverwendet; Node-RED muss dann nur neu provisioniert werden, falls sein
+Credential-Speicher zwischenzeitlich auf das Desktoptoken umgestellt wurde.
+
 ### Windows-Identität und sichere Provisionierung
 
 Vor der Produktivschaltung muss festgestellt werden, unter welcher Windows-Identität Node-RED tatsächlich läuft.

@@ -153,24 +153,6 @@ def test_token_store_creates_persists_and_rotates_with_acl_before_replace(tmp_pa
         assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_token_migration_requires_explicit_consent_and_preserves_target_on_failure(tmp_path: Path) -> None:
-    target = tmp_path / "service" / TOKEN_FILE_NAME
-    target.parent.mkdir()
-    target.write_text("a" * 43 + "\n", encoding="ascii")
-    store = TokenStore(
-        target,
-        protect_directory=lambda _candidate: None,
-        protect_file=lambda _candidate: None,
-    )
-
-    with pytest.raises(RuntimeError, match="ausdrückliche Zustimmung"):
-        store.import_value("m" * 43, consent=False)
-    assert target.read_text(encoding="ascii") == "a" * 43 + "\n"
-
-    assert store.import_value("m" * 43, consent=True) == "m" * 43
-    assert target.read_text(encoding="ascii") == "m" * 43 + "\n"
-
-
 def test_windows_machine_path_rejects_reparse_parent_before_file_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

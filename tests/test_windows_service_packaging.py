@@ -14,10 +14,38 @@ def test_desktop_installer_remains_a_separate_unprivileged_option() -> None:
 
     assert "AppId={{D33FD9E5-0C5E-48ED-BF0C-E9D2962A45DF}" in installer
     assert r"DefaultDirName={localappdata}\Programs\E-Rechnungs-Pruefer" in installer
+    assert "DisableDirPage=yes" not in installer
     assert "PrivilegesRequired=lowest" in installer
     assert 'Root: HKCU; Subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Run"' in installer
     assert 'Name: "autostart"' in installer
-    assert "RegKeyExists(HKLM64, 'SYSTEM\\CurrentControlSet\\Services\\ERechnungsPrueferService')" in installer
+    assert "function ServiceFootprintExists: Boolean;" in installer
+    assert "'SYSTEM\\CurrentControlSet\\Services\\ERechnungsPrueferService'" in installer
+    assert (
+        "'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{8824D15C-7F4E-4CB2-B957-FBC26B923363}_is1'"
+    ) in installer
+    assert "DirExists(ExpandConstant('{autopf64}\\E-Rechnungs-Pruefer-Dienst'))" in installer
+    assert "{commonappdata}\\E-Rechnungs-Pruefer" not in installer
+    assert "if ServiceFootprintExists then" in installer
+    assert 'unter "Installierte Apps"' in installer
+
+    prepare = installer[installer.index("function PrepareToInstall") : installer.index("procedure DeinitializeSetup")]
+    assert prepare.index("AcquireSetupUninstallMutex") < prepare.index("ServiceFootprintExists")
+    assert prepare.index("ServiceFootprintExists") < prepare.index("StopRunningApplication")
+    assert (
+        "ReleaseSetupUninstallMutex;"
+        in installer[
+            installer.index("procedure DeinitializeSetup") : installer.index(
+                "function ShouldRestartBackgroundAfterUpdate"
+            )
+        ]
+    )
+    assert (
+        "AcquireSetupUninstallMutex"
+        in installer[
+            installer.index("function InitializeUninstall") : installer.index("procedure DeinitializeUninstall")
+        ]
+    )
+    assert "ReleaseSetupUninstallMutex;" in installer[installer.index("procedure DeinitializeUninstall") :]
 
 
 def test_service_installer_is_machine_wide_and_fail_closed() -> None:
@@ -45,11 +73,9 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
         "--snapshot-service-metadata",
         "--reconcile-service-uninstall",
         "--assert-no-pending-service-uninstall",
+        "--assert-no-desktop-installation",
         "--preflight-machine",
         "--preflight-port",
-        "--verify-migration-context",
-        "--commit-desktop-migration",
-        "--clear-desktop-migration-seal",
         r'DestDir: "{app}\service.new"',
         r'Name: "{group}\E-Rechnungs-Prüfer öffnen"',
         r'Filename: "{app}\service\{#OpenClientExeName}"',
@@ -61,7 +87,6 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
         "ServiceObsoleteDir",
         "RemoveServiceForConfirmedUninstall",
         "TESTFAILAFTERCONFIG",
-        "--consent-token-import",
         "--verify-state",
         "PurgeMachineData",
         "MB_DEFBUTTON2",
@@ -70,7 +95,7 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
         "--purge-runtime-state",
         "--purge-machine-state",
         "RemoveOwnedServiceDirectories",
-        "#ifdef AllowElevatedMigrationTestContext",
+        "#ifdef AllowElevatedRecoveryTestContext",
         "ALLOWELEVATEDTESTCONTEXT",
         "--disable-service-delayed-start",
     ):
@@ -83,8 +108,24 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     assert "RegDeleteValue" not in installer
     assert "for Item in Services do" not in installer
     assert "ServiceObject := Services.ItemIndex(0);" in installer
-    assert "TokenMigrationPage.Selected[" not in installer
-    assert installer.count("TokenMigrationPage.Values[0]") == 7
+    for removed in (
+        "TokenMigrationPage",
+        "MIGRATEDESKTOPTOKEN",
+        "ExecAsOriginalUser",
+        "PrepareOriginalUserTransfer",
+        "PrepareDesktopMigration",
+        "CommitDesktopMigration",
+        "RollbackDesktopMigration",
+        "DesktopHardKill",
+        "--import-token",
+        "--consent-token-import",
+        "--token-transfer-consent",
+        "--verify-migration-context",
+        "--commit-desktop-migration",
+        "--clear-desktop-migration-seal",
+        "--setup-diagnostic",
+    ):
+        assert removed not in installer
     assert 'Source: "{#OpenClientFile}"; DestDir: "{app}"' not in installer
     assert (
         'Source: "{#OpenClientFile}"; DestDir: "{app}\\service.new"; Flags: ignoreversion uninsneveruninstall'
@@ -92,7 +133,7 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     assert "--service-snapshot" not in installer
     assert r"{tmp}\service-metadata" not in installer
     assert "--clear-service-metadata" in installer
-    assert installer.count("ALLOWELEVATEDTESTCONTEXT") == 3
+    assert installer.count("ALLOWELEVATEDTESTCONTEXT") == 1
     assert installer.count("ServiceBelongsToThisInstallation(ServiceObject)") >= 3
     assert "CompareText(String(ServiceObject.State), 'Stopped') <> 0" not in installer
     assert installer.count("ServiceWasRunning := CompareText(ServiceState, 'Running') = 0;") == 4
@@ -126,23 +167,12 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     assert update_stop.index("if not ServiceStateIsSupported(ServiceState)") < update_stop.index("if not Sc('config")
     assert installer.index("procedure ConfigureInstalledService") < installer.index("procedure DeinitializeSetup")
     done_step = installer[installer.index("procedure CurStepChanged") : installer.index("procedure InitializeWizard")]
-    assert done_step.index("CommitDesktopMigration;") < done_step.index("InstallSucceeded := True;")
-    assert done_step.index("ClearDesktopMigrationSeal") < done_step.index("InstallSucceeded := True;")
-    seal_cleanup = installer[
-        installer.index("function ClearDesktopMigrationSeal") : installer.index("function VerifyDesktopMigrationOwner")
-    ]
-    assert "ExecChecked(" in seal_cleanup
-    assert "InternalOpenClient" in seal_cleanup
-    assert "ExecAsOriginalUser(" not in seal_cleanup
-    prepare_migration = installer[
-        installer.index("function PrepareDesktopMigration") : installer.index("function BeginServiceTransition")
-    ]
     assert (
-        prepare_migration.index("--plan-desktop-migration")
-        < prepare_migration.index("--seal-desktop-migration")
-        < prepare_migration.index("MigrationPrepared := True;")
-        < prepare_migration.index("--apply-desktop-migration")
-        < prepare_migration.index("--verify-applied-desktop-migration")
+        done_step.index("CommitServiceBundle")
+        < done_step.index("MarkServiceCommitted")
+        < done_step.index("FinalizeServiceBundle")
+        < done_step.index("FinishTerminalInstallTransaction")
+        < done_step.index("InstallSucceeded := True;")
     )
     clear_metadata = installer[
         installer.index("function ClearOriginalServiceMetadata") : installer.index("function Sc(")
@@ -220,6 +250,12 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
         < preflight.index("ReconcilePendingInstall")
     )
     assert preflight.index("ReconcilePendingInstall") < preflight.index("--preflight-machine")
+    assert (
+        preflight.index("--assert-no-desktop-installation")
+        < preflight.index("--assert-no-pending-service-uninstall")
+        < preflight.index("ReconcilePendingInstall")
+    )
+    assert preflight.count("--assert-no-desktop-installation") == 2
     assert "(not ServiceWasRunning) and CheckForMutexes(BackendMutexName)" in preflight
     assert "(not ServiceWasRunning) and not ExecChecked(" in preflight
     assert preflight.count("CheckForMutexes(BackendMutexName)") == 2
@@ -232,8 +268,8 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     assert "ServiceWasRunning" not in post_stop
     assert (
         preflight.index("(not ServiceWasRunning) and CheckForMutexes(BackendMutexName)")
-        < preflight.index("PrepareDesktopMigration")
         < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
+        < preflight.rindex("--assert-no-desktop-installation")
         < preflight.index("ForceDirectories(ExpandConstant('{app}'))")
         < preflight.index("BeginServiceTransition")
         < preflight.index("StopExistingServiceForUpdate")
@@ -246,7 +282,7 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
             "ForceDirectories(ExpandConstant('{app}'))"
         )
     ]
-    assert "if not RollbackPreparedInstall then" in initial_port_conflict
+    assert "if not RollbackPreparedInstall then" not in initial_port_conflict
     assert "vor dem Ersetzen von Dienstbinärdateien" in initial_port_conflict
 
 
@@ -278,7 +314,7 @@ def test_service_configuration_failures_abort_through_the_transactional_install_
 
     propagate_failure = installer[
         installer.index("function PropagateServiceConfigurationFailure") : installer.index(
-            "#ifdef AllowElevatedMigrationTestContext",
+            "#ifdef AllowElevatedRecoveryTestContext",
             installer.index("function PropagateServiceConfigurationFailure"),
         )
     ]
@@ -289,7 +325,7 @@ def test_service_configuration_failures_abort_through_the_transactional_install_
     assert "RaiseException(" not in propagate_failure
 
     test_fault_start = installer.index(
-        "#ifdef AllowElevatedMigrationTestContext",
+        "#ifdef AllowElevatedRecoveryTestContext",
         installer.index("procedure RecordServiceConfigurationFailure"),
     )
     test_fault = installer[test_fault_start : installer.index("#endif", test_fault_start)]
@@ -320,7 +356,7 @@ def test_service_installer_serializes_setup_and_uninstall_mutations() -> None:
     installer = _read("packaging/windows/service_installer.iss")
     package_test = _read("scripts/test_windows_service_package.ps1")
 
-    assert "SetupUninstallMutexName = 'Global\\E-Rechnungs-Pruefer-Service-Setup-Uninstall';" in installer
+    assert "SetupUninstallMutexName = 'Global\\E-Rechnungs-Pruefer-Setup-Uninstall';" in installer
     assert "SetupUninstallMutexName = BackendMutexName" not in installer
     for expected in (
         "function CreateMutexW(",
@@ -401,7 +437,7 @@ def test_service_installer_serializes_setup_and_uninstall_mutations() -> None:
             "function Wait-PathsAbsent"
         )
     ]
-    assert '"Global\\E-Rechnungs-Pruefer-Service-Setup-Uninstall"' in wait_for_release
+    assert '"Global\\E-Rechnungs-Pruefer-Setup-Uninstall"' in wait_for_release
     assert "[Threading.Mutex]::OpenExisting($Name)" in wait_for_release
     assert "$Mutex.WaitOne($Seconds * 1000)" in wait_for_release
     assert "catch [Threading.WaitHandleCannotBeOpenedException]" in wait_for_release
@@ -595,205 +631,40 @@ def test_service_installer_activates_the_visible_wizard_once_after_show() -> Non
         assert forbidden_focus_hack not in installer
 
 
-def test_service_installer_stages_every_original_user_call_in_a_unique_programdata_leaf() -> None:
+def test_service_installer_contains_no_desktop_migration_or_diagnostic_bridge() -> None:
     installer = _read("packaging/windows/service_installer.iss")
 
-    prepare_transfer = installer[
-        installer.index("function PrepareOriginalUserTransfer") : installer.index(
-            "function ClearDesktopMigrationTransfer"
-        )
-    ]
-    assert "TransferLeaf := ExtractFileName(ExpandConstant('{tmp}'));" in prepare_transfer
-    assert "'{commonappdata}\\E-Rechnungs-Pruefer-Installer-Transfer') + '\\' + TransferLeaf" in prepare_transfer
-    assert "OriginalUserOpenClientPath :=" in prepare_transfer
-    assert "MigrationTransferDirectory + '\\{#OpenClientExeName}'" in prepare_transfer
-    assert "MigrationTransferDirectory + '\\desktop-migration-receipt.json'" in prepare_transfer
-    assert "MigrationTransferDirectory + '\\desktop-api-token-transfer.txt'" in prepare_transfer
-    assert "--prepare-desktop-migration-transfer" in prepare_transfer
-    assert '--client-source "' + "' + InternalOpenClient +" in prepare_transfer
-    assert '--client-name "{#OpenClientExeName}"' in prepare_transfer
-    assert "InternalOpenClient" in prepare_transfer
-
-    original_exec = installer[
-        installer.index("function ExecOriginalWithExitCode") : installer.index(
-            "function CaptureOriginalServiceMetadata"
-        )
-    ]
-    assert original_exec.count("OriginalUserOpenClientPath") == 2
-    assert "{tmp}" not in original_exec
-    assert "{app}" not in original_exec
-
-    preflight = installer[
-        installer.index("function PrepareToInstall") : installer.index("procedure ConfigureInstalledService")
-    ]
-    assert (
-        preflight.index("AcquireSetupUninstallMutex")
-        < preflight.index("ExtractTemporaryFile")
-        < preflight.index("PrepareOriginalUserTransfer")
-        < preflight.index("--assert-no-pending-service-uninstall")
-        < preflight.index("ReconcilePendingInstall")
-        < preflight.index("OriginalUserOpenClientPath, '--verify-migration-context'")
-    )
-    assert "InternalOpenClient, '--verify-migration-context'" not in preflight
-
-    prepare_migration = installer[
-        installer.index("function PrepareDesktopMigration") : installer.index("function BeginServiceTransition")
-    ]
-    assert r"{tmp}\desktop-migration-receipt.json" not in prepare_migration
-    assert r"{tmp}\desktop-api-token-transfer.txt" not in prepare_migration
-    assert '--transfer-directory "' + "' + MigrationTransferDirectory +" in prepare_migration
-    assert '--client-name "{#OpenClientExeName}"' in prepare_migration
-
-    clear_transfer = installer[
-        installer.index("function ClearDesktopMigrationTransfer") : installer.index("function ExecOriginalWithExitCode")
-    ]
-    assert "--clear-desktop-migration-transfer" in clear_transfer
-    assert "MigrationTransferDirectory = ''" in clear_transfer
-    assert "DelTree(" not in clear_transfer
-    assert "RemoveDir(" not in clear_transfer
-
-    deinitialize = installer[
-        installer.index("procedure DeinitializeSetup") : installer.index("function InitializeUninstall")
-    ]
-    rollback_body, cleanup_body = deinitialize.split("finally", maxsplit=1)
-    assert rollback_body.index("if InstallSucceeded then") < rollback_body.index("if not SetupUninstallMutexOwned then")
-    assert "ClearDesktopMigrationTransfer" not in rollback_body
-    assert cleanup_body.index("if MigrationTransferDirectory <> '' then") < cleanup_body.index(
-        "ClearDesktopMigrationTransfer"
-    )
-    assert cleanup_body.index("ClearDesktopMigrationTransfer") < cleanup_body.index("ReleaseSetupUninstallMutex")
-
-    assert installer.count("ExecAsOriginalUser(") == 2
-    assert installer.count("OriginalUserOpenClientPath") >= 5
-
-
-def test_test_installer_logs_only_allowlisted_internal_open_client_diagnostics() -> None:
-    installer = _read("packaging/windows/service_installer.iss")
-    diagnostic_support = installer[
-        installer.index("function IsKnownSetupDiagnosticStage") : installer.index("function ExecChecked")
-    ]
-
-    assert "#ifdef AllowElevatedMigrationTestContext" in diagnostic_support
-    assert "setup-action-diagnostic-v1.txt" in installer
-    assert "ERP_SETUP_DIAGNOSTIC_V1" in installer
-    assert '--setup-diagnostic "' + "' + DiagnosticPath + '" in diagnostic_support
-    assert "MigrationTransferDirectory + '\\' + SetupDiagnosticFileName" in diagnostic_support
-    assert "CompareText(FileName, InternalOpenClient)" in diagnostic_support
-    assert "CompareText(FileName, OriginalUserOpenClientPath)" not in diagnostic_support
-    assert "FileSize(DiagnosticPath, DiagnosticSize)" in diagnostic_support
-    assert "DiagnosticSize > 256" in diagnostic_support
-    assert "LoadStringFromFile(DiagnosticPath, RawDiagnostic)" in diagnostic_support
-    assert (
-        "ParseSetupDiagnostic(\n        Diagnostic, Stage, ErrorCode, Origin, Detail, WinError)" in diagnostic_support
-    )
-    assert "IsKnownSetupDiagnosticStage(Stage)" in diagnostic_support
-    assert "IsKnownSetupDiagnosticError(ErrorCode)" in diagnostic_support
-    assert "IsKnownSetupDiagnosticOrigin(Origin)" in diagnostic_support
-    assert "IsKnownSetupDiagnosticDetail(Detail)" in diagnostic_support
-    assert "IsSetupDiagnosticWinError(WinError)" in diagnostic_support
-    assert "DeleteFile(DiagnosticPath)" in diagnostic_support
-    assert "GetExceptionMessage" not in diagnostic_support
-    diagnostic_consumer = diagnostic_support[diagnostic_support.index("procedure ConsumeSetupDiagnostic") :]
-    assert "+ DiagnosticPath" not in diagnostic_consumer
-    assert "+ Diagnostic" not in diagnostic_consumer
-
-    for safe_code in (
-        "preflight-machine",
-        "preflight-port",
-        "plan-migration",
-        "apply-migration",
-        "runtime-error",
-        "windows-api-error",
-        "os-error",
-        "internal-error",
-        "hive-canonicalize-file",
-        "hive-canonicalize-tail",
-        "hive-recovery-directory",
-        "hive-support-file",
-        "hive-remove",
-        "hive-wait-empty",
-        "hive-wait-absent",
-        "locked-path",
-        "lock-open",
-        "path-disappeared",
-        "security-read",
-        "owner",
-        "dacl-missing",
-        "dacl-control",
-        "unprotected-exact-explicit",
-        "ace-count",
-        "ace-read",
-        "ace-type",
-        "ace-flags",
-        "ace-mask",
-        "ace-sid",
-        "ace-duplicate",
-        "ace-completeness",
-        "security-write",
+    for removed in (
+        "MigrationTransferDirectory",
+        "OriginalUserOpenClientPath",
+        "ExecAsOriginalUser",
+        "DesktopMigration",
+        "desktop-migration",
+        "MIGRATEDESKTOPTOKEN",
+        "TokenMigrationPage",
+        "DesktopHardKill",
+        "TESTDESKTOPHARDKILLHOLD",
+        "SetupDiagnostic",
+        "--setup-diagnostic",
+        "Installer-Transfer",
     ):
-        assert safe_code in diagnostic_support
-
-    exec_checked = installer[installer.index("function ExecChecked") : installer.index("function ExecWithExitCode")]
-    exec_with_exit_code = installer[
-        installer.index("function ExecWithExitCode") : installer.index("function PrepareOriginalUserTransfer")
-    ]
-    for helper in (exec_checked, exec_with_exit_code):
-        assert "AddSetupDiagnosticParameter" in helper
-        assert "ConsumeSetupDiagnostic" in helper
-        assert "ExitCode = 1" in helper
-    original_exec = installer[
-        installer.index("function ExecOriginalWithExitCode") : installer.index(
-            "function CaptureOriginalServiceMetadata"
-        )
-    ]
-    assert "AddSetupDiagnosticParameter" not in original_exec
-    assert "ConsumeSetupDiagnostic" not in original_exec
+        assert removed not in installer
 
 
-def test_open_client_desktop_health_probe_stays_free_of_server_dependencies() -> None:
-    open_client_spec = _read("packaging/windows/e_rechnungs_pruefer_open_client.spec")
-    desktop_migration = _read("app/windows_desktop_migration.py")
-    loopback_health = _read("app/loopback_health.py")
-
-    assert '"uvicorn"' in open_client_spec
-    health_probe = desktop_migration[
-        desktop_migration.index("def _desktop_health_is_ready") : desktop_migration.index(
-            "def _desktop_runtime_has_start_proof"
-        )
-    ]
-    assert "from .loopback_health import health_is_ready" in health_probe
-    assert "server_runtime" not in health_probe
-    assert "uvicorn" not in loopback_health
-    assert "from .server_runtime" not in loopback_health
-
-
-def test_service_installer_orders_durable_migration_recovery_around_the_commit_point() -> None:
+def test_service_installer_orders_durable_service_only_recovery_around_commit() -> None:
     installer = _read("packaging/windows/service_installer.iss")
-
-    for expected in (
-        "--verify-desktop-migration-owner",
-        "--prepare-install-reconcile",
-        "--finish-install-reconcile",
-        "--plan-desktop-migration",
-        "--seal-desktop-migration",
-        "--apply-desktop-migration",
-        "--verify-applied-desktop-migration",
-        "--begin-service-transition",
-        "--mark-service-rollback-complete",
-        "--mark-service-committed",
-    ):
-        assert expected in installer
 
     preflight = installer[
         installer.index("function PrepareToInstall") : installer.index("procedure ConfigureInstalledService")
     ]
     assert (
         preflight.index("ExtractTemporaryFile")
+        < preflight.index("--assert-no-desktop-installation")
         < preflight.index("ReconcilePendingInstall")
         < preflight.index("--preflight-machine")
         < preflight.index("(not ServiceWasRunning) and CheckForMutexes(BackendMutexName)")
-        < preflight.index("PrepareDesktopMigration")
         < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
+        < preflight.rindex("--assert-no-desktop-installation")
         < preflight.index("ForceDirectories(ExpandConstant('{app}'))")
         < preflight.index("BeginServiceTransition")
         < preflight.index("StopExistingServiceForUpdate")
@@ -802,89 +673,35 @@ def test_service_installer_orders_durable_migration_recovery_around_the_commit_p
         < preflight.index("PrepareServiceBundleTransaction")
     )
 
-    desktop_flow = installer[
-        installer.index("function PrepareDesktopMigration") : installer.index("function BeginServiceTransition")
-    ]
-    assert (
-        desktop_flow.index("--plan-desktop-migration")
-        < desktop_flow.index("--seal-desktop-migration")
-        < desktop_flow.index("if FileExists(TokenTransferFile) and not DeleteFile(TokenTransferFile)")
-        < desktop_flow.index("if FileExists(MigrationReceipt) and not DeleteFile(MigrationReceipt)")
-        < desktop_flow.index("--apply-desktop-migration")
-        < desktop_flow.index("--verify-applied-desktop-migration")
-    )
-    assert "FileExists(TokenTransferFile) or FileExists(MigrationReceipt)" in desktop_flow
-
-    hard_kill_function = installer.index("function DesktopHardKillCheckpointTestRequested")
-    hard_kill_ifdef = installer.rindex("#ifdef AllowElevatedMigrationTestContext", 0, hard_kill_function)
-    hard_kill_hold = installer[hard_kill_ifdef : installer.index("function PrepareToInstall")]
-    assert hard_kill_hold.startswith("#ifdef AllowElevatedMigrationTestContext")
-    assert "{param:TESTDESKTOPHARDKILLHOLD|0}" in hard_kill_hold
-    assert "{param:ALLOWELEVATEDTESTCONTEXT|0}" in hard_kill_hold
-    assert "procedure RequireDesktopHardKillCheckpointHarness" in hard_kill_hold
-    assert "CheckForMutexes(DesktopHardKillTestMutexName)" in hard_kill_hold
-    assert "DesktopHardKillReadyEventName" in hard_kill_hold
-    assert "OpenEvent(EventModifyState, False, DesktopHardKillReadyEventName)" in hard_kill_hold
-    assert "procedure SignalDesktopHardKillCheckpointReadyForTest" in hard_kill_hold
-    assert "SetEvent(ReadyEventHandle)" in hard_kill_hold
-    assert "for PollCount := 1 to 3600 do" in hard_kill_hold
-    assert "Sleep(50);" in hard_kill_hold
-    assert "RaiseException(" in hard_kill_hold
-    assert hard_kill_hold.index("SignalDesktopHardKillCheckpointReadyForTest;") < hard_kill_hold.index(
-        "for PollCount := 1 to 3600 do"
-    )
-    assert (
-        preflight.index("RequireDesktopHardKillCheckpointHarness")
-        < preflight.index("PrepareDesktopMigration")
-        < preflight.index("HoldDesktopHardKillCheckpointForTest")
-        < preflight.index("Loopback-Port bei gestopptem oder fehlendem Dienst vorprüfen")
-        < preflight.index("BeginServiceTransition")
-    )
-
     begin_transition = installer[
         installer.index("function BeginServiceTransition") : installer.index("function MarkServiceCommitted")
     ]
     assert "--target-service-running " in begin_transition
-    assert "--token-transfer-consent" in begin_transition
-    assert "--snapshot-service-metadata" not in begin_transition
+    assert "--token-transfer-consent" not in begin_transition
 
     pending_reconcile = installer[
-        installer.index("{ A pending Desktop transaction") : installer.index("function PrepareDesktopMigration")
+        installer.index("function ReconcilePendingInstall") : installer.index("function BeginServiceTransition")
     ]
     assert (
-        pending_reconcile.index("VerifyDesktopMigrationOwner")
-        < pending_reconcile.index("FinishInstallReconcile(Direction)")
-        < pending_reconcile.index("RollbackDesktopMigration")
-        < pending_reconcile.index("ClearDesktopMigrationSeal")
+        pending_reconcile.index("FinishInstallReconcile(Direction)")
         < pending_reconcile.index("FinalizeServiceBundle")
         < pending_reconcile.index("FinishTerminalInstallTransaction")
-    )
-    assert pending_reconcile.index("FinishInstallReconcile(Direction)") < pending_reconcile.index(
-        "CommitDesktopMigration"
     )
 
     rollback_flow = installer[
         installer.index("function RollbackPreparedInstall") : installer.index("function InspectExistingService")
     ]
-    assert (
-        rollback_flow.index("RollbackServiceConfiguration")
-        < rollback_flow.index("RollbackDesktopMigration")
-        < rollback_flow.index("ClearDesktopMigrationSeal")
-        < rollback_flow.index("FinishTerminalInstallTransaction")
-    )
+    assert rollback_flow.index("RollbackServiceConfiguration") < rollback_flow.index("FinishTerminalInstallTransaction")
 
     done_step = installer[installer.index("procedure CurStepChanged") : installer.index("procedure InitializeWizard")]
     assert (
         done_step.index("CommitServiceBundle")
         < done_step.index("MarkServiceCommitted")
         < done_step.index("TransactionCommitStarted := True")
-        < done_step.index("CommitDesktopMigration")
-        < done_step.index("ClearDesktopMigration")
         < done_step.index("FinalizeServiceBundle")
         < done_step.index("FinishTerminalInstallTransaction")
         < done_step.index("InstallSucceeded := True")
     )
-    assert done_step.index("TransactionCommitStarted := True") < done_step.index("CommitDesktopMigration")
 
     deinitialize = installer[
         installer.index("procedure DeinitializeSetup") : installer.index("function InitializeUninstall")
@@ -897,19 +714,14 @@ def test_service_installer_orders_durable_migration_recovery_around_the_commit_p
         )
     ]
     assert "RollbackServiceConfiguration" not in commit_branch
-    assert (
-        commit_branch.index("CommitDesktopMigration")
-        < commit_branch.index("ClearDesktopMigrationSeal")
-        < commit_branch.index("FinalizeServiceBundle")
-        < commit_branch.index("FinishTerminalInstallTransaction")
-    )
+    assert commit_branch.index("FinalizeServiceBundle") < commit_branch.index("FinishTerminalInstallTransaction")
 
     configure = installer[
         installer.index("procedure ConfigureInstalledService") : installer.index("procedure CurStepChanged")
     ]
-    assert "ProtectedDesktopTokenFile" in configure
-    assert "TokenTransferFile" not in configure
-    assert r"{commonappdata}\E-Rechnungs-Pruefer-Installer-State\desktop-api-token.txt" in installer
+    assert "ServiceExe, '--initialize'" in configure
+    assert "--import-token" not in configure
+    assert "--consent-token-import" not in configure
 
     service_preparation = installer[
         installer.index("function PrepareServiceBundleTransaction") : installer.index(
@@ -936,10 +748,10 @@ def test_windows_build_signs_owned_binaries_and_both_installers() -> None:
         "Windows-x64-Binaries.zip",
         "Compress-Archive",
         "$OwnedFiles",
-        "BuildElevatedMigrationTestInstaller",
-        "/DAllowElevatedMigrationTestContext=1",
+        "BuildElevatedRecoveryTestInstaller",
+        "/DAllowElevatedRecoveryTestContext=1",
         "$TestInstallerRoot",
-        "Sign-File $ElevatedMigrationTestSetup",
+        "Sign-File $ElevatedRecoveryTestSetup",
         "function Test-PublishedWindowsArtifacts",
         "Expand-Archive -LiteralPath $Archive -DestinationPath $VerificationRoot",
         "publish-verification-$([guid]::NewGuid().ToString('N'))",
@@ -950,7 +762,7 @@ def test_windows_build_signs_owned_binaries_and_both_installers() -> None:
 
     assert "Get-ChildItem $ServiceBundle -Recurse" not in script
     owned_files = script[script.index("$OwnedFiles = @(") : script.index("$ChecksumLines =")]
-    assert "ElevatedMigrationTestSetup" not in owned_files
+    assert "ElevatedRecoveryTestSetup" not in owned_files
     verification = script[
         script.index("function Test-PublishedWindowsArtifacts") : script.index("if ($SigningEnabled)")
     ]
@@ -984,10 +796,50 @@ def test_windows_build_signs_owned_binaries_and_both_installers() -> None:
     assert "disable_windowed_traceback=True" in service_spec
     assert '"win32net"' in service_spec
     assert '"win32net"' in open_client_spec
+    assert 'copy_metadata("regipy")' in open_client_spec
+    assert '"regipy"' in open_client_spec
+    assert '"regipy.registry"' in open_client_spec
     service_entrypoint = _read("packaging/windows/service_entrypoint.py")
     assert "raise SystemExit(_run(sys.argv[1:]))" in service_entrypoint
     assert "if session_id is None or session_id == 0:" in service_entrypoint
     assert "E-Rechnungs-Pruefer-Oeffnen.exe" in service_entrypoint
+
+
+def test_offline_profile_inventory_is_read_only_bounded_and_version_pinned() -> None:
+    scanner = _read("app/windows_install_conflicts.py")
+    build_requirements = _read("packaging/windows/requirements-build.txt")
+    release_requirements = _read("packaging/windows/requirements-release.txt")
+    third_party = _read("THIRD_PARTY.md")
+
+    for forbidden in ("RegLoadAppKeyW", "RegLoadKey", "RegRestoreKey", "reg.exe load"):
+        assert forbidden not in scanner
+    for expected in (
+        'REGIPY_VERSION = "6.2.1"',
+        "OFFLINE_HIVE_MAX_BYTES = 256 * 1024 * 1024",
+        "FILE_FLAG_OPEN_REPARSE_POINT",
+        "FILE_SHARE_READ",
+        "_read_safe_hive_bytes",
+        "_validate_hive_snapshot",
+        "primary_sequence != secondary_sequence",
+        "_registry_header_checksum",
+        "_root_key_cell",
+        "root_key_offset % 8 != 0",
+        "OFFLINE_HIVE_INSPECTION_TIMEOUT_SECONDS = 30",
+        "OFFLINE_PROFILE_INVENTORY_TIMEOUT_SECONDS = 60",
+        "_inspect_offline_profile_hive_isolated",
+        "subprocess.TimeoutExpired",
+        "_validated_hive_bin_ranges",
+        '!= b"hbin"',
+        "len(children) != int(current.subkey_count)",
+        "len(values) != int(current.values_count)",
+    ):
+        assert expected in scanner
+    assert "regipy==6.2.1" in build_requirements
+    assert (
+        "regipy==6.2.1 --hash=sha256:b03110e5c4e12385e1ba53c032ccd120c6dcde1b71afb8c3b7aa4717a5a24e43"
+    ) in release_requirements
+    for expected in ("| Regipy |", "| Construct |", "| Inflection |", "| pytz |"):
+        assert expected in third_party
 
 
 def test_windows_ci_builds_and_tests_both_modes() -> None:
@@ -996,9 +848,10 @@ def test_windows_ci_builds_and_tests_both_modes() -> None:
 
     for workflow in (ci, release):
         assert r".\scripts\test_windows_package.ps1" in workflow
+        assert r".\scripts\test_windows_mode_exclusion.ps1" in workflow
         assert r".\scripts\test_windows_service_package.ps1" in workflow
-        assert "-BuildElevatedMigrationTestInstaller" in workflow
-        assert workflow.count("-AllowElevatedMigrationTestContext") == 2
+        assert "-BuildElevatedRecoveryTestInstaller" in workflow
+        assert workflow.count("-AllowElevatedRecoveryTestContext") == 1
         assert "*-Windows-x64-Dienst-Setup.exe" in workflow
         assert "*-Windows-x64-Binaries.zip" in workflow
         assert "*-Windows-x64-SHA256SUMS.txt" in workflow
@@ -1074,7 +927,7 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
         "Wait-ServiceProcessRestart",
         "GetTempPath",
         "Get-Service -Name $ServiceName",
-        "AllowElevatedMigrationTestContext",
+        "AllowElevatedRecoveryTestContext",
         r"build\windows\test-installer",
         "CommitHardKillRecovery",
         "Invoke-CommitCheckpointHardKill",
@@ -1100,12 +953,11 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
     assert "$FailureActionsScmAfterFailedUpdate -ne $FailureActionsScmBeforeFailedUpdate" in script
     assert "Vorher:`n$FailureActionsScmBeforeFailedUpdate" in script
     assert "Nachher:`n$FailureActionsScmAfterFailedUpdate" in script
-    assert script.count('"/ALLOWELEVATEDTESTCONTEXT=1"') == 3
-    assert script.count("if ($AllowElevatedMigrationTestContext)") == 4
-    assert script.count("-ExpectedLogReason") == 4
-    assert script.count("Assert-NoEarlyInstallerState -Scenario") == 3
+    assert script.count('"/ALLOWELEVATEDTESTCONTEXT=1"') >= 2
+    assert script.count("if ($AllowElevatedRecoveryTestContext)") >= 2
+    assert script.count("-ExpectedLogReason") == 3
+    assert script.count("Assert-NoEarlyInstallerState -Scenario") == 2
     for expected_reason in (
-        "Die ursprüngliche interaktive Benutzeridentität konnte nicht sicher bestätigt werden.",
         "Der vorhandene Maschinenzustand ist unvollständig, unsicher oder ungültig.",
         "Der konfigurierte lokale Dienstport ist belegt oder nicht exklusiv reservierbar.",
         "Absichtlich ausgelöster transaktionaler Installationstest.",
@@ -1155,85 +1007,328 @@ def test_service_package_test_uses_locale_neutral_account_identifiers() -> None:
     assert "NT-AUTORITÄT\\Lokaler Dienst" not in service_account_check
 
 
-def test_migration_test_uses_published_130_desktop_installer() -> None:
-    script = _read("scripts/test_windows_migration.ps1")
+def test_mode_exclusion_test_proves_manual_switch_and_no_mutation_on_rejection() -> None:
+    script = _read("scripts/test_windows_mode_exclusion.ps1")
 
     for expected in (
-        "v1.3.0",
-        "E-Rechnungs-Pruefer-1.3.0-Windows-x64-Setup.exe",
-        "/MIGRATEDESKTOPTOKEN=1",
-        "EINVOICE_API_TOKEN",
-        "E-Rechnungs-Pruefer",
-        "ERechnungsPrueferService",
         "ConfirmIsolatedEnvironment",
-        "TESTFAILAFTERCONFIG",
-        "Assert-MigratedTokenAcl",
-        "service-mode-disabled",
-        "E-Rechnungs-Pruefer-Installer-State",
-        "ALLOWELEVATEDTESTCONTEXT",
-        "AllowElevatedMigrationTestContext",
-        r"build\windows\test-installer",
-        "GetTempPath",
-        "DesktopHardKillRecovery",
-        "Invoke-DesktopCheckpointHardKill",
-        "desktop-migration-phase.json",
-        "token_scrypt",
-        "hashlib.scrypt",
-        "rollbackable",
-        "Stop-VerifiedSetupProcessTree",
+        "E-Rechnungs-Pruefer.exe",
+        "ERechnungsPrueferService",
+        "Invoke-SetupExpectedFailure",
+        "Dienstinstallation bei vorhandenem Desktopmodus",
+        "Desktopinstallation bei vorhandenem Dienstmodus",
+        "Dienstinstallation nach Desktopdeinstallation",
+        "Assert-RegistryValueUnchanged",
+        "Assert-ServiceSnapshotUnchanged",
+        "Get-TreeFingerprint",
+        "DesktopTokenHashBefore",
+        "ServiceTokenHashBefore",
+        "Get-FileHash",
+        "Get-AuthenticodeSignature",
+        "Desktopdeinstallation",
+        "Dienstdeinstallation",
+        "Dienstdeinstallation mit erhaltenem ProgramData",
+        "Desktopinstallation bei reinem erhaltenem ProgramData",
+        "Dienstneuinstallation mit erhaltenem ProgramData",
+        "ProgramData oder das Diensttoken",
+        "Get-SanitizedInnoLogTail",
+        "Write-ProfileHiveCategoryDiagnostic",
+        "Write-LoopbackPortCategoryDiagnostic",
     ):
         assert expected in script
 
-    assert script.count('"/ALLOWELEVATEDTESTCONTEXT=1"') == 3
-    assert script.count("if ($AllowElevatedMigrationTestContext)") == 3
-    startup_wait = script[
-        script.index("$DesktopProcess = Start-Process") : script.index(
-            "$OriginalToken = (Get-Content $DesktopToken", script.index("$DesktopProcess = Start-Process")
-        )
-    ]
-    assert "-not (Test-Path $DesktopToken) -or -not (Test-Path $RuntimeFile)" in startup_wait
-    assert "} while (-not (Test-Path $DesktopToken) -and" not in startup_wait
-    assert "[Threading.Mutex]::new(" in script
-    assert "Global\\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Hold" in script
-    assert "[Threading.EventWaitHandle]::new(" in script
-    assert "[Threading.EventResetMode]::ManualReset" in script
-    assert "Global\\E-Rechnungs-Pruefer-Desktop-Hard-Kill-Test-Ready" in script
-    assert "$ReadyEvent.WaitOne(50)" in script
-    assert "$HardKillReadyEventCreated" in script
-    assert "$HardKillReadyEvent.Dispose()" in script
-    assert "/TESTDESKTOPHARDKILLHOLD=1" in script
-    assert '"/LOG=`"$HardKillLog`""' in script
-    assert "Setup endete mit Exitcode $($Process.ExitCode)" in script
-    assert "Get-Content -LiteralPath $LogPath -Tail 80" in script
-    assert "$HardKillHoldMutexCreated" in script
-    assert "finally" in script[script.index("$HardKillHoldMutex = $null") :]
-    assert "$HardKillHoldMutex.Dispose()" in script
+    assert "MIGRATEDESKTOPTOKEN" not in script
+    assert "AllowElevatedRecoveryTestContext" not in script
+    assert r"build\windows\test-installer" not in script
+    assert "DesktopHardKill" not in script
+    assert "TESTDESKTOPHARDKILLHOLD" not in script
     wait_for_setup_release = script[
         script.index("function Wait-SetupUninstallMutexReleased") : script.index("function Invoke-Setup")
     ]
-    assert '"Global\\E-Rechnungs-Pruefer-Service-Setup-Uninstall"' in wait_for_setup_release
+    assert '"Global\\E-Rechnungs-Pruefer-Setup-Uninstall"' in wait_for_setup_release
     assert "[Threading.Mutex]::OpenExisting($Name)" in wait_for_setup_release
     assert "$Mutex.WaitOne($Seconds * 1000)" in wait_for_setup_release
     assert "catch [Threading.AbandonedMutexException]" in wait_for_setup_release
     invoke_setup = script[script.index("function Invoke-Setup") : script.index("function Invoke-SetupExpectedFailure")]
     invoke_expected_failure = script[
-        script.index("function Invoke-SetupExpectedFailure") : script.index("function Get-TokenScryptVerifier")
+        script.index("function Invoke-SetupExpectedFailure") : script.index("function Wait-ServiceState")
     ]
     assert invoke_setup.index("$Process.WaitForExit(600000)") < invoke_setup.index("Wait-SetupUninstallMutexReleased")
     assert invoke_expected_failure.index("$Process.WaitForExit(600000)") < invoke_expected_failure.index(
         "Wait-SetupUninstallMutexReleased"
     )
-    assert "ExpectedLogReason" in invoke_expected_failure
-    assert "Inno Setup reports an Abort during the installation phase as exit code 5." in invoke_expected_failure
-    assert "ExpectedExitCode = 5" in invoke_expected_failure
-    assert "Absichtlich ausgelöster transaktionaler Installationstest." in script
-    assert "-ExpectedExitCode 5" in script
-    assert '"/LOG=`"$FailedMigrationLog`""' in script
-    assert "function Assert-MigrationStateAbsent" in script
-    assert "Get-ChildItem -LiteralPath $Path -Force" in script
-    assert "(leeres Verzeichnis)" in script
-    assert script.count("Assert-MigrationStateAbsent -Path $MigrationState") == 2
-    assert "function Assert-TransferRootAbsent" in script
-    assert '$MigrationTransferRoot = Join-Path $env:ProgramData "E-Rechnungs-Pruefer-Installer-Transfer"' in script
-    assert "ließ Desktop-Transferreste zurück" in script
-    assert script.count("Assert-TransferRootAbsent -Path $MigrationTransferRoot") == 1
+    assert "$ExitCode -eq 0" in invoke_expected_failure
+    assert "Get-SanitizedInnoLogTail" in invoke_setup
+    assert "Get-SanitizedInnoLogTail" in invoke_expected_failure
+
+    sanitizer = script[script.index("function Get-DiagnosticPathMasks") : script.index("function Invoke-Setup")]
+    for expected in (
+        "<REPOSITORY>",
+        "<USERPROFILE>",
+        "<LOCALAPPDATA>",
+        "<TEMP>",
+        "<TOKEN-RELATED-LINE-REDACTED>",
+        "<PATH-RELATED-LINE-REDACTED>",
+        "<SID>",
+        "<SECRET>",
+        "[ValidateRange(1, 80)]",
+        "[int]$MaximumLines = 60",
+        "$Protected.Length -gt 500",
+    ):
+        assert expected in sanitizer
+    assert "Get-Content -LiteralPath $LogPath -Tail $MaximumLines" in sanitizer
+    assert "return $Argument.Substring(5).Trim().Trim('\"')" in sanitizer
+
+    profile_diagnostic = script[
+        script.index("function Resolve-DiagnosticProfilePath") : script.index("function Wait-ServiceState")
+    ]
+    for expected in (
+        "[Microsoft.Win32.RegistryHive]::LocalMachine",
+        "[Microsoft.Win32.RegistryHive]::Users",
+        "ProfileImagePath",
+        '"S-1-5-18", "S-1-5-19", "S-1-5-20"',
+        "loaded = 0",
+        '"offline DAT" = 0',
+        '"offline MAN" = 0',
+        "missing = 0",
+        "ambiguous = 0",
+        "unsafe = 0",
+        "ProfileList/Hive-Diagnose (nur Kategorien)",
+    ):
+        assert expected in profile_diagnostic
+    assert "Write-Host $_" not in profile_diagnostic
+    assert "Write-Warning $_" not in profile_diagnostic
+    port_diagnostic = script[
+        script.index("function Write-LoopbackPortCategoryDiagnostic") : script.index("function Wait-ServiceState")
+    ]
+    for expected in (
+        'Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 8765',
+        "listen = 0",
+        "timeWait = 0",
+        "closeWait = 0",
+        "other = 0",
+        "TCP-Portdiagnose (nur Zähler)",
+    ):
+        assert expected in port_diagnostic
+    for forbidden in (
+        "OwningProcess",
+        "RemoteAddress",
+        "RemotePort",
+        "Test-NetConnection",
+        "TcpListener",
+    ):
+        assert forbidden not in port_diagnostic
+    legitimate_service_install = script[
+        script.index("$ServiceInstallArguments = @(") : script.index(
+            'Wait-ServiceState -Name $ServiceName -State "Running"'
+        )
+    ]
+    assert legitimate_service_install.index("Write-ProfileHiveCategoryDiagnostic") < (
+        legitimate_service_install.index(
+            'Invoke-Setup -Path $ServiceSetup -Scenario "Dienstinstallation nach Desktopdeinstallation"'
+        )
+    )
+    assert legitimate_service_install.index("Write-LoopbackPortCategoryDiagnostic") < (
+        legitimate_service_install.index(
+            'Invoke-Setup -Path $ServiceSetup -Scenario "Dienstinstallation nach Desktopdeinstallation"'
+        )
+    )
+
+    tree_fingerprint = script[
+        script.index("function Get-TreeFingerprint") : script.index("function Convert-RegistryValueToStableText")
+    ]
+    for expected in (
+        "Get-Item -LiteralPath $Root -Force",
+        "Get-ChildItem -LiteralPath $Root -Recurse -Force",
+        "[Security.AccessControl.AccessControlSections]::Owner",
+        "[Security.AccessControl.AccessControlSections]::Access",
+        "GetSecurityDescriptorSddlForm",
+        "$Entry.PSIsContainer",
+        "$Entry -is [IO.FileInfo]",
+        "[int64]$Entry.Attributes",
+        "Get-FileHash -LiteralPath $Entry.FullName -Algorithm SHA256",
+        "$Lines.Sort([StringComparer]::Ordinal)",
+    ):
+        assert expected in tree_fingerprint
+    assert "Get-ChildItem -LiteralPath $Root -Recurse -File" not in tree_fingerprint
+
+    registry_fingerprint = script[
+        script.index("function Convert-RegistryValueToStableText") : script.index("function Get-ServiceSnapshot")
+    ]
+    for expected in (
+        "$Value -is [byte[]]",
+        "$Value -is [string[]]",
+        "$Value -is [IFormattable]",
+        "[Globalization.CultureInfo]::InvariantCulture",
+        "[Convert]::ToHexString([byte[]]$Value)",
+        "Get-OptionalRegistryValue",
+        "present|$Kind|$Value",
+    ):
+        assert expected in registry_fingerprint
+
+    service_snapshot = script[
+        script.index("function Get-ServiceSnapshot") : script.index("function Assert-ServiceSnapshotUnchanged")
+    ]
+    service_comparison = script[
+        script.index("function Assert-ServiceSnapshotUnchanged") : script.index("if (-not $IsWindows)")
+    ]
+    for metadata in (
+        "DisplayName",
+        "Description",
+        "DelayedAutoStart",
+        "ServiceSidType",
+        "FailureActions",
+        "FailureActionsOnNonCrashFailures",
+    ):
+        assert f"{metadata} =" in service_snapshot
+        assert f'"{metadata}"' in service_comparison
+    for registry_metadata in (
+        "ImagePath",
+        "DisplayName",
+        "Description",
+        "ObjectName",
+        "Start",
+        "Type",
+        "ErrorControl",
+    ):
+        assert f'-Name "{registry_metadata}"' in service_snapshot
+    assert "[string]::Equals(" in service_comparison
+    assert "[StringComparison]::Ordinal" in service_comparison
+
+    rejected_service_residue_check = script[
+        script.index("if ((Get-Service -Name $ServiceName") : script.index("Invoke-Setup -Path $DesktopUninstaller")
+    ]
+    assert "(Test-Path -LiteralPath $ServiceUninstallKey)" in rejected_service_residue_check
+
+
+def test_mode_exclusion_test_covers_a_real_logged_off_profile_hive() -> None:
+    script = _read("scripts/test_windows_mode_exclusion.ps1")
+
+    for expected in (
+        "ModeExclusionNativeProfileApi",
+        "CreateProfile(",
+        'EntryPoint = "CreateProfile"',
+        "[Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder profilePath",
+        "$ProfilePathBuffer = [Text.StringBuilder]::new(260)",
+        "New-LocalUser -Name $FixtureUserName",
+        "Remove-LocalUser -SID $FixtureSidObject",
+        '"ERPModeT$([Guid]::NewGuid()',
+        '"ERPModeHive_$([Guid]::NewGuid()',
+        '"load"',
+        '"unload"',
+        '"add"',
+        '"delete"',
+        "{D33FD9E5-0C5E-48ED-BF0C-E9D2962A45DF}_is1",
+        '"InstallLocation"',
+        '"DisplayVersion"',
+        '"1.3.0"',
+        '"Offline-Autostart-only eintragen"',
+        '"Offline-v1.3-Uninstall-Key entfernen"',
+        '"Offline-Autostart bereinigen"',
+        "Assert-FirstDesktopPreflightRejected",
+        "Assert-OfflineFixtureUnchanged",
+        "Assert-ServiceInstallerFootprintAbsent",
+        "Get-FileHash -LiteralPath $FixtureHivePath -Algorithm SHA256",
+        "Get-TreeFingerprint -Path $FixtureCustomDesktopDir",
+        "$FixtureProfileImagePath = Get-OptionalRegistryValue",
+        '"Registry::HKEY_USERS\\$Sid"',
+        '"Registry::HKEY_USERS\\$MountName"',
+    ):
+        assert expected in script
+    assert "[Text.StringBuilder]::new(4096)" not in script
+
+    first_preflight = script[
+        script.index("function Assert-FirstDesktopPreflightRejected") : script.index(
+            "function Assert-ServiceInstallerFootprintAbsent"
+        )
+    ]
+    assert "Desktop-Gegenmodus profilübergreifend und read-only ausschließen" in first_preflight
+    assert "Desktop-Gegenmodus unmittelbar vor der Diensttransition erneut ausschließen" in first_preflight
+    assert '$Content.Contains("$FirstPreflight ist fehlgeschlagen")' in first_preflight
+    assert "$Content.Contains($SecondPreflight)" in first_preflight
+
+    fixture_start = script.index('$FixtureUserName = "ERPModeT')
+    offline_uninstall_rejection = script.index(
+        "Dienstinstallation bei offline registrierter benutzerdefinierter v1.3-Desktopinstallation"
+    )
+    offline_autostart_rejection = script.index(
+        "Dienstinstallation bei Autostart-only in einem offline gehaltenen Profil"
+    )
+    clean_hive = script.index("$CleanOfflineHiveHash = (", offline_autostart_rejection)
+    ordinary_desktop_install = script.index(
+        'Invoke-Setup -Path $DesktopSetup -Scenario "Desktopinstallation"',
+        fixture_start,
+    )
+    clean_service_install = script.index(
+        'Invoke-Setup -Path $ServiceSetup -Scenario "Dienstinstallation nach Desktopdeinstallation"'
+    )
+    clean_hive_assertion = script.index(
+        "-ExpectedHiveHash $CleanOfflineHiveHash",
+        clean_service_install,
+    )
+    assert (
+        fixture_start
+        < offline_uninstall_rejection
+        < offline_autostart_rejection
+        < clean_hive
+        < ordinary_desktop_install
+        < clean_service_install
+        < clean_hive_assertion
+    )
+
+    offline_uninstall_scenario = script[
+        script.index("$OfflineDesktopUninstallKey = (") : script.index(
+            'Invoke-RegistryTool -Scenario "Offline-v1.3-Hive für Autostarttest laden"'
+        )
+    ]
+    assert '"InstallLocation"' in offline_uninstall_scenario
+    assert '"DisplayVersion"' in offline_uninstall_scenario
+    assert "Assert-FirstDesktopPreflightRejected" in offline_uninstall_scenario
+    assert "Assert-ServiceInstallerFootprintAbsent" in offline_uninstall_scenario
+    assert "-ExpectedHiveHash $OfflineUninstallHiveHash" in offline_uninstall_scenario
+
+    offline_autostart_scenario = script[
+        script.index('Invoke-RegistryTool -Scenario "Offline-v1.3-Hive für Autostarttest laden"') : clean_hive
+    ]
+    assert offline_autostart_scenario.index('"Offline-v1.3-Uninstall-Key entfernen"') < (
+        offline_autostart_scenario.index('"Offline-Autostart-only eintragen"')
+    )
+    assert "Assert-FirstDesktopPreflightRejected" in offline_autostart_scenario
+    assert "Assert-ServiceInstallerFootprintAbsent" in offline_autostart_scenario
+    assert "-ExpectedHiveHash $OfflineAutostartHiveHash" in offline_autostart_scenario
+
+    cleanup = script[script.index("} finally {") :]
+    assert '"Eigene Offline-Hive-Mountbereinigung"' in cleanup
+    assert "Get-CimInstance -ClassName Win32_UserProfile" in cleanup
+    assert "Remove-CimInstance -InputObject $FixtureProfileForCleanup" in cleanup
+    assert "Get-LocalUser -SID $FixtureSidObject" in cleanup
+    assert "Remove-LocalUser -SID $FixtureSidObject" in cleanup
+    assert "$FixtureCleanupProblems.Add(" in cleanup
+    assert "if ($FixtureCleanupProblems.Count -gt 0)" in cleanup
+    assert "Offline-Profilfixture wurde nicht rückstandsfrei bereinigt" in cleanup
+    assert cleanup.count("} finally {") >= 2
+    assert cleanup.index("} finally {", cleanup.index("} finally {") + 1) < cleanup.index(
+        '"Eigene Offline-Hive-Mountbereinigung"'
+    )
+    assert "Profilrest konnte vor der Benutzerbereinigung nicht geprüft werden" in cleanup
+    assert cleanup.index('"Eigene Offline-Hive-Mountbereinigung"') < cleanup.index(
+        "Get-CimInstance -ClassName Win32_UserProfile"
+    )
+    assert cleanup.index("Remove-CimInstance -InputObject $FixtureProfileForCleanup") < cleanup.index(
+        "Remove-LocalUser -SID $FixtureSidObject"
+    )
+    profile_delete = cleanup[
+        cleanup.index("$CleanupProfileImagePath = Get-OptionalRegistryValue") : cleanup.index(
+            "$FixtureProfileRemains = $true"
+        )
+    ]
+    assert (
+        profile_delete.index("Resolve-DiagnosticProfilePath")
+        < profile_delete.index("[string]::Equals(")
+        < profile_delete.index("Get-CimInstance -ClassName Win32_UserProfile")
+        < profile_delete.index("Remove-CimInstance -InputObject $FixtureProfileForCleanup")
+    )
+    assert "$FixtureProfileForCleanup.Loaded -ne $false" in profile_delete
+    assert "$FixtureProfileForCleanup.Special -ne $false" in profile_delete
+    assert "[string]$FixtureProfileForCleanup.LocalPath" in profile_delete
+    assert "Remove-Item -LiteralPath $FixtureProfilePath -Recurse" not in cleanup
