@@ -774,9 +774,9 @@ public static class ModeExclusionNativeProfileApi
         CharSet = CharSet.Unicode,
         SetLastError = true)]
     public static extern int CreateProfile(
-        string userSid,
-        string userName,
-        StringBuilder profilePath,
+        [MarshalAs(UnmanagedType.LPWStr)] string userSid,
+        [MarshalAs(UnmanagedType.LPWStr)] string userName,
+        [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder profilePath,
         uint profilePathCharacters);
 
     [DllImport(
@@ -912,7 +912,8 @@ try {
         throw "Für die eigene lokale Profilfixture wurde keine SID ermittelt."
     }
 
-    $ProfilePathBuffer = [Text.StringBuilder]::new(4096)
+    # The legacy CreateProfile RPC stub rejects buffers above MAX_PATH with 0x800706F7.
+    $ProfilePathBuffer = [Text.StringBuilder]::new(260)
     $CreateProfileResult = [ModeExclusionNativeProfileApi]::CreateProfile(
         $FixtureSid,
         $FixtureUserName,

@@ -1209,6 +1209,8 @@ def test_mode_exclusion_test_covers_a_real_logged_off_profile_hive() -> None:
         "CreateProfile(",
         'EntryPoint = "CreateProfile"',
         'EntryPoint = "DeleteProfileW"',
+        "[Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder profilePath",
+        "$ProfilePathBuffer = [Text.StringBuilder]::new(260)",
         "New-LocalUser -Name $FixtureUserName",
         "Remove-LocalUser -SID $FixtureSidObject",
         '"ERPModeT$([Guid]::NewGuid()',
@@ -1234,6 +1236,7 @@ def test_mode_exclusion_test_covers_a_real_logged_off_profile_hive() -> None:
         '"Registry::HKEY_USERS\\$MountName"',
     ):
         assert expected in script
+    assert "[Text.StringBuilder]::new(4096)" not in script
 
     first_preflight = script[
         script.index("function Assert-FirstDesktopPreflightRejected") : script.index(
