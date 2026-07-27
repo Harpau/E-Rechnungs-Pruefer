@@ -41,7 +41,10 @@ festgeschriebenen KoSIT-/XRechnung-Komponenten mit. Es gibt zwei alternative Bet
   `LocalService` starten.
 
 Beide Varianten bieten Browseroberfläche und lokale API, dürfen aber nicht gleichzeitig als Backend laufen.
-Details zu Auswahl, Migration, Signierung und Prüfung stehen in
+Der Dienst-Installer migriert keine vorhandene Desktopinstallation und übernimmt deren API-Token nicht.
+Vor der Dienstinstallation muss der Desktopmodus einschließlich Autostart vollständig deinstalliert werden; vor
+der Desktopinstallation muss entsprechend der Dienstmodus deinstalliert sein.
+Details zu Auswahl, Installation, Signierung und Prüfung stehen in
 [`docs/WINDOWS_PACKAGE.md`](docs/WINDOWS_PACKAGE.md).
 
 ### Windows aus dem Quellcode

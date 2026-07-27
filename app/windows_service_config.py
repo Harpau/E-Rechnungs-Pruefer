@@ -357,11 +357,6 @@ class TokenStore:
     def rotate(self) -> str:
         return self._write(self._token_factory())
 
-    def import_value(self, token: str, *, consent: bool) -> str:
-        if not consent:
-            raise RuntimeError("Die Tokenübernahme benötigt eine ausdrückliche Zustimmung.")
-        return self._write(token)
-
 
 def activate_service_environment(
     configuration: ServiceConfiguration,

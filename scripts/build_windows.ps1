@@ -8,7 +8,7 @@ param(
     [string]$AzureKeyVaultCertificate = $env:EINVOICE_AZURE_KEY_VAULT_CERTIFICATE,
     [string]$TimestampUrl = "http://timestamp.acs.microsoft.com",
     [switch]$WithoutOfficialValidation,
-    [switch]$BuildElevatedMigrationTestInstaller
+    [switch]$BuildElevatedRecoveryTestInstaller
 )
 
 $ErrorActionPreference = "Stop"
@@ -324,7 +324,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup ist für den Dienstinstaller fehlgeschlagen."
 }
 
-if ($BuildElevatedMigrationTestInstaller) {
+if ($BuildElevatedRecoveryTestInstaller) {
     New-Item $TestInstallerRoot -ItemType Directory -Force | Out-Null
     & $Iscc `
         "/DAppVersion=$Version" `
@@ -332,7 +332,7 @@ if ($BuildElevatedMigrationTestInstaller) {
         "/DOpenClientFile=$OpenClient" `
         "/DOutputDir=$TestInstallerRoot" `
         "/DProjectRoot=$ProjectRoot" `
-        "/DAllowElevatedMigrationTestContext=1" `
+        "/DAllowElevatedRecoveryTestContext=1" `
         $ServiceInstallerFile
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup ist für den ausschließlich internen Dienst-Testinstaller fehlgeschlagen."
@@ -348,12 +348,12 @@ foreach ($ExpectedSetup in @($DesktopSetup, $ServiceSetup)) {
 }
 Sign-File $DesktopSetup
 Sign-File $ServiceSetup
-if ($BuildElevatedMigrationTestInstaller) {
-    $ElevatedMigrationTestSetup = Join-Path $TestInstallerRoot "E-Rechnungs-Pruefer-$Version-Windows-x64-Dienst-Setup.exe"
-    if (-not (Test-Path -LiteralPath $ElevatedMigrationTestSetup)) {
-        throw "Der ausschließlich interne Dienst-Testinstaller wurde nicht erzeugt: $ElevatedMigrationTestSetup"
+if ($BuildElevatedRecoveryTestInstaller) {
+    $ElevatedRecoveryTestSetup = Join-Path $TestInstallerRoot "E-Rechnungs-Pruefer-$Version-Windows-x64-Dienst-Setup.exe"
+    if (-not (Test-Path -LiteralPath $ElevatedRecoveryTestSetup)) {
+        throw "Der ausschließlich interne Dienst-Recovery-Testinstaller wurde nicht erzeugt: $ElevatedRecoveryTestSetup"
     }
-    Sign-File $ElevatedMigrationTestSetup
+    Sign-File $ElevatedRecoveryTestSetup
 }
 
 $PublishedBundleDirectory = Join-Path $PublishBundleRoot "bundle"
@@ -408,7 +408,7 @@ Write-Host "- $DesktopSetup"
 Write-Host "- $ServiceSetup"
 Write-Host "- $BundleArchive"
 Write-Host "- $ChecksumFile"
-if ($BuildElevatedMigrationTestInstaller) {
-    Write-Host "Interner, nicht veröffentlichbarer VM-Testinstaller:"
-    Write-Host "- $ElevatedMigrationTestSetup"
+if ($BuildElevatedRecoveryTestInstaller) {
+    Write-Host "Interner, nicht veröffentlichbarer VM-Recovery-Testinstaller:"
+    Write-Host "- $ElevatedRecoveryTestSetup"
 }

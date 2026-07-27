@@ -1,6 +1,6 @@
 # ADR 0001: Windows-Dienst als getrennte Betriebsart
 
-- Status: angenommen
+- Status: teilweise abgelöst durch [ADR 0002](0002-windows-modes-without-migration.md)
 - Datum: 2026-07-22
 
 ## Kontext

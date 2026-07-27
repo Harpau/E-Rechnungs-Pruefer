@@ -4,7 +4,17 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
-Vorgesehene Version: 1.4.0.
+Vorgesehene Version: 1.5.0.
+
+### Windows-Dienst und Desktopbetrieb
+
+- Der Dienst-Installer führt keinen automatischen Wechsel aus einer vorhandenen Desktopinstallation mehr durch. Der Desktopmodus muss einschließlich Autostart vor der Dienstinstallation vollständig entfernt werden; Desktop und Dienst bleiben getrennte, nicht parallel zu betreibende Betriebsarten.
+- Die bisherige Inno-Option `/MIGRATEDESKTOPTOKEN=1` wird ersatzlos nicht mehr unterstützt. Der Dienst erzeugt beziehungsweise erhält sein eigenes Maschinentoken; Integrationen wie Node-RED müssen dieses Token kontrolliert neu provisionieren.
+- Bei der Dienstdeinstallation ausdrücklich erhaltenes ProgramData gilt allein nicht als installierter Gegenmodus: Der Desktopmodus darf es weder blockieren noch verändern, und eine spätere Dienstneuinstallation verwendet dasselbe geschützte Maschinentoken weiter.
+- Unvollständige v1.4.0-Migrations-, Transfer-, Seal-, Quarantäne- und kombinierte Alttransaktionszustände werden nicht übernommen oder automatisch wiederhergestellt. Paket- und Freigabetests müssen deshalb auf einer sauberen Wegwerf-VM ohne solche Altzustände beginnen.
+- Der interne Dienst-Testinstaller sowie seine Build- und Testparameter sind recovery-neutral benannt. Der service-only `COMMIT_STARTED`-Hard-Kill-Test, Rollback/Roll-forward und die manuelle Reboot-Abnahme bleiben erhalten; der v1.3.0-Desktopmigrationstest entfällt.
+
+## 1.4.0 – 2026-07-26
 
 ### Windows-Dienst und Desktopbetrieb
 

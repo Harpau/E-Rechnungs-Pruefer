@@ -422,8 +422,6 @@ def _service_is_stopped() -> bool:
 
 def _manage_service(options: argparse.Namespace) -> None:
     paths = ServicePaths.from_environment()
-    if options.import_token is not None and not options.consent_token_import:
-        raise RuntimeError("Die Tokenübernahme benötigt eine ausdrückliche Zustimmung.")
     acl = WindowsServiceAcl(administrative=not options.verify_state)
     if options.verify_state:
         acl.repair_explorer_directory_aces(paths)
@@ -444,13 +442,7 @@ def _manage_service(options: argparse.Namespace) -> None:
             protect_directory=acl.protect_directory,
             protect_file=acl.protect_token,
         )
-        if options.import_token is not None:
-            from .windows_desktop_migration import read_desktop_migration_token
-
-            token = read_desktop_migration_token(Path(options.import_token))
-            store.import_value(token, consent=True)
-        else:
-            store.load_or_create()
+        store.load_or_create()
         return
 
     configuration = load_service_configuration(paths.configuration)
@@ -494,16 +486,7 @@ def _parse_management_arguments(argv: Sequence[str]) -> argparse.Namespace:
     commands.add_argument("--verify-state", action="store_true")
     commands.add_argument("--preflight-port", action="store_true")
     commands.add_argument("--health-check", action="store_true")
-    parser.add_argument("--import-token", metavar="DATEI")
-    parser.add_argument("--consent-token-import", action="store_true")
-    options = parser.parse_args(argv)
-    if options.import_token is not None and not options.initialize:
-        parser.error("--import-token ist nur zusammen mit --initialize zulässig.")
-    if options.import_token is not None and not options.consent_token_import:
-        parser.error("--import-token benötigt --consent-token-import.")
-    if options.consent_token_import and options.import_token is None:
-        parser.error("--consent-token-import ist nur zusammen mit --import-token zulässig.")
-    return options
+    return parser.parse_args(argv)
 
 
 def _is_direct_service_start_error(exc: BaseException) -> bool:

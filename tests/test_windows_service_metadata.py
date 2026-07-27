@@ -1529,16 +1529,6 @@ def test_open_client_routes_uninstall_reconcile_and_install_guard(
     guard.assert_called_once_with(EXPECTED_EXECUTABLE)
 
 
-def test_migration_context_rejects_elevated_original_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(windows_open_client, "is_process_elevated", Mock(return_value=True))
-
-    with pytest.raises(RuntimeError, match="Setup normal"):
-        windows_open_client.verify_migration_context()
-
-    monkeypatch.setattr(windows_open_client, "is_process_elevated", Mock(return_value=False))
-    windows_open_client.verify_migration_context()
-
-
 def test_process_elevation_uses_current_windows_token_membership(monkeypatch: pytest.MonkeyPatch) -> None:
     check = Mock(return_value=1)
     shell32 = SimpleNamespace(IsUserAnAdmin=check)

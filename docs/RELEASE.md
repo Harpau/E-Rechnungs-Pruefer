@@ -50,14 +50,11 @@ geprüften Codebasis:
 
 ```powershell
 python scripts\prepare_windows_components.py
-.\scripts\build_windows.ps1 -BuildElevatedMigrationTestInstaller
+.\scripts\build_windows.ps1 -BuildElevatedRecoveryTestInstaller
 .\scripts\test_windows_package.ps1 -ConfirmIsolatedEnvironment
-.\scripts\test_windows_service_package.ps1 -ConfirmIsolatedEnvironment -AllowElevatedMigrationTestContext
-.\scripts\test_windows_migration.ps1 -ConfirmIsolatedEnvironment -AllowElevatedMigrationTestContext
+.\scripts\test_windows_mode_exclusion.ps1 -ConfirmIsolatedEnvironment
 .\scripts\test_windows_service_package.ps1 -ConfirmIsolatedEnvironment `
-    -AllowElevatedMigrationTestContext -CommitHardKillRecovery Immediate
-.\scripts\test_windows_migration.ps1 -ConfirmIsolatedEnvironment `
-    -AllowElevatedMigrationTestContext -DesktopHardKillRecovery Immediate
+    -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
 ```
 
 Die signierten GitHub-Builds verwenden exakt CPython 3.13.14 und installieren sämtliche Laufzeit-, Test- und
@@ -67,27 +64,26 @@ verwenden manueller Probelauf und späterer Tag-Lauf dieselbe Python-Abhängigke
 Kompatibilitätstest in `ci.yml` prüft weiterhin die unterstützten Python-Versionen und zulässigen
 Abhängigkeitsbereiche.
 
-Im signierten Vorab-Probelauf werden sämtliche Paket- und Migrationstest-Aufrufe zusätzlich mit
+Im signierten Vorab-Probelauf werden sämtliche Paket-, Modusausschluss- und Recoverytest-Aufrufe zusätzlich mit
 `-RequireSignature` ausgeführt.
 
 Die Pakettests verwenden die echten Produkt-IDs, Dienstnamen, Registry- und Laufzeitpfade. Sie dürfen deshalb nur
 in einer sauberen, entbehrlichen Windows-VM oder unter einer eigenen Testidentität laufen.
 `-ConfirmIsolatedEnvironment` bestätigt diese Voraussetzung; die Skripte brechen trotzdem vor Änderungen ab,
 wenn sie fremden oder vorhandenen Produktzustand finden. Auf einer regulär genutzten Identität könnten die Tests
-Installationen, API-Token, Autostart oder Dienstzustände verändern. Der Migrationstest installiert ausdrücklich den
-veröffentlichten, signierten Desktopstand v1.3.0 und wechselt mit Token-Opt-in zum neuen Dienstmodus.
-Der dafür zusätzlich unter `build\windows\test-installer` erzeugte und signierte VM-Testinstaller ist
+Installationen, API-Token, Autostart oder Dienstzustände verändern. Unvollständige v1.4.0-Migrations-, Transfer-,
+Seal-, Quarantäne- oder kombinierte Alttransaktionszustände werden nicht unterstützt; die Test-VM muss auch davon
+frei sein. Der Modusausschlusstest prüft beide Installationsrichtungen ohne Tokenübernahme und zusätzlich, dass
+reines, bei einer Dienstdeinstallation erhaltenes ProgramData den Desktopmodus nicht blockiert oder verändert.
+Der zusätzlich unter `build\windows\test-installer` erzeugte und signierte VM-Recovery-Testinstaller ist
 präprozessorseitig der einzige Build, der `/ALLOWELEVATEDTESTCONTEXT=1` unterstützt. Er wird weder nach `dist`
 noch in das normale Windows-Artefakt oder einen GitHub Release übernommen; der produktive Dienst-Installer in
 `dist` enthält diesen Testpfad nicht. Nur ein manueller signierter Vorab-Probelauf auf `main` stellt ihn für
 einen Tag als separates internes Actions-Artefakt bereit.
-Die beiden opt-in Hard-Kill-Läufe erkennen ihren Checkpoint nur über vollständig geparste, DACL- und
-Transaktions-ID-geprüfte persistente Marker. Der Desktop-Helfer hält seinen internen Testcheckpoint zusätzlich
-über eine ausschließlich im isolierten Testinstaller enthaltene, vom Testprozess kontrollierte Haltesperre
-stabil und signalisiert ihn erst nach vollständig abgeschlossener Desktop-Verifikation. Beide Helfer beenden
-ausschließlich den exakt von ihnen gestarteten Setup-Prozessbaum. Ein nicht eindeutig erreichter Checkpoint oder
-ein anderer als der ausdrücklich angeforderte transaktionale Folgefehler ist ein fehlgeschlagener, nicht etwa ein
-übersprungener oder bestandener Test.
+Der opt-in Hard-Kill-Lauf erkennt seinen service-only Commit-Checkpoint nur über vollständig geparste, DACL- und
+Transaktions-ID-geprüfte persistente Marker und beendet ausschließlich den exakt von ihm gestarteten
+Setup-Prozessbaum. Ein nicht eindeutig erreichter Checkpoint oder ein anderer als der ausdrücklich angeforderte
+transaktionale Folgefehler ist ein fehlgeschlagener, nicht etwa ein übersprungener oder bestandener Test.
 
 Zusätzliche Artefakte:
 
@@ -135,7 +131,7 @@ Repository-Lesezugriff heruntergeladen werden.
 
 Der interne Recovery-Testinstaller enthält den ausschließlich für isolierte Wegwerf-VMs vorgesehenen erhöhten
 Testkontext `/ALLOWELEVATEDTESTCONTEXT=1` und darf nicht als Produktinstaller verwendet werden. Für die
-persistenten Hard-Kill-Tests ist ein Checkout exakt des im Workflowlauf genannten Commits erforderlich. Aus dem
+persistente Hard-Kill-Abnahme ist ein Checkout exakt des im Workflowlauf genannten Commits erforderlich. Aus dem
 normalen Artefakt wird das Binär-ZIP zunächst in ein leeres Zwischenverzeichnis entpackt. Dessen Inhalt
 `bundle\desktop\*` wird anschließend nach `build\windows\bundle\E-Rechnungs-Pruefer\*` kopiert, sodass die
 Desktop-EXE exakt unter `build\windows\bundle\E-Rechnungs-Pruefer\E-Rechnungs-Pruefer.exe` liegt; ein direktes
@@ -148,23 +144,30 @@ Trennung ist fail-closed in den Testskripten verankert. Vor der Verwendung sind 
 Authenticode-Status und Zeitstempel erneut zu prüfen.
 
 Das signierte Artefakt ist anschließend auf einer sauberen, nach dem Test verworfenen Windows-11-x64-VM zu
-prüfen. Neben beiden automatisierten Pakettests und dem v1.3.0-Migrationstest umfasst die manuelle Abnahme:
+prüfen. Neben den automatisierten Paket-, Modusausschluss- und Recoverytests umfasst die manuelle Abnahme:
 
 1. Bundle-ZIP entpacken und Signaturen sowie SHA-256-Prüfsummen aller fünf eigenen Dateien und des ZIPs prüfen;
-2. Desktopstart, Tray, Standardbrowser und HKCU-Autostart;
-3. Dienstkonto, Service-SID, DACLs, Starttyp, Recovery und Öffnen-Client;
-4. tatsächlichen Windows-Neustart und erfolgreichen verzögerten Dienststart vor der ersten Benutzeranmeldung;
-5. API ohne, mit falschem und mit richtigem Token, PDF-Bericht, bytegetreuen XML-Export sowie echte
+2. Desktopstart, Tray, Standardbrowser und HKCU-Autostart, danach reguläre Desktopdeinstallation;
+3. auf einer echten zweiten lokalen Testidentität Desktop und Autostart installieren, die Identität abmelden und
+   ihren `NTUSER.DAT`- beziehungsweise `NTUSER.MAN`-Hive als offline bestätigen; das aus der administrativen
+   Testidentität gestartete Dienstsetup muss fail-closed abbrechen und Desktopinstallation, Token und Autostart im
+   abgemeldeten Profil unverändert lassen. Danach den Desktop unter der zweiten Identität regulär deinstallieren
+   und wieder abmelden;
+4. Dienstkonto, Service-SID, DACLs, Starttyp, Recovery und Öffnen-Client;
+5. tatsächlichen Windows-Neustart und erfolgreichen verzögerten Dienststart vor der ersten Benutzeranmeldung;
+6. API ohne, mit falschem und mit richtigem Token, PDF-Bericht, bytegetreuen XML-Export sowie echte
    KoSIT-Annahme und -Ablehnung;
-6. Update eines laufenden und eines gestoppten Dienstes, automatisierten Fehler-Rollback, tatsächlichen
+7. Update eines laufenden und eines gestoppten Dienstes, automatisierten Fehler-Rollback, tatsächlichen
    Recovery-Neustart sowie Deinstallation mit erhaltenem Maschinenzustand und mit ausdrücklicher vollständiger
    Löschung;
-7. auf getrennten sauberen Snapshots beide persistenten Installer-Recovery-Richtungen mit
-   `-DesktopHardKillRecovery LeaveForReboot` beziehungsweise
+8. den gegenseitigen Installationsausschluss sowie den Preserve-Fall prüfen: Dienst ohne Datenlöschung
+   deinstallieren, Desktopmodus bei unverändertem ProgramData installieren und entfernen, danach den Dienst mit
+   demselben Maschinentoken erneut installieren;
+9. auf einem sauberen Snapshot die persistente service-only Installer-Recovery mit
    `-CommitHardKillRecovery LeaveForReboot` vorbereiten, Exitcode `194` als absichtlich unvollständigen Lauf
-   dokumentieren, die VM jeweils hart neu starten und denselben Testinstaller erneut ausführen; anschließend
-   Rollback beziehungsweise Roll-forward sowie die vollständige Marker- und Bundlebereinigung nachweisen;
-8. bei gefordertem Betrieb vor Anmeldung auch den vollständigen Node-RED-Ablauf, wobei Node-RED selbst als
+   dokumentieren, die VM hart neu starten und denselben Testinstaller erneut ausführen; anschließend Roll-forward
+   sowie die vollständige Marker- und Bundlebereinigung nachweisen;
+10. bei gefordertem Betrieb vor Anmeldung auch den vollständigen Node-RED-Ablauf, wobei Node-RED selbst als
    Dienst unter der vorgesehenen Identität laufen muss.
 
 Erst nach dokumentiert bestandenem Vorab-Probelauf, manueller Windows-Abnahme und ausdrücklicher Freigabe

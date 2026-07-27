@@ -17,7 +17,7 @@ from typing import Protocol
 from . import windows_service_metadata
 from .windows_service_config import validate_machine_path
 
-TRANSACTION_SCHEMA_VERSION = 1
+TRANSACTION_SCHEMA_VERSION = 2
 PHASE_SCHEMA_VERSION = 1
 MAXIMUM_TRANSACTION_BYTES = 64 * 1024
 PREPARED_FILE_NAME = "install-transaction.prepared.json"
@@ -74,15 +74,12 @@ class MachineBefore:
 @dataclass(frozen=True, slots=True)
 class PreparedTransaction:
     transaction_id: str
-    desktop_reader_sid: str
-    desktop_seal_sha256: str
     expected_executable: str
     service_existed: bool
     service_running: bool
     service_metadata: Mapping[str, object] | None
     machine_before: MachineBefore
     target_service_running: bool
-    token_transfer_consent: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,18 +172,6 @@ def _strict_transaction_id(value: object) -> str:
         or value != value.lower()
     ):
         raise RuntimeError("Die Installations-Transaktions-ID ist ungültig.")
-    return value
-
-
-def _strict_desktop_reader_sid(value: object) -> str:
-    if (
-        not isinstance(value, str)
-        or not 4 < len(value) <= 184
-        or not value.startswith("S-1-")
-        or value in {"S-1-5-18", "S-1-5-32-544"}
-        or "\x00" in value
-    ):
-        raise RuntimeError("Die gebundene Desktop-Benutzeridentität ist ungültig.")
     return value
 
 
@@ -364,10 +349,6 @@ def _prepared_payload(prepared: PreparedTransaction) -> dict[str, object]:
     return {
         "schema_version": TRANSACTION_SCHEMA_VERSION,
         "transaction_id": prepared.transaction_id,
-        "desktop_binding": {
-            "reader_sid": prepared.desktop_reader_sid,
-            "seal_sha256": prepared.desktop_seal_sha256,
-        },
         "expected_executable": prepared.expected_executable,
         "service_before": {
             "existed": prepared.service_existed,
@@ -379,10 +360,7 @@ def _prepared_payload(prepared: PreparedTransaction) -> dict[str, object]:
             "token": prepared.machine_before.token,
             "logs": prepared.machine_before.logs,
         },
-        "target": {
-            "service_running": prepared.target_service_running,
-            "token_transfer_consent": prepared.token_transfer_consent,
-        },
+        "target": {"service_running": prepared.target_service_running},
     }
 
 
@@ -391,7 +369,6 @@ def _decode_prepared(encoded: bytes, expected_executable: Path) -> PreparedTrans
     if set(payload) != {
         "schema_version",
         "transaction_id",
-        "desktop_binding",
         "expected_executable",
         "service_before",
         "machine_before",
@@ -401,17 +378,6 @@ def _decode_prepared(encoded: bytes, expected_executable: Path) -> PreparedTrans
     if type(payload["schema_version"]) is not int or payload["schema_version"] != TRANSACTION_SCHEMA_VERSION:
         raise RuntimeError("Die Version des PREPARED-Manifests wird nicht unterstützt.")
     transaction_id = _strict_transaction_id(payload["transaction_id"])
-    desktop_binding = payload["desktop_binding"]
-    if not isinstance(desktop_binding, dict) or set(desktop_binding) != {
-        "reader_sid",
-        "seal_sha256",
-    }:
-        raise RuntimeError("Die Desktopbindung im PREPARED-Manifest ist ungültig.")
-    desktop_reader_sid = _strict_desktop_reader_sid(desktop_binding["reader_sid"])
-    desktop_seal_sha256 = _strict_sha256(
-        desktop_binding["seal_sha256"],
-        description="Der Hash des gebundenen Desktop-Seals",
-    )
     expected = _canonical_expected_executable(expected_executable)
     recorded_expected = payload["expected_executable"]
     if not isinstance(recorded_expected, str) or recorded_expected.casefold() != expected.casefold():
@@ -424,7 +390,7 @@ def _decode_prepared(encoded: bytes, expected_executable: Path) -> PreparedTrans
         raise RuntimeError("Der Dienst-Baselineblock im PREPARED-Manifest ist ungültig.")
     if not isinstance(machine_before, dict) or set(machine_before) != {"configuration", "token", "logs"}:
         raise RuntimeError("Der Maschinen-Baselineblock im PREPARED-Manifest ist ungültig.")
-    if not isinstance(target, dict) or set(target) != {"service_running", "token_transfer_consent"}:
+    if not isinstance(target, dict) or set(target) != {"service_running"}:
         raise RuntimeError("Der Zielzustandsblock im PREPARED-Manifest ist ungültig.")
 
     service_existed = _strict_boolean(service_before["existed"], name="service_before.existed")
@@ -448,22 +414,14 @@ def _decode_prepared(encoded: bytes, expected_executable: Path) -> PreparedTrans
         logs=_strict_boolean(machine_before["logs"], name="machine_before.logs"),
     )
     target_running = _strict_boolean(target["service_running"], name="target.service_running")
-    token_consent = _strict_boolean(target["token_transfer_consent"], name="target.token_transfer_consent")
-    if service_existed and token_consent:
-        raise RuntimeError("Eine Tokenübernahme ist in einer Update-Transaktion unzulässig.")
-    if token_consent and before.token:
-        raise RuntimeError("Eine Tokenübernahme darf kein bereits vorhandenes Maschinentoken überschreiben.")
     return PreparedTransaction(
         transaction_id=transaction_id,
-        desktop_reader_sid=desktop_reader_sid,
-        desktop_seal_sha256=desktop_seal_sha256,
         expected_executable=expected,
         service_existed=service_existed,
         service_running=service_running,
         service_metadata=service_metadata,
         machine_before=before,
         target_service_running=target_running,
-        token_transfer_consent=token_consent,
     )
 
 
@@ -811,46 +769,31 @@ def prepare_transaction(
     expected_executable: Path,
     *,
     transaction_id: str,
-    desktop_reader_sid: str,
-    desktop_seal_sha256: str,
     service_existed: bool,
     service_running: bool,
     machine_before: MachineBefore,
     target_service_running: bool,
-    token_transfer_consent: bool,
     _state_store: TransactionStore | None = None,
 ) -> PreparedTransaction:
     """Persist an immutable, transaction-bound baseline before the first SCM mutation."""
 
     normalized_id = _strict_transaction_id(transaction_id)
-    normalized_reader_sid = _strict_desktop_reader_sid(desktop_reader_sid)
-    normalized_seal_sha256 = _strict_sha256(
-        desktop_seal_sha256,
-        description="Der Hash des gebundenen Desktop-Seals",
-    )
     expected = _canonical_expected_executable(expected_executable)
     if type(service_existed) is not bool or type(service_running) is not bool:
         raise RuntimeError("Der vorhandene Dienstzustand muss strikt boolesch angegeben werden.")
-    if type(target_service_running) is not bool or type(token_transfer_consent) is not bool:
+    if type(target_service_running) is not bool:
         raise RuntimeError("Der Zielzustand muss strikt boolesch angegeben werden.")
     if not service_existed and service_running:
         raise RuntimeError("Ein nicht vorhandener Dienst kann vor der Installation nicht laufen.")
-    if service_existed and token_transfer_consent:
-        raise RuntimeError("Eine Tokenübernahme ist in einer Update-Transaktion unzulässig.")
-    if token_transfer_consent and machine_before.token:
-        raise RuntimeError("Eine Tokenübernahme darf kein bereits vorhandenes Maschinentoken überschreiben.")
     metadata = windows_service_metadata.capture_service_metadata(expected_executable) if service_existed else None
     prepared = PreparedTransaction(
         transaction_id=normalized_id,
-        desktop_reader_sid=normalized_reader_sid,
-        desktop_seal_sha256=normalized_seal_sha256,
         expected_executable=expected,
         service_existed=service_existed,
         service_running=service_running,
         service_metadata=metadata,
         machine_before=machine_before,
         target_service_running=target_service_running,
-        token_transfer_consent=token_transfer_consent,
     )
     encoded = _canonical_json(_prepared_payload(prepared))
     # Decode before writing so every invariant applied to recovery also applies to creation.

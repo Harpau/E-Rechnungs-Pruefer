@@ -337,15 +337,12 @@ def test_committed_forward_recovery_executes_partial_obsolete_delete_to_completi
     state = transaction.TransactionState(
         prepared=transaction.PreparedTransaction(
             transaction_id="a" * 32,
-            desktop_reader_sid="S-1-5-21-1000",
-            desktop_seal_sha256="b" * 64,
             expected_executable=str(operations.expected_executable),
             service_existed=True,
             service_running=False,
             service_metadata={"synthetic": "baseline"},
             machine_before=transaction.MachineBefore(True, True, True),
             target_service_running=False,
-            token_transfer_consent=False,
         ),
         phase=transaction.TransactionPhase.COMMIT_STARTED,
     )
@@ -983,16 +980,13 @@ def test_public_recovery_helpers_observe_execute_and_require_transaction(
 
     state = transaction.TransactionState(
         transaction.PreparedTransaction(
-            "a" * 32,
-            "S-1-5-21-1000",
-            "b" * 64,
-            str(EXPECTED_EXECUTABLE),
-            True,
-            False,
-            {"baseline": True},
-            transaction.MachineBefore(True, True, True),
-            False,
-            False,
+            transaction_id="a" * 32,
+            expected_executable=str(EXPECTED_EXECUTABLE),
+            service_existed=True,
+            service_running=False,
+            service_metadata={"baseline": True},
+            machine_before=transaction.MachineBefore(True, True, True),
+            target_service_running=False,
         ),
         transaction.TransactionPhase.COMMIT_STARTED,
     )

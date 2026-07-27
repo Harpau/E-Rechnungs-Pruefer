@@ -47,36 +47,31 @@ Beide Kontrollen schlagen bei einem Konflikt geschlossen fehl; es gibt keinen Au
 Healthcheck akzeptiert nur zulässige Loopback-Hostheader und veröffentlicht weder Dateipfade noch konkrete
 KoSIT-Konfigurationsprobleme. Es gibt bewusst keinen HTTP-Shutdown-Endpunkt.
 
-Beim Wechsel zum maschinenweiten Dienst wird die bekannte v1.3-Desktopinstallation des aufrufenden Kontos
-quarantänisiert. Zusätzlich inventarisiert der erhöhte Preflight laufende Altprozesse in allen Sitzungen sowie
-registrierte und standardmäßige Installationspfade aller lokalen Benutzerprofile einschließlich Entra-ID-Profilen.
-Für den Austausch mit dem ursprünglichen, nicht erhöhten Benutzer legt das erhöhte Setup einen kurzlebigen
-Transferbaum unter
-`%ProgramData%\E-Rechnungs-Pruefer-Installer-Transfer\<Setup-ID>` an. Stamm, Blatt und der dort bereitgestellte
-Öffnen-Client besitzen geschützte DACLs: `SYSTEM` und lokale Administratoren erhalten Vollzugriff; `INTERACTIVE`
-erhält nur die erforderlichen Durchquerungsrechte, am Blatt zusätzlich Datei-hinzufügen und am Client
-Lesen/Ausführen. Die Transferdateien werden ausschließlich mit `CREATE_NEW` angelegt. Damit darf der
-Originalbenutzer neue Transferdateien anlegen, aber keine vorhandenen Transferobjekte ändern oder löschen und
-insbesondere kein fremdes Token lesen. Migrationsbeleg und optionaler
-Tokentransfer erhalten jeweils eine exakt geprüfte, geschützte DACL für `SYSTEM`, lokale Administratoren und die
-konkrete Originalbenutzer-SID. Vor dem Versiegeln prüft der erhöhte Prozess das exakte Inventar, übereinstimmende
-Besitzer, jede Pfadkomponente no-follow sowie die Hardlinkfreiheit. Die Bereinigung entfernt ausschließlich die
-bekannten Dateien und danach leere Verzeichnisse; sie ist bewusst nicht rekursiv. Ein Folgelauf bereinigt ältere,
-streng erkennbare Transferblätter unter denselben Prüfungen, während fremdes Inventar oder abweichende DACLs
-geschlossen blockieren.
-Nicht geladene Benutzerhives werden unter gehaltenen no-follow Locks in eine administratorgeschützte
-Momentaufnahme kopiert und nur von dort kurzzeitig unter einem zufälligen Namen eingebunden; jeder verbliebene
-produktspezifische Autostartwert blockiert ebenso wie eine weitere Altinstallation. `NTUSER.DAT` und
-`NTUSER.MAN` werden unterstützt; ein nicht eindeutig prüfbares Profil blockiert. Profil-, Registry- und
-Quarantänepfade müssen auf einem festen lokalen Laufwerk liegen. Die erhöhte Inventur lehnt UNC-/Gerätepfade ab
-und öffnet jede vorhandene Komponente no-follow ohne Schreib- oder Löschfreigabe, während gehaltene Handles einen
-Austausch gegen Reparse-Points/Junctions bis zum Ende der Prüfung verhindern. Die Ausnahme für die zuvor
-quarantänisierte EXE ist an eine nach der erhöhten Prüfung geschützte Kopie des Migrationsbelegs gebunden. Der
-Originalbenutzer kann diese Kopie ausschließlich lesen, aber weder löschen, verändern noch im geschützten
-Verzeichnis ersetzen. Nach Commit oder Rollback entfernt nur der erhöhte, signierte Verwaltungsclient den Beleg.
-Commit und Rollback leiten den Pfad deshalb weder erneut aus dem Tempbeleg noch aus dem HKCU
-des über die UAC verwendeten Administratorkontos ab. Weitere Altinstallationen werden nicht
-kontenübergreifend verändert, sondern blockieren den Dienstmodus geschlossen.
+Desktop- und Dienstmodus werden nicht automatisch ineinander überführt. Der Dienst-Installer verändert weder
+Desktopdateien noch HKCU-Autostart oder benutzerbezogene Tokens; der Desktop-Installer verändert weder SCM-Dienst
+noch geschütztes ProgramData. Vor einem Wechsel muss die aktive Betriebsart regulär deinstalliert werden.
+Der maschinenweite Backend-Mutex und die feste Portreservierung bleiben eine zweite Laufzeitgrenze, ersetzen aber
+nicht den gegenseitigen Installationsausschluss.
+
+Der Dienst-Preflight inventarisiert den Gegenmodus read-only in allen registrierten lokalen und Entra-ID-Profilen.
+Er prüft Standardinstallationsordner, Uninstall-Key und Autostart. Für ein abgemeldetes Profil muss genau ein
+no-follow geprüfter `NTUSER.DAT`- oder `NTUSER.MAN`-Hive vorhanden sein; er wird mit `RegLoadAppKeyW` als privater
+`KEY_READ`-Anwendungshive geöffnet, ohne ihn systemweit einzuhängen. Fehlende, doppelte, umgeleitete oder während
+der Prüfung verschwindende Hives, nicht kanonische oder nicht feste Profilpfade, Reparse-Points/Junctions,
+Hardlinks und eine unvollständige Profilinventur führen zum geschlossenen Abbruch. Dieser Scanner besitzt keinen
+Migrations- oder Bereinigungspfad und verändert kein fremdes Profil.
+
+API-Tokens bleiben absichtlich an ihre Betriebsart gebunden. Das Diensttoken wird nicht aus dem Desktopprofil
+gelesen oder kopiert; die frühere Option `/MIGRATEDESKTOPTOKEN=1` wird nicht unterstützt. Ein bei der
+Dienstdeinstallation ausdrücklich erhaltenes, weiterhin geschützt inventarisiertes ProgramData-Verzeichnis ist
+allein kein installierter Gegenmodus und darf die Desktopinstallation nicht blockieren. Der Desktop-Installer
+darf diesen Maschinenzustand weder lesen noch verändern. Eine spätere Dienstneuinstallation übernimmt das
+erhaltene Diensttoken ausschließlich über den geschützten Dienstzustand.
+
+Unvollständige v1.4.0-Migrations-, Transfer-, Seal-, Quarantäne- und daran gebundene Alttransaktionszustände liegen
+außerhalb des unterstützten Upgradepfads. Ein neuer Installer darf daraus keine Pfade, Identitäten oder Tokens
+ableiten und keine scheinbare Recovery durch selektives Löschen unbekannter Marker erzwingen. Paket- und
+Freigabetests beginnen deshalb auf einer sauberen Wegwerf-VM ohne solche Altzustände.
 
 #### Desktopmodus
 
@@ -149,13 +144,13 @@ SCM-Löschung bestätigen; ein Installer wird bei vorhandenem Beleg vor jeder Re
 geschlossen abgewiesen.
 
 Ein Prozessabbruch, Stromverlust oder Neustart macht den Setup-Exitcode unzuverlässig. Deshalb beginnt jede
-Dienstmutation erst nach einem atomar veröffentlichten, unveränderlichen `PREPARED`-Manifest, das denselben
-Transaktionsbezug wie der geschützte Desktop-Seal trägt. Solange kein ebenfalls atomarer
+Dienstmutation erst nach einem atomar veröffentlichten, unveränderlichen service-only `PREPARED`-Manifest.
+Solange kein ebenfalls atomarer
 `COMMIT_STARTED`-Marker vorliegt, darf ein Folgesetup nur die exakt belegte SCM-, Bundle- und
 Maschinenzustands-Baseline restaurieren. Nach `COMMIT_STARTED` darf es ausschließlich den bereits verifizierten
 Zielzustand vorwärts bereinigen. Der Folgelauf reconciliert vor seinem normalen Preflight. Fremde Dienstmetadaten,
-instabile SCM-Zustände, unbekannte Bundlekombinationen, Hash-/Transaktionsabweichungen, ein anderer gebundener
-Benutzer oder verwaiste nichtterminale Belege führen ohne Mutation zum geschlossenen Abbruch. Die nativen
+instabile SCM-Zustände, unbekannte Bundlekombinationen, Hash-/Transaktionsabweichungen oder verwaiste
+nichtterminale Belege führen ohne Mutation zum geschlossenen Abbruch. Die nativen
 Hard-Kill-Tests und die manuelle Reboot-Abnahme sind in [`WINDOWS_PACKAGE.md`](WINDOWS_PACKAGE.md) beschrieben.
 
 Der Dienst öffnet aus Session 0 weder Tray, Browser noch MessageBox. Ein interaktiver Öffnen-Client spricht über
