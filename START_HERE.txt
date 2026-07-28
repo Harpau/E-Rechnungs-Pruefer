@@ -1,4 +1,4 @@
-E-RECHNUNGS-VIEWER & PRUEFER 1.1.0
+E-RECHNUNGS-VIEWER & PRUEFER 1.5.0
 ====================================
 
 NUTZUNG UNTER WINDOWS
