@@ -4,7 +4,7 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
-Vorgesehene Version: 1.5.0.
+## 1.5.0 – 2026-07-28
 
 ### Windows-Dienst und Desktopbetrieb
 
@@ -13,6 +13,7 @@ Vorgesehene Version: 1.5.0.
 - Bei der Dienstdeinstallation ausdrücklich erhaltenes ProgramData gilt allein nicht als installierter Gegenmodus: Der Desktopmodus darf es weder blockieren noch verändern, und eine spätere Dienstneuinstallation verwendet dasselbe geschützte Maschinentoken weiter.
 - Unvollständige v1.4.0-Migrations-, Transfer-, Seal-, Quarantäne- und kombinierte Alttransaktionszustände werden nicht übernommen oder automatisch wiederhergestellt. Paket- und Freigabetests müssen deshalb auf einer sauberen Wegwerf-VM ohne solche Altzustände beginnen.
 - Der interne Dienst-Testinstaller sowie seine Build- und Testparameter sind recovery-neutral benannt. Der service-only `COMMIT_STARTED`-Hard-Kill-Test, Rollback/Roll-forward und die manuelle Reboot-Abnahme bleiben erhalten; der v1.3.0-Desktopmigrationstest entfällt.
+- Die Dienst-Recovery unterscheidet bei einem verbliebenen `COMMIT_STARTED`-Beleg zwischen noch ausstehenden Vorwärtsaktionen und einem bereits vollständig erreichten, stabil geprüften Zielzustand; im terminalen Fall finalisiert sie nur noch den geschützten Transaktionsbeleg, statt erneut einen Roll-forward zu melden.
 - Der Dienst-Preflight öffnet abgemeldete `NTUSER.DAT`-/`NTUSER.MAN`-Hives nicht mehr mit dem für normale Benutzerhives ungeeigneten `RegLoadAppKeyW`. Stattdessen liest ein zeitbegrenzter Hilfsprozess genau einen gesperrten, größenbegrenzten Snapshot rein lesend in den gepinnten Offline-Parser Regipy ein, ohne den Hive zu mounten oder eine Kopie auf Datenträger anzulegen.
 - Dadurch werden auch nicht laufende Desktop-Altinstallationen und Autostarts in benutzerdefinierten Verzeichnissen abgemeldeter Profile weiterhin vor jeder Maschinenänderung erkannt. Inkonsistente, veränderte, umgeleitete, mehrdeutige oder nicht vollständig auswertbare Hives blockieren die Dienstinstallation geschlossen.
 
