@@ -971,6 +971,45 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
     assert preserve_repair < script.index("Invoke-ServiceUninstaller", preserve_repair)
 
 
+def test_service_package_test_uses_only_the_schema_two_analysis_contract() -> None:
+    script = _read("scripts/test_windows_service_package.ps1")
+
+    for expected in (
+        "$Disabled.schema_version -ne 2",
+        '$Disabled.assessment.official.status -ne "not-requested"',
+        "$Disabled.assessment.official.executed -ne $false",
+        '$Disabled.assessment.internal.status -ne "attention"',
+        '$Disabled.assessment.processing.status -ne "complete"',
+        "$Accepted.schema_version -ne 2",
+        '$Accepted.assessment.official.status -ne "accepted"',
+        "$Rejected.schema_version -ne 2",
+        '$Rejected.assessment.official.status -ne "rejected"',
+    ):
+        assert expected in script
+
+    assert ".validation.official" not in script
+
+
+def test_service_package_test_exercises_the_complete_pdf_header_contract() -> None:
+    script = _read("scripts/test_windows_service_package.ps1")
+
+    for expected in (
+        '$PdfHeaders = Join-Path $TestRoot "report-headers.txt"',
+        "--dump-header $PdfHeaders --output $PdfOutput",
+        "X-Einvoice-Analysis-Schema:\\s*2",
+        "X-Einvoice-Syntax:\\s*CII",
+        "X-Einvoice-Conformity-Status:\\s*not-requested",
+        "X-Einvoice-Internal-Status:\\s*attention",
+        "X-Einvoice-Processing-Status:\\s*complete",
+        "X-Einvoice-Report-Scope:\\s*readable",
+        "(?im)^X-Einvoice-Validation-Status\\s*:",
+        "(?im)^X-Einvoice-Official-Status\\s*:",
+        "if ($PdfResponseHeaders -match $ForbiddenHeader)",
+        "nicht mehr zulässigen Legacy-Header",
+    ):
+        assert expected in script
+
+
 def test_service_package_test_uses_locale_neutral_account_identifiers() -> None:
     script = _read("scripts/test_windows_service_package.ps1")
 
@@ -1060,6 +1099,28 @@ def test_mode_exclusion_test_proves_manual_switch_and_no_mutation_on_rejection()
     assert "$ExitCode -eq 0" in invoke_expected_failure
     assert "Get-SanitizedInnoLogTail" in invoke_setup
     assert "Get-SanitizedInnoLogTail" in invoke_expected_failure
+
+    wait_for_desktop_cleanup = script[
+        script.index("function Wait-DesktopFootprintsAbsent") : script.index("function Get-DiagnosticPathMasks")
+    ]
+    for expected in (
+        "[int]$Seconds = 60",
+        "$Timer.Elapsed.TotalSeconds -ge $Seconds",
+        "Start-Sleep -Milliseconds 250",
+        '"Installationsverzeichnis"',
+        '"lokales Datenverzeichnis"',
+        '"Uninstall-Registrierung"',
+        '"Autostart-Registrierung"',
+        "Get-SanitizedInnoLogTail -LogPath $LogPath",
+        "$($Remaining -join ', ')",
+    ):
+        assert expected in wait_for_desktop_cleanup
+    assert script.count("Wait-DesktopFootprintsAbsent -DesktopDir $DesktopDir") == 2
+    first_desktop_cleanup = script.index(
+        "Wait-DesktopFootprintsAbsent -DesktopDir $DesktopDir",
+        script.index("$DesktopProcess = $null"),
+    )
+    assert first_desktop_cleanup < script.index("$ServiceInstallArguments = @(")
 
     sanitizer = script[script.index("function Get-DiagnosticPathMasks") : script.index("function Invoke-Setup")]
     for expected in (

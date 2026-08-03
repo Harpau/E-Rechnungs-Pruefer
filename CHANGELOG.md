@@ -4,6 +4,98 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 2.0.0 – 2026-08-03
+
+### Breaking API-Änderung
+
+- `POST /api/analyze` liefert ab sofort ausschließlich das geschlossene Analyseschema 2 am bestehenden
+  Endpunkt. Es gibt keinen Legacy-Endpunkt, Versionsparameter oder Adapter für das bisherige Schema; Consumer
+  müssen `schema_version == 2` verlangen und gemeinsam mit dem Server migriert werden.
+- Der bisherige Sammelblock `validation` wurde durch die drei unabhängigen Achsen `assessment.official`,
+  `assessment.internal` und `assessment.processing` ersetzt. Ein gemeinsamer
+  `ok`-/`warning`-/`invalid`-Status wird nicht mehr gebildet.
+- HTML- und PDF-Berichte liefern jetzt `X-Einvoice-Analysis-Schema`, `X-Einvoice-Syntax`,
+  `X-Einvoice-Conformity-Status`, `X-Einvoice-Internal-Status` und `X-Einvoice-Processing-Status`. Die früheren
+  Header `X-Einvoice-Validation-Status` und `X-Einvoice-Official-Status` entfallen.
+- HTML- und PDF-Berichte verwenden den Form-Parameter `scope=readable|complete` und standardmäßig den
+  menschenlesbaren Umfang `readable`; der tatsächlich gelieferte Umfang steht in
+  `X-Einvoice-Report-Scope`. Technische XML-/KoSIT-Rohdaten sind nur noch mit `scope=complete` enthalten.
+- Beträge, Mengen, Codes, Kennungen, Parteien, Positionen, Steuern, Zahlungsanweisungen, Quellmetadaten und
+  technische Felder wurden in explizite Schema-2-Objekte überführt. Die Migrationsanleitung mit den zentralen
+  Alt→Neu-Zuordnungen steht in `docs/API_MIGRATION_V2.md`.
+- Browseroberfläche, Windows-Pakettests und der mitgelieferte Node-RED-Flow wurden atomar auf Schema 2 umgestellt.
+  Bereits importierte Flow-Kopien und eigene Consumer müssen gleichzeitig aktualisiert werden; der neue Flow
+  verlangt Schemaversion 2, alle sechs Berichtsheader und ausdrücklich `scope=readable`.
+
+### Dokumenttypen, Rollen und Prüfung
+
+- versionierte Registry für alle 62 Dokumenttypcodes der gebündelten CEN-EN-16931-Regeln 1.3.15 ergänzt;
+  bekannte, unbekannte und fehlende Codes bleiben unterscheidbar, und UBL `Invoice`/`CreditNote` wird auf
+  Root-Kompatibilität geprüft
+- Profil- und Self-Billing-Semantik trennt Dokumentaussteller/-empfänger von Gläubiger/Schuldner und einer aus
+  Typ und Vorzeichen abgeleiteten erwarteten Zahlungsrichtung; diese Rollen behaupten keine tatsächliche oder
+  zwingende Zahlung
+- insbesondere bleibt bei einer positiven Eigenabrechnung des Typs `389` die erwartete Zahlungsrichtung
+  Käufer → Verkäufer, während sie bei einer positiven Gutschrift des Typs `381` Verkäufer → Käufer lautet
+- Zahlungsprüfungen auf die konkreten Regeln BR-CO-25, BR-49, XRechnung BR-DE-1 und BR-DE-17 ausgerichtet; ein
+  positiver Zahlbetrag allein erzeugt keine allgemeine Pflicht zu einer Zahlungsanweisung
+- Befunde enthalten strukturierte Regelmetadaten, fachliche `semantic_references`, ein separates
+  `occurrence` und nur bei realer XML-Fundstelle `xml_location`; BG-/BT-Kennungen werden nicht mehr als
+  technische Ortsangaben dargestellt
+- XML-Syntax und Decimal-Werte werden strikt verarbeitet; nichtendliche Werte, Exponenten, Dezimalkomma und
+  freie Texte werden nicht stillschweigend in Rechenwerte umgewandelt
+
+### Berichts- und Druckdarstellung
+
+- Browseransicht, eigenständiger HTML-Bericht und ReportLab-PDF verwenden einen gemeinsamen
+  Präsentationsvertrag für deutsche Statusbezeichnungen, 30 Kopffakten, Zahlungsfluss und Abschnittsreihenfolge
+- „Drucken / PDF“ und „HTML-Bericht“ erzeugen den lesbaren Bericht; die getrennte Aktion „Vollständiger Bericht“
+  lädt den eigenständigen HTML-Bericht einschließlich der technischen Anhänge
+- der direkte Browserdruck enthält Rechnungsdarstellung und menschenlesbare Prüfergebnisse, blendet jedoch
+  Roh-XML und technische Detailansichten aus; der Druckkopf ist hell und tintensparend
+- In Rechnungspositionen steht der Steuersatz nun im Vordergrund und der Kategoriecode platzsparend darunter;
+  ein zusätzlicher Hinweis erscheint nur bei Abweichungen zwischen Positionen und Steueraufschlüsselung. Der
+  Steuersatz beziehungsweise ersatzweise Kategoriecode verwendet in Browser- und Druckdarstellung dieselbe
+  Schriftgröße und Fettschrift wie der Nettobetrag; sekundäre Steuerangaben bleiben bewusst kleiner.
+
+### Abdeckung, Datenschutz und Komponenten
+
+- CII-/UBL-Feldabdeckung für Parteien, Rollen, Zeiträume, Referenzen, Positionsdetails, Preisbestandteile,
+  Nachlässe/Zuschläge, Steuerwährungen und Zahlungsarten erweitert; unbekannte XML-Inhalte bleiben im
+  technischen Anhang und im bytegetreuen Export verfügbar
+- Liefertermin, Lieferort, Lieferempfänger und Liefer-/Leistungszeitraum werden getrennt modelliert; direkte
+  Parteienkennungen bleiben von rechtlichen Registerkennungen unterscheidbar, UBL-Steuerzeitpunktcodes (BT-8)
+  werden nicht als Zeitraumtexte ausgegeben und Hinweisartcodes (BT-21) bleiben strukturiert erhalten
+- Kartenkontokennungen werden im strukturierten Modell maskiert und aus technischen XML-Textansichten redigiert;
+  der ausdrücklich bytegetreue `/api/xml`-Export bleibt unverändert und ist kein anonymisierter Export
+- der interaktive Quellstart richtet bei konfiguriertem API-Bearer-Token automatisch eine getrennte,
+  cookiegeschützte Browsersitzung ein, sodass Oberfläche und Beispiele funktionieren, ohne das dauerhafte
+  Automatisierungstoken an den Browser weiterzugeben
+- öffentliche Health-Metadaten und Dokumentation weisen die gepinnten Komponenten aus
+  `packaging/kosit/components.lock.json` aus: KoSIT Validator 1.6.2, XRechnung 3.0.2,
+  Konfigurationsstand 2026-01-31, CEN EN 16931 1.3.15 und XRechnung-Schematron 2.5.0
+- der KoSIT-Installer ermittelt keine wechselnde neueste Veröffentlichung mehr, sondern installiert nur die in
+  dieser Sperrdatei festgelegten Artefakte nach verpflichtender SHA-256-Prüfung
+- Die Browserübersicht zeigt zu Beginn nur noch 30 wesentliche Rechnungsfelder; die Typregister-Version bleibt
+  im technischen Schema verfügbar. Die Kopfzeile nennt die Rechnungsart mit Dokumenttypcode und Bezeichnung und
+  kennzeichnet unbekannte oder fehlende Codes ausdrücklich. Das Gesamtstatusfeld bleibt mit allen möglichen
+  Beschriftungen einzeilig und vollständig; die Kopfzeile wechselt anhand ihrer tatsächlich verfügbaren Breite
+  kontrolliert in die zweizeilige Anordnung. Im Zahlungsbereich ersetzen Dokumentfluss und erwarteter
+  Zahlungsfluss die ausführliche Rollenmatrix. Semantische Überschriftenebenen für Zahlungsabschnitte,
+  -anweisungen und -details sowie deutlich kleinere Ableitungshinweise und zum Folgeinhalt gesetzte Abstände
+  verbessern die visuelle Gruppierung.
+
+### Release-Paketierung und Dokumentation
+
+- Der gemeinsame Präsentationsvertrag wird in Wheel, Source Distribution und beiden Windows-Laufzeitpaketen
+  mitgeführt. Die Source Distribution enthält außerdem die zentrale KoSIT-Sperrdatei, den Node-RED-Beispielflow
+  und die zugehörigen JavaScript-Regressionstests.
+- Das Repository-Release-ZIP schließt auch verschachtelte `.env`-Varianten aus; allein die Vorlage
+  `.env.example` bleibt zulässig. Der Versionsabgleich prüft zusätzlich den Versionskopf in `START_HERE.txt` und
+  genau einen datierten Changelog-Abschnitt für die aktuelle Version.
+- Die GitHub-Release-Notizen stellen den inkompatiblen Wechsel auf Analyseschema 2 vor die automatisch erzeugten
+  Notizen und verlinken die Migrationsanleitung sowie das kuratierte Changelog.
+
 ## 1.5.0 – 2026-07-28
 
 ### Windows-Dienst und Desktopbetrieb

@@ -23,10 +23,14 @@ SPEC.loader.exec_module(components)
 
 def test_repository_component_lock_is_valid() -> None:
     locked = components._load_lock(PROJECT_ROOT / "packaging/windows/components.lock.json")
+    kosit_lock = json.loads((PROJECT_ROOT / "packaging/kosit/components.lock.json").read_text(encoding="utf-8"))
 
     assert locked["validator"]["version"] == "KoSIT Validator 1.6.2"
     assert locked["xrechnung"]["version"].endswith("2026-01-31")
     assert locked["java"]["filename"].endswith("windows_hotspot_21.0.11_10.zip")
+    assert locked["validator"] == kosit_lock["components"]["validator"]
+    assert locked["xrechnung"] == kosit_lock["components"]["xrechnung"]
+    assert kosit_lock["standards"]["cen_en16931"] == "1.3.15"
 
 
 def test_load_lock_rejects_unknown_schema_and_invalid_digest(tmp_path: Path) -> None:
@@ -371,12 +375,37 @@ def test_windows_package_test_exercises_packaged_pdf_report() -> None:
         '"http://127.0.0.1:$($runtime.port)/api/report/pdf"',
         '[System.Text.Encoding]::ASCII.GetString($PdfBytes, 0, 5) -ne "%PDF-"',
         'Content-Disposition:\\s*attachment; filename="E-Rechnungs-Pruefbericht\\.pdf"',
+        "X-Einvoice-Analysis-Schema:\\s*2",
         "X-Einvoice-Syntax:\\s*CII",
-        "X-Einvoice-Validation-Status:\\s*warning",
-        "X-Einvoice-Official-Status:\\s*not-requested",
+        "X-Einvoice-Conformity-Status:\\s*not-requested",
+        "X-Einvoice-Internal-Status:\\s*attention",
+        "X-Einvoice-Processing-Status:\\s*complete",
+        "X-Einvoice-Report-Scope:\\s*readable",
+        "if ($PdfResponseHeaders -match $ForbiddenHeader)",
+        "nicht mehr zulässigen Legacy-Header",
         "Der installierte PDF-Endpunkt veröffentlicht fachliche Daten in Antwort-Headern.",
     ):
         assert expected in script
+
+    assert "(?im)^X-Einvoice-Validation-Status\\s*:" in script
+    assert "(?im)^X-Einvoice-Official-Status\\s*:" in script
+
+
+def test_windows_package_test_uses_only_the_schema_two_analysis_contract() -> None:
+    script = (PROJECT_ROOT / "scripts/test_windows_package.ps1").read_text(encoding="utf-8")
+
+    for expected in (
+        "$Analysis.schema_version -ne 2",
+        '$Analysis.assessment.official.status -ne "not-requested"',
+        '$Analysis.assessment.internal.status -ne "attention"',
+        '$Analysis.assessment.processing.status -ne "complete"',
+        "$Official.schema_version -ne 2",
+        "$Official.assessment.official.executed",
+        '$Official.assessment.official.status -ne "accepted"',
+    ):
+        assert expected in script
+
+    assert ".validation.official" not in script
 
 
 def test_windows_package_test_callers_confirm_isolation() -> None:

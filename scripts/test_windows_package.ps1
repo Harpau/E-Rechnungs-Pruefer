@@ -414,7 +414,11 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
         throw "Analyse über das installierte Paket ist fehlgeschlagen."
     }
     $Analysis = $AnalysisJson | ConvertFrom-Json
-    if ($Analysis.document.id -ne "CII-DEMO-1") {
+    if ($Analysis.schema_version -ne 2 -or
+        $Analysis.document.id -ne "CII-DEMO-1" -or
+        $Analysis.assessment.official.status -ne "not-requested" -or
+        $Analysis.assessment.internal.status -ne "attention" -or
+        $Analysis.assessment.processing.status -ne "complete") {
         throw "Das Paket lieferte ein unerwartetes Analyseergebnis."
     }
 
@@ -427,8 +431,10 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
         throw "KoSIT-Prüfung über das installierte Paket ist fehlgeschlagen."
     }
     $Official = $OfficialJson | ConvertFrom-Json
-    if (-not $Official.validation.official.executed) {
-        throw "KoSIT wurde im installierten Paket nicht ausgeführt: $($Official.validation.official.summary)"
+    if ($Official.schema_version -ne 2 -or
+        -not $Official.assessment.official.executed -or
+        $Official.assessment.official.status -ne "accepted") {
+        throw "KoSIT wurde im installierten Paket nicht erfolgreich ausgeführt: $($Official.assessment.official.summary)"
     }
 
     & curl.exe --silent --show-error --fail `
@@ -462,12 +468,23 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     foreach ($ExpectedHeader in @(
         '(?im)^Content-Type:\s*application/pdf\s*\r?$',
         '(?im)^Content-Disposition:\s*attachment; filename="E-Rechnungs-Pruefbericht\.pdf"\s*\r?$',
+        '(?im)^X-Einvoice-Analysis-Schema:\s*2\s*\r?$',
         '(?im)^X-Einvoice-Syntax:\s*CII\s*\r?$',
-        '(?im)^X-Einvoice-Validation-Status:\s*warning\s*\r?$',
-        '(?im)^X-Einvoice-Official-Status:\s*not-requested\s*\r?$'
+        '(?im)^X-Einvoice-Conformity-Status:\s*not-requested\s*\r?$',
+        '(?im)^X-Einvoice-Internal-Status:\s*attention\s*\r?$',
+        '(?im)^X-Einvoice-Processing-Status:\s*complete\s*\r?$',
+        '(?im)^X-Einvoice-Report-Scope:\s*readable\s*\r?$'
     )) {
         if ($PdfResponseHeaders -notmatch $ExpectedHeader) {
             throw "Dem installierten PDF-Endpunkt fehlt ein erwarteter Antwort-Header: $ExpectedHeader"
+        }
+    }
+    foreach ($ForbiddenHeader in @(
+        '(?im)^X-Einvoice-Validation-Status\s*:',
+        '(?im)^X-Einvoice-Official-Status\s*:'
+    )) {
+        if ($PdfResponseHeaders -match $ForbiddenHeader) {
+            throw "Der installierte PDF-Endpunkt liefert einen nicht mehr zulässigen Legacy-Header: $ForbiddenHeader"
         }
     }
     if ($PdfResponseHeaders -match 'CII-DEMO-1' -or $PdfResponseHeaders -match [regex]::Escape((Split-Path $Example -Leaf))) {

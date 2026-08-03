@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Download the official KoSIT standalone validator and XRechnung configuration.
+"""Install the exactly pinned KoSIT validator and XRechnung configuration.
 
-Nothing is downloaded at application runtime. This explicit setup script uses
-GitHub's release API, verifies the downloaded artefacts when a SHA-256 digest is
-published, installs them below ``vendor/kosit`` and writes ``.env.kosit``.
+Nothing is downloaded at application runtime. This explicit setup script reads
+version, download URL and mandatory SHA-256 digest from the repository lock,
+verifies both artefacts, installs them below ``vendor/kosit`` and writes
+``.env.kosit``.
 """
 
 from __future__ import annotations
@@ -18,74 +19,47 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_ROOT = PROJECT_ROOT / "vendor" / "kosit"
-USER_AGENT = "e-rechnung-pruefer-kosit-installer/1.5.0"
+DEFAULT_LOCK_FILE = PROJECT_ROOT / "packaging" / "kosit" / "components.lock.json"
+USER_AGENT = "e-rechnung-pruefer-kosit-installer/2.0.0"
 
 
 class InstallError(RuntimeError):
     """Raised when an official KoSIT component cannot be installed safely."""
 
 
-def api_json(url: str) -> dict:
-    request = urllib.request.Request(
-        url,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT},
-    )
+def load_lock(path: Path) -> dict[str, Any]:
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            return json.load(response)
-    except (urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise InstallError(f"GitHub-API konnte nicht erreicht oder ausgewertet werden: {exc}") from exc
-
-
-def latest_release(repo: str) -> dict:
-    data = api_json(f"https://api.github.com/repos/{repo}/releases/latest")
-    if not data.get("assets"):
-        raise InstallError(f"Die aktuelle Veröffentlichung von {repo} enthält keine Download-Artefakte.")
-    return data
-
-
-def choose_validator_asset(release: dict) -> dict:
-    """Select the executable standalone JAR, never the library JAR or ZIP."""
-    candidates = []
-    for asset in release.get("assets", []):
-        name = str(asset.get("name", "")).lower()
-        if (
-            name.endswith("-standalone.jar")
-            and "validator" in name
-            and not any(token in name for token in ("sources", "javadoc", "tests"))
-        ):
-            candidates.append(asset)
-    if not candidates:
-        raise InstallError(
-            f"Kein ausführbares '*-standalone.jar' in Validator-Release {release.get('tag_name')} gefunden."
-        )
-    return max(candidates, key=lambda asset: int(asset.get("size", 0)))
-
-
-def choose_configuration_asset(release: dict) -> dict:
-    assets = [
-        asset
-        for asset in release.get("assets", [])
-        if str(asset.get("name", "")).lower().endswith(".zip") and "source" not in str(asset.get("name", "")).lower()
-    ]
-    if not assets:
-        raise InstallError(f"Kein ZIP-Artefakt in XRechnung-Release {release.get('tag_name')} gefunden.")
-
-    def score(asset: dict) -> tuple[int, int]:
-        name = str(asset.get("name", "")).lower()
-        points = 0
-        if "validator-configuration-xrechnung" in name:
-            points += 60
-        if "xrechnung" in name:
-            points += 25
-        if "configuration" in name:
-            points += 10
-        return points, int(asset.get("size", 0))
-
-    return max(assets, key=score)
+        payload: Any = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise InstallError("Die KoSIT-Sperrdatei muss ein JSON-Objekt enthalten.")
+        if payload.get("schema_version") != 1:
+            raise InstallError("Unbekannte Schema-Version der KoSIT-Sperrdatei.")
+        components = payload["components"]
+        standards = payload["standards"]
+        for name in ("validator", "xrechnung"):
+            component = components[name]
+            for field in ("version", "filename", "url", "sha256"):
+                value = component[field]
+                if not isinstance(value, str) or not value:
+                    raise InstallError(f"Ungültiges Feld {name}.{field} in der KoSIT-Sperrdatei.")
+            if Path(component["filename"]).name != component["filename"]:
+                raise InstallError(f"Unsicherer Dateiname für {name} in der KoSIT-Sperrdatei.")
+            if not component["url"].startswith("https://"):
+                raise InstallError(f"Unsichere Download-URL für {name} in der KoSIT-Sperrdatei.")
+            digest = component["sha256"].lower()
+            if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+                raise InstallError(f"Ungültige SHA-256-Prüfsumme für {name}.")
+        for field in ("xrechnung", "xrechnung_configuration", "cen_en16931", "xrechnung_schematron"):
+            value = standards[field]
+            if not isinstance(value, str) or not value:
+                raise InstallError(f"Ungültiges Feld standards.{field} in der KoSIT-Sperrdatei.")
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise InstallError(f"KoSIT-Sperrdatei kann nicht gelesen werden: {exc}") from exc
+    return payload
 
 
 def download(url: str, target: Path) -> None:
@@ -106,16 +80,11 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_published_digest(path: Path, asset: dict) -> str:
+def verify_locked_digest(path: Path, expected: str) -> str:
     actual = sha256_file(path)
-    published = str(asset.get("digest") or "").strip().lower()
-    if published:
-        algorithm, separator, expected = published.partition(":")
-        if separator and algorithm == "sha256" and expected:
-            if actual.lower() != expected.lower():
-                raise InstallError(
-                    f"SHA-256-Prüfung für {path.name} fehlgeschlagen: erwartet {expected}, erhalten {actual}."
-                )
+    if actual.lower() != expected.lower():
+        path.unlink(missing_ok=True)
+        raise InstallError(f"SHA-256-Prüfung für {path.name} fehlgeschlagen: erwartet {expected}, erhalten {actual}.")
     return actual
 
 
@@ -234,37 +203,37 @@ def write_env(jar: Path, scenarios: Path, repository: Path) -> Path:
     return env_path
 
 
-def install(force: bool) -> None:
+def install(force: bool, *, lock_file: Path = DEFAULT_LOCK_FILE) -> None:
     if VENDOR_ROOT.exists() and not force:
         raise InstallError(
             f"{VENDOR_ROOT} existiert bereits. Mit --force kann die Installation sicher aktualisiert werden."
         )
 
-    print("Ermittle aktuelle KoSIT-Veröffentlichungen …")
-    validator_release = latest_release("itplr-kosit/validator")
-    config_release = latest_release("itplr-kosit/validator-configuration-xrechnung")
-    validator_asset = choose_validator_asset(validator_release)
-    config_asset = choose_configuration_asset(config_release)
+    locked = load_lock(lock_file)
+    validator_component = locked["components"]["validator"]
+    config_component = locked["components"]["xrechnung"]
+    standards = locked["standards"]
 
-    print(f"Validator:   {validator_release.get('tag_name')} – {validator_asset.get('name')}")
-    print(f"XRechnung:   {config_release.get('tag_name')} – {config_asset.get('name')}")
+    print(f"Validator:   {validator_component['version']} – {validator_component['filename']}")
+    print(f"XRechnung:   {config_component['version']} – {config_component['filename']}")
+    print(f"CEN-Regeln:  {standards['cen_en16931']}")
 
     with tempfile.TemporaryDirectory(prefix="kosit-download-") as temp:
         temp_path = Path(temp)
         stage_root = temp_path / "kosit"
         validator_dir = stage_root / "validator"
         config_dir = stage_root / "xrechnung"
-        validator_jar = validator_dir / Path(str(validator_asset["name"])).name
-        config_zip = temp_path / "xrechnung.zip"
+        validator_jar = validator_dir / validator_component["filename"]
+        config_zip = temp_path / config_component["filename"]
 
         print("Lade ausführbares Validator-Standalone-JAR herunter …")
-        download(validator_asset["browser_download_url"], validator_jar)
-        validator_sha256 = verify_published_digest(validator_jar, validator_asset)
+        download(validator_component["url"], validator_jar)
+        validator_sha256 = verify_locked_digest(validator_jar, validator_component["sha256"])
         main_class = require_executable_jar(validator_jar)
 
         print("Lade XRechnung-Konfiguration herunter …")
-        download(config_asset["browser_download_url"], config_zip)
-        config_sha256 = verify_published_digest(config_zip, config_asset)
+        download(config_component["url"], config_zip)
+        config_sha256 = verify_locked_digest(config_zip, config_component["sha256"])
         print("Entpacke XRechnung-Konfiguration …")
         safe_extract(config_zip, config_dir)
 
@@ -301,9 +270,10 @@ def install(force: bool) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--force", action="store_true", help="Vorhandene KoSIT-Dateien ersetzen")
+    parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK_FILE)
     args = parser.parse_args()
     try:
-        install(args.force)
+        install(args.force, lock_file=args.lock_file)
         return 0
     except InstallError as exc:
         print(f"Fehler: {exc}", file=sys.stderr)

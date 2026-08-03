@@ -50,6 +50,46 @@ function Wait-SetupUninstallMutexReleased {
     }
 }
 
+function Wait-DesktopFootprintsAbsent {
+    param(
+        [string]$DesktopDir,
+        [string]$DesktopData,
+        [string]$DesktopUninstallKey,
+        [string]$RunKey,
+        [string]$RunName,
+        [string]$LogPath,
+        [ValidateRange(1, 600)]
+        [int]$Seconds = 60
+    )
+    $Timer = [Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        $Remaining = [Collections.Generic.List[string]]::new()
+        if (Test-Path -LiteralPath $DesktopDir) {
+            [void]$Remaining.Add("Installationsverzeichnis")
+        }
+        if (Test-Path -LiteralPath $DesktopData) {
+            [void]$Remaining.Add("lokales Datenverzeichnis")
+        }
+        if (Test-Path -LiteralPath $DesktopUninstallKey) {
+            [void]$Remaining.Add("Uninstall-Registrierung")
+        }
+        if ((Get-OptionalRegistryValue -Path $RunKey -Name $RunName).Exists) {
+            [void]$Remaining.Add("Autostart-Registrierung")
+        }
+        if ($Remaining.Count -eq 0) {
+            return
+        }
+        if ($Timer.Elapsed.TotalSeconds -ge $Seconds) {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    $LogTail = Get-SanitizedInnoLogTail -LogPath $LogPath
+    throw "Die nachlaufende Desktop-Uninstaller-Aufräumung wurde nicht innerhalb des " +
+        "Zeitlimits abgeschlossen. Noch vorhanden: $($Remaining -join ', ').`n" +
+        "Begrenzter, maskierter Inno-Logauszug:`n$LogTail"
+}
+
 function Get-DiagnosticPathMasks {
     $RepositoryRoot = Split-Path -Parent $PSScriptRoot
     $Candidates = @(
@@ -1205,12 +1245,9 @@ try {
         throw "Die Desktopdeinstallation beendete den laufenden Desktopprozess nicht."
     }
     $DesktopProcess = $null
-    if ((Test-Path -LiteralPath $DesktopDir) -or
-        (Test-Path -LiteralPath $DesktopData) -or
-        (Test-Path -LiteralPath $DesktopUninstallKey) -or
-        (Get-OptionalRegistryValue -Path $RunKey -Name $RunName).Exists) {
-        throw "Die Desktopdeinstallation hinterließ einen Konflikt für den Dienstmodus."
-    }
+    Wait-DesktopFootprintsAbsent -DesktopDir $DesktopDir -DesktopData $DesktopData `
+        -DesktopUninstallKey $DesktopUninstallKey -RunKey $RunKey -RunName $RunName `
+        -LogPath $DesktopUninstallLog
 
     $ServiceInstallArguments = @(
         "/VERYSILENT",
@@ -1314,12 +1351,9 @@ try {
             "/NORESTART",
             "/LOG=`"$DesktopPreservedDataUninstallLog`""
         )
-    if ((Test-Path -LiteralPath $DesktopDir) -or
-        (Test-Path -LiteralPath $DesktopData) -or
-        (Test-Path -LiteralPath $DesktopUninstallKey) -or
-        (Get-OptionalRegistryValue -Path $RunKey -Name $RunName).Exists) {
-        throw "Die zweite Desktopdeinstallation hinterließ einen Gegenmodus-Footprint."
-    }
+    Wait-DesktopFootprintsAbsent -DesktopDir $DesktopDir -DesktopData $DesktopData `
+        -DesktopUninstallKey $DesktopUninstallKey -RunKey $RunKey -RunName $RunName `
+        -LogPath $DesktopPreservedDataUninstallLog
     if ((Get-TreeFingerprint -Path $ServiceData) -ne $ServiceDataBefore -or
         (Get-FileHash -LiteralPath $ServiceToken -Algorithm SHA256).Hash -ne
         $ServiceTokenHashBefore) {

@@ -28,21 +28,6 @@ function text(value, fallback = '–') {
   return present(value) ? String(value) : fallback;
 }
 
-function taxCategoryDisplay(code, label, display) {
-  if (present(display)) return String(display);
-  if (present(code) && present(label)) {
-    const codeText = String(code);
-    const labelText = String(label);
-    if (labelText === codeText || labelText.startsWith(`${codeText} –`)) return labelText;
-    return `${codeText} – ${labelText}`;
-  }
-  return text(label || code, 'Steuer');
-}
-
-function taxRateDisplay(rate) {
-  return present(rate) ? `${formatNumber(rate, 2)} %` : null;
-}
-
 function formatNumber(value, maxDigits = 4) {
   if (!present(value)) return '–';
   const number = Number(String(value).replace(',', '.'));
@@ -53,19 +38,43 @@ function formatNumber(value, maxDigits = 4) {
   }).format(number);
 }
 
-function formatMoney(value, currency = 'EUR') {
-  if (!present(value)) return '–';
-  const number = Number(String(value).replace(',', '.'));
-  if (!Number.isFinite(number)) return `${value} ${currency || ''}`.trim();
+function codeDisplay(code, fallback = '–') {
+  if (!code || !present(code.value)) return fallback;
+  const value = String(code.value);
+  if (!present(code.label)) return value;
+  const label = String(code.label);
+  if (label === value || label.startsWith(`${value} –`)) return label;
+  return `${value} – ${label}`;
+}
+
+function identifierDisplay(identifier, fallback = '–') {
+  if (!identifier || !present(identifier.value)) return fallback;
+  return `${identifier.value}${present(identifier.scheme_id) ? ` (${identifier.scheme_id})` : ''}`;
+}
+
+function formatMoney(amount) {
+  if (!amount || !present(amount.value)) return '–';
+  const number = Number(String(amount.value).replace(',', '.'));
+  const currency = present(amount.currency) ? String(amount.currency) : null;
+  if (!Number.isFinite(number)) return `${amount.value} ${currency || ''}`.trim();
+  if (!currency) {
+    return number.toLocaleString('de-DE', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
   try {
     return new Intl.NumberFormat('de-DE', {
       style: 'currency',
-      currency: currency || 'EUR',
+      currency,
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(number);
   } catch (_error) {
-    return `${number.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency || ''}`.trim();
+    return `${number.toLocaleString('de-DE', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })} ${currency}`.trim();
   }
 }
 
@@ -73,6 +82,22 @@ function formatDate(value) {
   if (!present(value)) return '–';
   const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return match ? `${match[3]}.${match[2]}.${match[1]}` : String(value);
+}
+
+function formatPeriod(period) {
+  if (!period) return null;
+  const parts = [
+    period.start_date ? `von ${formatDate(period.start_date)}` : null,
+    period.end_date ? `bis ${formatDate(period.end_date)}` : null,
+    period.description,
+  ].filter(present);
+  return parts.length ? parts.join(' ') : null;
+}
+
+function formatQuantity(quantity) {
+  if (!quantity || !present(quantity.value)) return '–';
+  const unit = codeDisplay(quantity.unit, null);
+  return [formatNumber(quantity.value), unit].filter(present).join(' ');
 }
 
 function formatBytes(value) {
@@ -101,293 +126,770 @@ function detailRows(rows) {
   `).join('')}</dl>`;
 }
 
-function addressLines(address = {}) {
+function subsectionHeading(label) {
+  return `<h3 class="subsection-heading">${escapeHtml(label)}</h3>`;
+}
+
+function addressLines(address = null) {
+  if (!address) return [];
   return [
     address.line1,
     address.line2,
     address.line3,
     [address.postcode, address.city].filter(present).join(' '),
     address.subdivision,
-    address.country,
+    codeDisplay(address.country, null),
   ].filter(present);
 }
 
-function idList(entries = []) {
-  return entries.filter((entry) => entry && present(entry.value)).map((entry) => `${entry.value}${entry.scheme ? ` (${entry.scheme})` : ''}`).join(', ');
+const PARTY_IDENTIFIER_KIND_LABELS = {
+  party: 'Parteikennung',
+  'legal-registration': 'Registerkennung',
+  vat: 'USt-Kennung',
+  'tax-registration': 'Steuerkennung',
+  other: 'Weitere Kennung',
+};
+
+function partyIdentifierList(entries = []) {
+  return entries
+    .filter((entry) => entry?.identifier && present(entry.identifier.value))
+    .map((entry) => {
+      const kind = PARTY_IDENTIFIER_KIND_LABELS[entry.kind] || 'Kennung';
+      return `${kind}: ${identifierDisplay(entry.identifier)}`;
+    })
+    .join(', ');
 }
 
-function partyHasData(party = {}) {
-  const address = party.address || {};
+function partyHasData(party = null) {
+  if (!party) return false;
+  const address = party.postal_address || {};
   const contact = party.contact || {};
-  const endpoint = party.endpoint || {};
   return [
-    party.name, party.trading_name, party.description, endpoint.value,
-    ...(party.ids || []).map((entry) => entry?.value),
-    ...(party.tax_ids || []).map((entry) => entry?.value),
-    ...Object.values(address), ...Object.values(contact),
+    party.legal_name,
+    party.trading_name,
+    party.additional_legal_information,
+    party.electronic_address?.value,
+    ...(party.identifiers || []).map((entry) => entry?.identifier?.value),
+    ...(party.tax_identifiers || []).map((entry) => entry?.identifier?.value),
+    address.line1,
+    address.line2,
+    address.line3,
+    address.postcode,
+    address.city,
+    address.subdivision,
+    address.country?.value,
+    contact.name,
+    contact.department,
+    contact.phone,
+    contact.email,
   ].some(present);
 }
 
-function renderParty(party = {}) {
-  const address = party.address || {};
+function renderParty(party = null) {
+  if (!party) return '<p class="empty-state">Keine Angaben vorhanden.</p>';
+  const address = party.postal_address;
   const contact = party.contact || {};
-  const endpoint = party.endpoint || {};
   const addressHtml = addressLines(address).length
     ? `<div class="address-block">${addressLines(address).map((line) => `<div>${escapeHtml(line)}</div>`).join('')}</div>`
     : '<p class="empty-state">Keine Anschrift angegeben.</p>';
   const details = detailRows([
     ['Handelsname', party.trading_name],
-    ['Kennungen', idList(party.ids)],
-    ['Steuerkennungen', idList(party.tax_ids)],
-    ['Elektronische Adresse', endpoint.value ? `${endpoint.value}${endpoint.scheme ? ` (${endpoint.scheme})` : ''}` : null],
+    ['Kennungen', partyIdentifierList(party.identifiers)],
+    ['Steuerkennungen', partyIdentifierList(party.tax_identifiers)],
+    ['Elektronische Adresse', identifierDisplay(party.electronic_address, null)],
     ['Kontakt', contact.name],
     ['Abteilung', contact.department],
     ['Telefon', contact.phone],
     ['E-Mail', contact.email],
   ]);
   return `
-    <div class="party-name">${escapeHtml(text(party.name, 'Nicht angegeben'))}</div>
-    ${party.description ? `<p class="party-description">${escapeHtml(party.description)}</p>` : ''}
+    <div class="party-name">${escapeHtml(text(party.legal_name, 'Nicht angegeben'))}</div>
+    ${party.additional_legal_information ? `<p class="party-description">${escapeHtml(party.additional_legal_information)}</p>` : ''}
     ${addressHtml}
     ${details}
   `;
 }
 
+const DOCUMENT_FAMILY_LABELS = {
+  invoice: 'Rechnung',
+  'credit-note': 'Gutschrift',
+  correction: 'Korrekturrechnung',
+  'debit-note': 'Belastungsanzeige',
+  'prepayment-invoice': 'Vorauszahlungsrechnung',
+  'payment-request': 'Zahlungsaufforderung',
+  'pro-forma': 'Pro-forma-Rechnung',
+  information: 'Informationsdokument',
+  claim: 'Forderungsdokument',
+  other: 'Sonstiges Rechnungsdokument',
+  unknown: 'E‑Rechnung',
+};
+
+const ROLE_LABELS = {
+  seller: 'Verkäufer',
+  buyer: 'Käufer',
+  payee: 'Zahlungsempfänger',
+  'invoice-recipient': 'Rechnungsempfänger',
+  'delivery-recipient': 'Lieferempfänger',
+  'seller-tax-representative': 'Steuervertreter des Verkäufers',
+  unknown: 'Unbekannt',
+};
+
+const DOCUMENT_TYPE_STATUS_LABELS = {
+  known: 'Erkannt',
+  unknown: 'Unbekannter Code',
+  missing: 'Nicht angegeben',
+};
+
+const POLARITY_LABELS = {
+  debit: 'Soll',
+  credit: 'Haben',
+  neutral: 'Neutral',
+  undetermined: 'Nicht bestimmbar',
+};
+
+const SETTLEMENT_RELEVANCE_LABELS = {
+  relevant: 'Zahlungsrelevant',
+  'not-relevant': 'Nicht zahlungsrelevant',
+  undetermined: 'Nicht bestimmbar',
+};
+
+const ROOT_COMPATIBILITY_LABELS = {
+  compatible: 'Kompatibel',
+  incompatible: 'Nicht kompatibel',
+  'not-applicable': 'Nicht anwendbar',
+  undetermined: 'Nicht bestimmbar',
+};
+
+const RECOGNITION_CAPABILITY_LABELS = {
+  recognized: 'Erkannt',
+  unknown: 'Unbekannt',
+  missing: 'Fehlend',
+};
+
+const RENDERING_CAPABILITY_LABELS = {
+  full: 'Vollständig',
+  partial: 'Teilweise',
+  unsupported: 'Nicht unterstützt',
+};
+
+const INTERNAL_CHECKS_CAPABILITY_LABELS = {
+  full: 'Vollständig',
+  partial: 'Teilweise',
+  unsupported: 'Nicht unterstützt',
+};
+
+const OFFICIAL_VALIDATION_CAPABILITY_LABELS = {
+  bundled: 'Enthalten',
+  'not-bundled': 'Nicht enthalten',
+  unknown: 'Unbekannt',
+  unavailable: 'Nicht verfügbar',
+};
+
+function documentKind(type = {}) {
+  return DOCUMENT_FAMILY_LABELS[type.family] || DOCUMENT_FAMILY_LABELS.unknown;
+}
+
+function documentTypeSummary(type = {}) {
+  if (type.status === 'missing' || !type.code || !present(type.code.value)) {
+    return 'Rechnungsart · Nicht angegeben';
+  }
+  if (type.status === 'unknown') {
+    return `Rechnungsart · ${type.code.value} – Unbekannter Dokumenttyp`;
+  }
+  return `Rechnungsart · ${codeDisplay(type.code, documentKind(type))}`;
+}
+
+const OFFICIAL_STATUS_LABELS = {
+  accepted: 'Akzeptiert',
+  rejected: 'Abgelehnt',
+  'not-requested': 'Nicht angefordert',
+  unsupported: 'Nicht unterstützt',
+  unavailable: 'Nicht verfügbar',
+  indeterminate: 'Unbestimmt',
+};
+
+const INTERNAL_STATUS_LABELS = {
+  clear: 'Unauffällig',
+  attention: 'Hinweise',
+  errors: 'Fehler',
+  'not-run': 'Nicht ausgeführt',
+};
+
+const PROCESSING_STATUS_LABELS = {
+  complete: 'Vollständig',
+  limited: 'Begrenzt',
+  incomplete: 'Unvollständig',
+};
+
+function axisFindingCount(axis = {}) {
+  const counts = axis.counts || {};
+  return Number(counts.error || 0) + Number(counts.warning || 0) + Number(counts.info || 0);
+}
+
 function renderSummary(data) {
   const doc = data.document || {};
   const totals = data.totals || {};
-  const validation = data.validation || {};
-  const counts = validation.counts || { error: 0, warning: 0, info: 0 };
-  const statusMap = {
-    ok: ['Unauffällig', 'ok'],
-    warning: ['Auffällig', 'warning'],
-    invalid: ['Fehlerhaft', 'invalid'],
-  };
-  const [statusLabel, statusClass] = statusMap[validation.status] || ['Unbekannt', 'warning'];
+  const profile = data.profile || {};
+  const capabilities = data.capabilities || {};
+  const assessment = data.assessment || {};
+  const official = assessment.official || {};
+  const internal = assessment.internal || {};
+  const processing = assessment.processing || {};
+  const hasErrors = official.status === 'rejected'
+    || internal.status === 'errors'
+    || processing.status === 'incomplete';
+  const hasWarnings = internal.status === 'attention'
+    || internal.status === 'not-run'
+    || processing.status === 'limited'
+    || ['unsupported', 'unavailable', 'indeterminate'].includes(official.status);
+  const statusLabel = hasErrors ? 'Handlungsbedarf' : hasWarnings ? 'Mit Hinweisen' : 'Ausgewertet';
+  const statusClass = hasErrors ? 'invalid' : hasWarnings ? 'warning' : 'ok';
   const badge = $('#status-badge');
   badge.textContent = statusLabel;
   badge.className = `status-badge ${statusClass}`;
-  $('#document-kind').textContent = doc.kind || 'E‑Rechnung';
-  $('#document-title').textContent = `${doc.kind || 'E‑Rechnung'} ${doc.id || ''}`.trim();
-  $('#document-subtitle').textContent = [doc.format, doc.profile_name, formatDate(doc.issue_date)].filter(present).join(' · ');
-  $('#payable-total').textContent = formatMoney(totals.due_payable_amount, doc.currency);
-  $('#due-date-summary').textContent = doc.due_date ? `Fällig am ${formatDate(doc.due_date)}` : 'Kein Fälligkeitsdatum angegeben';
+  const kind = documentKind(doc.type);
+  $('#document-type-summary').textContent = documentTypeSummary(doc.type);
+  $('#document-title').textContent = `${kind} ${doc.id || ''}`.trim();
+  $('#document-subtitle').textContent = [
+    capabilities.format_name,
+    profile.name,
+    doc.issue_date ? formatDate(doc.issue_date) : null,
+  ].filter(present).join(' · ');
+  const payableLabel = $('#payable-total').previousElementSibling;
+  if (payableLabel) payableLabel.textContent = 'Ausstehender Betrag (BT-115)';
+  $('#payable-total').textContent = formatMoney(totals.payable);
+  $('#due-date-summary').textContent = data.payment?.due_date
+    ? `Fällig am ${formatDate(data.payment.due_date)}`
+    : 'Kein Fälligkeitsdatum angegeben';
   $('#summary-counts').innerHTML = [
-    ['Fehler', counts.error || 0],
-    ['Warnungen', counts.warning || 0],
-    ['Hinweise', counts.info || 0],
-  ].map(([label, count]) => `<div class="summary-count"><strong>${count}</strong><span>${label}</span></div>`).join('');
-  const issueCount = (counts.error || 0) + (counts.warning || 0);
+    ['Offiziell', OFFICIAL_STATUS_LABELS[official.status] || 'Unbekannt'],
+    ['Intern', INTERNAL_STATUS_LABELS[internal.status] || 'Unbekannt'],
+    ['Verarbeitung', PROCESSING_STATUS_LABELS[processing.status] || 'Unbekannt'],
+  ].map(([label, value]) => `
+    <div class="summary-count"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>
+  `).join('');
+  const issueCount = axisFindingCount(official) + axisFindingCount(internal) + axisFindingCount(processing);
   $('#validation-tab-count').textContent = issueCount ? String(issueCount) : '✓';
 }
 
 function renderFacts(data) {
   const doc = data.document || {};
+  const type = doc.type || {};
   const profile = data.profile || {};
+  const capabilities = data.capabilities || {};
+  const periods = data.periods || {};
+  const delivery = data.delivery || {};
+  const deliveryLocation = delivery.location || {};
   const facts = [
     ['Rechnungsnummer', doc.id],
     ['Rechnungsdatum', formatDate(doc.issue_date)],
-    ['Liefer-/Leistungsdatum', formatDate(doc.delivery_date)],
-    ['Fälligkeit', formatDate(doc.due_date)],
-    ['Währung', doc.currency_label || doc.currency],
-    ['Profil', profile.name || doc.profile_name],
-    ['Rechnungsart', doc.type_label || doc.type_code],
+    ['Rechnungszeitraum', formatPeriod(periods.invoice)],
+    ['Liefer-/Leistungszeitraum', formatPeriod(periods.delivery)],
+    ['Tatsächliches Lieferdatum (BT-72)', formatDate(delivery.actual_date)],
+    ['Kennung des Lieferorts (BT-71)', identifierDisplay(deliveryLocation.id, null)],
+    ['Lieferort', addressLines(deliveryLocation.postal_address).join(', ')],
+    ['Fälligkeit', formatDate(data.payment?.due_date)],
+    ['Rechnungswährung', codeDisplay(doc.document_currency, null)],
+    ['USt-Abrechnungswährung', codeDisplay(doc.vat_accounting_currency, null)],
+    ['Profil', profile.name],
+    ['Rechnungsart', codeDisplay(type.code, documentKind(type))],
+    ['Dokumenttyp-Status', DOCUMENT_TYPE_STATUS_LABELS[type.status]],
+    ['Dokumentfamilie', DOCUMENT_FAMILY_LABELS[type.family]],
+    ['Grundpolarität', POLARITY_LABELS[type.base_polarity]],
+    ['Abrechnungsrelevanz', SETTLEMENT_RELEVANCE_LABELS[type.settlement_relevance]],
+    ['Selbstausstellung', type.self_billing === null || type.self_billing === undefined ? null : type.self_billing ? 'Ja' : 'Nein'],
     ['Käuferreferenz', doc.buyer_reference],
-    ['Syntax', doc.syntax],
+    ['Syntax', [capabilities.syntax, capabilities.syntax_version].filter(present).join(' ')],
+    ['Format', capabilities.format_name],
+    ['Dokumenttyperkennung', RECOGNITION_CAPABILITY_LABELS[capabilities.document_type_recognition]],
+    ['Darstellungsumfang', RENDERING_CAPABILITY_LABELS[capabilities.rendering]],
+    ['Interner Prüfumfang', INTERNAL_CHECKS_CAPABILITY_LABELS[capabilities.internal_checks]],
+    ['Offizielle Prüfung', OFFICIAL_VALIDATION_CAPABILITY_LABELS[capabilities.official_validation]],
     ['Geschäftsprozess', profile.business_process_id],
     ['Steuerdatum', formatDate(doc.tax_point_date)],
-    ['Profilkennung', profile.id || doc.profile_id],
+    ['Code des Steuerdatums', codeDisplay(doc.tax_point_date_code, null)],
+    ['Profilkennung', profile.id],
+    ['UBL-Wurzelelement', type.ubl_root],
+    ['Wurzel/Typ-Kompatibilität', ROOT_COMPATIBILITY_LABELS[type.root_compatibility]],
   ];
   $('#document-facts').innerHTML = facts.map(([label, value]) => `
     <div class="fact"><span>${escapeHtml(label)}</span><strong>${escapeHtml(text(value))}</strong></div>
   `).join('');
 }
 
+function allowanceChargeKindLabel(kind, index) {
+  if (kind === 'allowance') return 'Nachlass';
+  if (kind === 'charge') return 'Zuschlag';
+  return `Anpassung ${index + 1} (Art unbekannt)`;
+}
+
+function allowanceChargeDetail(item, index) {
+  return [
+    `${allowanceChargeKindLabel(item.kind, index)}: ${formatMoney(item.amount)}`,
+    present(item.percentage) ? `${formatNumber(item.percentage, 4)} %` : null,
+    item.base_amount ? `Basis ${formatMoney(item.base_amount)}` : null,
+    item.reason_text,
+    item.reason_code ? `Code ${codeDisplay(item.reason_code)}` : null,
+    item.tax_category ? `Steuer ${codeDisplay(item.tax_category)}` : null,
+    present(item.tax_rate_percent) ? `${formatDecimalExact(item.tax_rate_percent)} %` : null,
+    present(item.indicator_raw) ? `Indikator ${item.indicator_raw}` : null,
+  ].filter(present).join(' · ');
+}
+
+function normalizedDecimal(value) {
+  if (!present(value)) return null;
+  const raw = String(value).trim().replace(',', '.');
+  const match = raw.match(/^([+-]?)(\d+)(?:\.(\d*))?$/);
+  if (!match) return `raw:${raw}`;
+  const integer = match[2].replace(/^0+(?=\d)/, '');
+  const fraction = (match[3] || '').replace(/0+$/, '');
+  const isZero = integer === '0' && !fraction;
+  const sign = match[1] === '-' && !isZero ? '-' : '';
+  return `${sign}${integer}${fraction ? `.${fraction}` : ''}`;
+}
+
+function formatDecimalExact(value) {
+  if (!present(value)) return '–';
+  const normalized = normalizedDecimal(value);
+  if (!normalized || normalized.startsWith('raw:')) return String(value).trim();
+  const sign = normalized.startsWith('-') ? '-' : '';
+  const unsigned = sign ? normalized.slice(1) : normalized;
+  const [integer, fraction] = unsigned.split('.');
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return `${sign}${grouped}${fraction ? `,${fraction}` : ''}`;
+}
+
+function taxCategoryValue(category) {
+  return category && present(category.value) ? String(category.value).trim() : null;
+}
+
+function taxCategoryLabel(category) {
+  const value = taxCategoryValue(category);
+  if (!value || !present(category?.label)) return null;
+  const label = String(category.label).trim();
+  const valueFolded = value.toUpperCase();
+  if (label.toUpperCase() === valueFolded) return null;
+  const hasCodePrefix = label.slice(0, value.length).toUpperCase() === valueFolded;
+  if (hasCodePrefix && label.slice(value.length).startsWith(' – ')) return label.slice(value.length + 3);
+  if (hasCodePrefix && label.slice(value.length).startsWith(' - ')) return label.slice(value.length + 3);
+  return label;
+}
+
+function taxCategoryDisplay(category, fallback = '–') {
+  const value = taxCategoryValue(category);
+  if (!value) return fallback;
+  const label = taxCategoryLabel(category);
+  return label ? `${value} – ${label}` : value;
+}
+
+function taxCombinationKey(category, rate) {
+  const categoryValue = taxCategoryValue(category);
+  const normalizedRate = normalizedDecimal(rate);
+  if (!categoryValue && normalizedRate === null) return null;
+  return `${categoryValue?.toUpperCase() ?? '<missing>'}\u0000${normalizedRate ?? '<missing>'}`;
+}
+
+function lineTaxAccessibleText(line) {
+  const categoryValue = taxCategoryValue(line.tax_category);
+  const categoryLabel = taxCategoryLabel(line.tax_category);
+  const hasRate = present(line.tax_rate_percent);
+  const parts = [];
+  if (hasRate) {
+    parts.push(`Steuersatz ${formatDecimalExact(line.tax_rate_percent)} Prozent`);
+  }
+  if (categoryValue) {
+    parts.push(`Steuerkategorie ${categoryValue}`);
+    if (categoryLabel) parts.push(categoryLabel);
+  }
+  if (!hasRate && categoryValue) {
+    parts.push(categoryValue.toUpperCase() === 'O' ? 'ohne Steuersatz' : 'Steuersatz nicht angegeben');
+  } else if (hasRate && !categoryValue) {
+    parts.push('Steuerkategorie nicht angegeben');
+  } else if (!hasRate && !categoryValue) {
+    parts.push('Steuersatz und Steuerkategorie nicht angegeben');
+  }
+  if (line.tax_type && present(line.tax_type.value)) {
+    parts.push(`Steuerart ${codeDisplay(line.tax_type)}`);
+  }
+  return parts.join(', ');
+}
+
+function renderLineTaxCell(line) {
+  const categoryValue = taxCategoryValue(line.tax_category);
+  const hasRate = present(line.tax_rate_percent);
+  let visible;
+  if (hasRate) {
+    const secondary = categoryValue
+      ? `<span class="line-tax-code">${escapeHtml(categoryValue)}</span>`
+      : '<span class="line-tax-status">Kategorie nicht angegeben</span>';
+    visible = `<strong class="line-tax-primary line-tax-rate">${escapeHtml(formatDecimalExact(line.tax_rate_percent))}&nbsp;%</strong>${secondary}`;
+  } else if (categoryValue) {
+    const status = categoryValue.toUpperCase() === 'O'
+      ? 'ohne Steuersatz'
+      : 'Steuersatz nicht angegeben';
+    visible = `<strong class="line-tax-primary line-tax-primary-code">${escapeHtml(categoryValue)}</strong><span class="line-tax-status">${status}</span>`;
+  } else {
+    visible = '<span class="line-tax-empty">–</span>';
+  }
+  return `<span class="line-tax-visual" aria-hidden="true">${visible}</span><span class="visually-hidden">${escapeHtml(lineTaxAccessibleText(line))}</span>`;
+}
+
+function renderLineTaxBreakdownNotices(data, lines) {
+  const notice = $('#line-tax-breakdown-notices');
+  if (!notice) return;
+  const breakdownKeys = new Set((data.tax?.breakdown || [])
+    .map((tax) => taxCombinationKey(tax.category, tax.rate_percent))
+    .filter(present));
+  const missing = new Map();
+  lines.forEach((line) => {
+    const key = taxCombinationKey(line.tax_category, line.tax_rate_percent);
+    if (key && !breakdownKeys.has(key) && !missing.has(key)) missing.set(key, line);
+  });
+  if (!missing.size) {
+    notice.innerHTML = '';
+    notice.hidden = true;
+    return;
+  }
+  const items = [...missing.values()].map((line) => {
+    const category = taxCategoryDisplay(line.tax_category, 'Kategorie nicht angegeben');
+    const categoryValue = taxCategoryValue(line.tax_category);
+    let rate;
+    if (present(line.tax_rate_percent)) {
+      rate = `${escapeHtml(formatDecimalExact(line.tax_rate_percent))}&nbsp;%`;
+    } else {
+      rate = categoryValue?.toUpperCase() === 'O' ? 'ohne Steuersatz' : 'Steuersatz nicht angegeben';
+    }
+    return `<li>${escapeHtml(category)} · ${rate}</li>`;
+  }).join('');
+  notice.innerHTML = `<strong>Nicht in der Steueraufschlüsselung enthalten:</strong> <ul>${items}</ul>`;
+  notice.hidden = false;
+}
+
 function renderLines(data) {
   const lines = data.lines || [];
-  const currency = data.document?.currency || 'EUR';
   $('#line-count').textContent = `${lines.length} ${lines.length === 1 ? 'Position' : 'Positionen'}`;
   $('#line-items-body').innerHTML = lines.map((line, index) => {
+    const item = line.item || {};
+    const price = line.price || {};
     const itemIds = [
-      line.seller_item_id ? `Art.-Nr. ${line.seller_item_id}` : null,
-      line.buyer_item_id ? `Käufer-ID ${line.buyer_item_id}` : null,
-      line.standard_item_id ? `${line.standard_item_id}${line.standard_item_scheme ? ` (${line.standard_item_scheme})` : ''}` : null,
+      item.seller_identifier ? `Art.-Nr. ${identifierDisplay(item.seller_identifier)}` : null,
+      item.buyer_identifier ? `Käufer-ID ${identifierDisplay(item.buyer_identifier)}` : null,
+      item.standard_identifier ? `Standard-ID ${identifierDisplay(item.standard_identifier)}` : null,
     ].filter(present).join(' · ');
 
     const details = [...(line.notes || [])];
     if (line.period) {
-      const period = [
-        line.period.start ? `von ${formatDate(line.period.start)}` : null,
-        line.period.end ? `bis ${formatDate(line.period.end)}` : null,
-        line.period.description,
-      ].filter(present).join(' ');
+      const period = formatPeriod(line.period);
       if (period) details.push(`Abrechnungszeitraum: ${period}`);
     }
     if (line.order_line_reference) details.push(`Bestellposition: ${line.order_line_reference}`);
-    if (line.accounting_cost) details.push(`Kontierung: ${line.accounting_cost}`);
-    if (line.origin_country_label || line.origin_country) details.push(`Ursprungsland: ${line.origin_country_label || line.origin_country}`);
-    (line.classifications || []).forEach((item) => {
-      const value = [item.code, item.name, item.scheme ? `Schema ${item.scheme}` : null, item.version ? `Version ${item.version}` : null]
+    if (line.accounting_reference) details.push(`Kontierung: ${line.accounting_reference}`);
+    if (line.object_identifier) details.push(`Objektkennung: ${identifierDisplay(line.object_identifier)}`);
+    if (item.origin_country) details.push(`Ursprungsland: ${codeDisplay(item.origin_country)}`);
+    (item.classifications || []).forEach((classification) => {
+      const value = [
+        classification.code,
+        classification.name,
+        classification.scheme_id ? `Schema ${classification.scheme_id}` : null,
+        classification.scheme_version ? `Version ${classification.scheme_version}` : null,
+      ]
         .filter(present).join(' · ');
       if (value) details.push(`Klassifikation: ${value}`);
     });
-    (line.additional_properties || []).forEach((item) => {
-      if (present(item?.name) || present(item?.value)) details.push(`${item.name || 'Eigenschaft'}: ${text(item.value)}`);
+    (item.properties || []).forEach((property) => {
+      if (present(property?.name) || present(property?.value)) {
+        details.push(`${property.name || 'Eigenschaft'}: ${text(property.value)}`);
+      }
     });
-    (line.allowances_charges || []).forEach((item) => {
-      const adjustment = [
-        `${item.type_label}: ${formatMoney(item.amount, item.currency || currency)}`,
-        present(item.percent) ? `${formatNumber(item.percent, 4)} %` : null,
-        item.basis_amount ? `Basis ${formatMoney(item.basis_amount, item.basis_currency || currency)}` : null,
-        item.reason || item.reason_code,
+    (line.allowances_charges || []).forEach((adjustment, adjustmentIndex) => {
+      const adjustmentText = allowanceChargeDetail(adjustment, adjustmentIndex);
+      if (adjustmentText) details.push(adjustmentText);
+    });
+    if (price.gross) details.push(`Bruttopreis: ${formatMoney(price.gross)}`);
+    if (price.discount) {
+      const discount = [
+        price.discount.amount ? `Preisnachlass: ${formatMoney(price.discount.amount)}` : 'Preisnachlass',
+        present(price.discount.percentage) ? `${formatNumber(price.discount.percentage, 4)} %` : null,
       ].filter(present).join(' · ');
-      if (adjustment) details.push(adjustment);
-    });
+      if (discount) details.push(discount);
+    }
 
-    const base = present(line.base_quantity) && Number(line.base_quantity) !== 1
-      ? `${formatMoney(line.price, line.price_currency || currency)} je ${formatNumber(line.base_quantity)} ${line.base_unit_label || line.base_unit_code || ''}`
-      : `${formatMoney(line.price, line.price_currency || currency)} je ${line.base_unit_label || line.base_unit_code || line.unit_label || line.unit_code || 'Einheit'}`;
-    const tax = [taxCategoryDisplay(line.tax_category, line.tax_category_label, line.tax_category_display), taxRateDisplay(line.tax_rate)].filter(present).join(' · ');
+    const base = price.net
+      ? [
+        formatMoney(price.net),
+        price.base_quantity ? `je ${formatQuantity(price.base_quantity)}` : null,
+      ].filter(present).join(' ')
+      : '–';
     return `
       <tr>
         <td>${escapeHtml(text(line.id, index + 1))}</td>
         <td>
-          <span class="line-name">${escapeHtml(text(line.name || line.description, 'Ohne Bezeichnung'))}</span>
-          ${line.description && line.description !== line.name ? `<span class="line-note">${escapeHtml(line.description)}</span>` : ''}
+          <span class="line-name">${escapeHtml(text(item.name || item.description, 'Ohne Bezeichnung'))}</span>
+          ${item.description && item.description !== item.name ? `<span class="line-note">${escapeHtml(item.description)}</span>` : ''}
           ${itemIds ? `<span class="line-meta">${escapeHtml(itemIds)}</span>` : ''}
           ${details.length ? `<span class="line-note">${escapeHtml(details.join(' · '))}</span>` : ''}
         </td>
-        <td class="num">${escapeHtml(formatNumber(line.quantity))}<span class="line-meta">${escapeHtml(text(line.unit_label || line.unit_code, ''))}</span></td>
+        <td class="num">${escapeHtml(formatQuantity(line.quantity))}</td>
         <td class="num">${escapeHtml(base)}</td>
-        <td class="num">${escapeHtml(text(tax))}</td>
-        <td class="num"><strong>${escapeHtml(formatMoney(line.line_total, line.line_currency || currency))}</strong></td>
+        <td class="num line-tax-cell">${renderLineTaxCell(line)}</td>
+        <td class="num"><strong>${escapeHtml(formatMoney(line.net_amount))}</strong></td>
       </tr>`;
   }).join('') || '<tr><td colspan="6" class="empty-state">Keine Rechnungspositionen erkannt.</td></tr>';
+  renderLineTaxBreakdownNotices(data, lines);
 }
 
 function renderTaxes(data) {
-  const taxes = data.taxes || [];
-  const currency = data.document?.currency || 'EUR';
-  $('#tax-section').innerHTML = taxes.length ? taxes.map((tax) => {
+  const taxModel = data.tax || {};
+  const breakdown = taxModel.breakdown || [];
+  const taxTotals = taxModel.totals || {};
+  let html = breakdown.length ? breakdown.map((tax) => {
     const details = [];
-    if (present(tax.basis_amount)) {
-      details.push(`${tax.basis_label || (tax.category_code === 'O' ? 'Nettobetrag dieser Steuerkategorie' : 'Bemessungsgrundlage')} ${formatMoney(tax.basis_amount, tax.basis_currency || currency)}`);
+    if (tax.taxable_amount) {
+      details.push(`Bemessungsgrundlage ${formatMoney(tax.taxable_amount)}`);
     }
-    if (present(tax.exemption_reason)) details.push(`Begründung: ${tax.exemption_reason}`);
-    if (present(tax.exemption_reason_code)) details.push(`Begründungscode: ${tax.exemption_reason_code}`);
+    (tax.exemption?.reasons || []).forEach((reason) => {
+      if (present(reason)) details.push(`Begründung: ${reason}`);
+    });
+    if (tax.exemption?.reason_code) {
+      details.push(`Begründungscode: ${codeDisplay(tax.exemption.reason_code)}`);
+    }
     const heading = [
-      taxCategoryDisplay(tax.category_code, tax.category_label, tax.category_display),
-      taxRateDisplay(tax.rate),
+      codeDisplay(tax.category, 'Steuer'),
+      present(tax.rate_percent) ? `${formatDecimalExact(tax.rate_percent)} %` : null,
+      tax.tax_type ? `(${codeDisplay(tax.tax_type)})` : null,
     ].filter(present).join(' · ');
     return `
       <div class="tax-row">
         <div><span>${escapeHtml(heading)}</span>
         ${details.length ? `<small>${escapeHtml(details.join(' · '))}</small>` : ''}</div>
-        <strong>${escapeHtml(formatMoney(tax.tax_amount, tax.tax_currency || currency))}</strong>
+        <strong>${escapeHtml(formatMoney(tax.tax_amount))}</strong>
       </div>`;
   }).join('') : '<p class="empty-state">Keine Steueraufschlüsselung erkannt.</p>';
+  const totalRows = [
+    ['Umsatzsteuerbetrag (BT-110)', taxTotals.document_currency],
+    ['Umsatzsteuerbetrag in Abrechnungswährung (BT-111)', taxTotals.vat_accounting_currency],
+  ].filter(([, amount]) => amount);
+  if (totalRows.length) {
+    html += `${subsectionHeading('Steuersummen')}${totalRows.map(([label, amount]) => `
+      <div class="tax-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(formatMoney(amount))}</strong></div>
+    `).join('')}`;
+  }
+  $('#tax-section').innerHTML = html;
 }
 
 function renderTotals(data) {
   const totals = data.totals || {};
-  const currency = data.document?.currency || totals.currency || 'EUR';
   const rows = [
-    ['Summe Positionen', totals.line_total, ''],
+    ['Summe Rechnungspositionen (BT-106)', totals.line_net_total, ''],
     ['Nachlässe', totals.allowance_total, ''],
     ['Zuschläge', totals.charge_total, ''],
-    ['Nettobetrag / Steuerbasis', totals.tax_basis_total, ''],
-    ['Umsatzsteuer', totals.tax_total, ''],
-    ['Bruttobetrag', totals.grand_total, 'grand'],
-    ['Vorauszahlungen', totals.prepaid_amount, ''],
-    ['Rundung', totals.rounding_amount, ''],
-    ['Zahlbetrag', totals.due_payable_amount, 'payable'],
+    ['Rechnungsbetrag ohne Umsatzsteuer (BT-109)', totals.tax_exclusive_total, ''],
+    ['Rechnungsbetrag mit Umsatzsteuer (BT-112)', totals.tax_inclusive_total, 'grand'],
+    ['Vorauszahlungen', totals.prepaid_total, ''],
+    ['Rundung', totals.rounding, ''],
+    ['Ausstehender Betrag (BT-115)', totals.payable, 'payable'],
   ].filter((row) => present(row[1]));
   $('#totals-section').innerHTML = rows.map(([label, value, className]) => `
-    <div class="total-row ${className}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(formatMoney(value, currency))}</strong></div>
+    <div class="total-row ${className}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(formatMoney(value))}</strong></div>
   `).join('') || '<p class="empty-state">Keine Summen erkannt.</p>';
 }
 
 function renderAdditionalParties(data) {
+  const parties = data.parties || {};
   const roles = [
-    ['Zahlungsempfänger', data.payee],
-    ['Rechnungsempfänger', data.invoicee],
-    ['Lieferempfänger', data.ship_to],
-  ].filter(([, party]) => partyHasData(party || {}));
+    ['Zahlungsempfänger', parties.payee],
+    ['Rechnungsempfänger', parties.invoice_recipient],
+    ['Steuervertreter des Verkäufers', parties.seller_tax_representative],
+    ['Lieferempfänger', parties.delivery_recipient],
+  ].filter(([, party]) => partyHasData(party));
   const section = $('#additional-parties-section');
   section.hidden = roles.length === 0;
   section.innerHTML = roles.map(([label, party]) => `
-    <article class="content-card"><h2>${escapeHtml(label)}</h2>${renderParty(party || {})}</article>
+    <article class="content-card"><h2>${escapeHtml(label)}</h2>${renderParty(party)}</article>
   `).join('');
 }
 
 function renderHeaderAdjustments(data) {
-  const items = data.header_allowances_charges || [];
-  const currency = data.document?.currency || data.totals?.currency || 'EUR';
+  const items = data.allowances_charges || [];
   const card = $('#header-adjustments-card');
   card.hidden = items.length === 0;
   $('#header-adjustments-section').innerHTML = items.map((item, index) => {
     const detail = [
-      present(item.percent) ? `${formatNumber(item.percent, 4)} %` : null,
-      item.basis_amount ? `Basis ${formatMoney(item.basis_amount, item.basis_currency || currency)}` : null,
-      item.reason,
-      item.reason_code ? `Code ${item.reason_code}` : null,
+      present(item.percentage) ? `${formatNumber(item.percentage, 4)} %` : null,
+      item.base_amount ? `Basis ${formatMoney(item.base_amount)}` : null,
+      item.reason_text,
+      item.reason_code ? `Code ${codeDisplay(item.reason_code)}` : null,
+      item.tax_category ? `Steuer ${codeDisplay(item.tax_category)}` : null,
+      present(item.tax_rate_percent) ? `${formatDecimalExact(item.tax_rate_percent)} %` : null,
+      present(item.indicator_raw) ? `Indikator ${item.indicator_raw}` : null,
     ].filter(present).join(' · ');
-    return `<div class="tax-row"><div><span>${escapeHtml(item.type_label || `Anpassung ${index + 1}`)}</span><small>${escapeHtml(detail)}</small></div><strong>${escapeHtml(formatMoney(item.amount, item.currency || currency))}</strong></div>`;
+    return `
+      <div class="tax-row">
+        <div><span>${escapeHtml(allowanceChargeKindLabel(item.kind, index))}</span><small>${escapeHtml(detail)}</small></div>
+        <strong>${escapeHtml(formatMoney(item.amount))}</strong>
+      </div>`;
   }).join('');
+}
+
+function maskCardIdentifier(value) {
+  if (!present(value)) return null;
+  const visible = String(value).replace(/[•*\s-]/g, '');
+  return visible ? `•••• ${visible.slice(-4)}` : '••••';
+}
+
+function resolvedRoleLabel(role) {
+  return role && role !== 'unknown' ? ROLE_LABELS[role] || null : null;
+}
+
+function roleFlow(from, to) {
+  const fromLabel = resolvedRoleLabel(from);
+  const toLabel = resolvedRoleLabel(to);
+  return fromLabel && toLabel ? `${fromLabel} → ${toLabel}` : 'Nicht eindeutig ableitbar';
+}
+
+function expectedPaymentFlow(roles) {
+  if (roles.expected_payment_direction === 'none') return 'Keine Zahlung erwartet';
+  return roleFlow(roles.expected_payer, roles.expected_recipient);
+}
+
+function roleSemanticsNote(derivation) {
+  const explanation = {
+    explicit: 'Aus den strukturierten Rechnungsangaben ermittelt.',
+    derived: 'Aus Dokumenttyp, Zahlbetrag und Parteienrollen abgeleitet.',
+    ambiguous: 'Wegen widersprüchlicher Angaben nicht eindeutig ableitbar.',
+    unknown: 'Mangels hinreichender Angaben nicht eindeutig ableitbar.',
+  }[derivation] || 'Mangels hinreichender Angaben nicht eindeutig ableitbar.';
+  return `${explanation} Dies ist kein Nachweis, dass eine Zahlung tatsächlich erfolgt ist oder erfolgen muss.`;
+}
+
+function paymentSectionHeading(label) {
+  return `<h3 class="payment-heading payment-section-heading">${escapeHtml(label)}</h3>`;
+}
+
+function paymentItemHeading(label) {
+  return `<h4 class="payment-heading payment-item-heading">${escapeHtml(label)}</h4>`;
+}
+
+function paymentDetailHeading(label) {
+  return `<h5 class="payment-heading payment-detail-heading">${escapeHtml(label)}</h5>`;
+}
+
+function paymentDetailBlock(label, rows) {
+  return `
+    <section class="payment-detail">
+      ${paymentDetailHeading(label)}
+      ${detailRows(rows)}
+    </section>`;
+}
+
+function renderPaymentInstruction(instruction, index) {
+  const details = [];
+  (instruction.credit_transfers || []).forEach((transfer, transferIndex) => {
+    details.push(paymentDetailBlock(`Überweisungskonto ${transferIndex + 1}`, [
+      ['Konto', identifierDisplay(transfer.account_id, null)],
+      ['Kontoinhaber', transfer.account_name],
+      ['Zahlungsdienstleister', identifierDisplay(transfer.service_provider_id, null)],
+    ]));
+  });
+  if (instruction.payment_card) {
+    details.push(paymentDetailBlock('Zahlungskarte', [
+      ['Maskierte Kartenkennung', maskCardIdentifier(instruction.payment_card.masked_account_identifier)],
+      ['Karteninhaber', instruction.payment_card.holder_name],
+    ]));
+  }
+  if (instruction.direct_debit) {
+    details.push(paymentDetailBlock('Lastschrift', [
+      ['Mandatsreferenz', instruction.direct_debit.mandate_reference],
+      ['Gläubigerkennung', identifierDisplay(instruction.direct_debit.creditor_id, null)],
+      ['Kennung des belasteten Kontos', identifierDisplay(instruction.direct_debit.debited_account_id, null)],
+    ]));
+  }
+  return `
+    <article class="payment-item">
+      ${paymentItemHeading(`Zahlungsanweisung ${index + 1}`)}
+      ${detailRows([
+        ['Zahlungsart', codeDisplay(instruction.means, null)],
+        ['Hinweis', instruction.instruction_note],
+        ['Zahlungs-ID', instruction.payment_id],
+      ])}
+      ${details.join('')}
+    </article>`;
 }
 
 function renderPayment(data) {
   const payment = data.payment || {};
-  const means = payment.means || [];
+  const instructions = payment.instructions || [];
   const terms = payment.terms || [];
-  const blocks = [];
-  if (present(payment.reference)) {
-    blocks.push(detailRows([['Zahlungsreferenz', payment.reference]]));
-  }
-  means.forEach((item, index) => {
-    blocks.push(`<h3>Zahlungsweg ${index + 1}</h3>${detailRows([
-      ['Art', item.type_label || item.type_code],
-      ['Information', item.information],
-      ['IBAN / Konto', item.iban],
-      ['Kontoinhaber', item.account_name],
-      ['BIC', item.bic],
-      ['IBAN des Zahlers', item.payer_iban],
-      ['Mandatsreferenz', item.mandate_reference],
-      ['Gläubiger-ID', item.creditor_id],
-      ['Kartennummer/Konto', item.card_account],
-      ['Zahlungs-ID', item.payment_id],
-    ])}`);
-  });
+  const roles = data.roles || {};
+  const referenceRows = present(payment.reference)
+    ? detailRows([['Zahlungsreferenz', payment.reference]])
+    : '';
+  const instructionItems = instructions.length
+    ? instructions.map(renderPaymentInstruction).join('')
+    : '<p class="empty-state">Keine Zahlungsanweisungen angegeben.</p>';
+  const blocks = [`
+    <section class="payment-section payment-flow-section">
+      ${paymentSectionHeading('Dokument- und Zahlungsfluss')}
+      ${detailRows([
+        ['Dokumentfluss', roleFlow(roles.issuer, roles.document_recipient)],
+        ['Erwarteter Zahlungsfluss', expectedPaymentFlow(roles)],
+      ])}
+      <p class="muted role-semantics-note">${escapeHtml(roleSemanticsNote(roles.derivation))}</p>
+      ${referenceRows}
+    </section>
+    <section class="payment-section payment-instructions-section">
+      ${paymentSectionHeading('Zahlungsanweisungen (BG-16)')}
+      <div class="payment-section-content">${instructionItems}</div>
+    </section>`];
   terms.forEach((item, index) => {
-    blocks.push(`<h3>Zahlungsbedingung ${index + 1}</h3>${detailRows([
-      ['Beschreibung', item.description],
-      ['Fälligkeit', formatDate(item.due_date)],
-      ['Lastschriftmandat', item.direct_debit_mandate_id],
-      ['Teilzahlungsbetrag', item.partial_payment_amount],
-    ])}`);
+    blocks.push(`
+      <section class="payment-section payment-terms-section">
+        ${paymentSectionHeading(`Zahlungsbedingung ${index + 1}`)}
+        ${detailRows([
+          ['Beschreibung', item.description],
+          ['Fälligkeit', formatDate(item.due_date)],
+          ['Teilzahlungsbetrag', formatMoney(item.partial_payment)],
+        ])}
+      </section>`);
   });
-  $('#payment-section').innerHTML = blocks.join('') || '<p class="empty-state">Keine Zahlungsangaben erkannt.</p>';
+  $('#payment-section').innerHTML = blocks.join('');
+}
+
+function formatReference(reference) {
+  if (!reference) return null;
+  return [
+    identifierDisplay(reference.id, null),
+    reference.issue_date ? `vom ${formatDate(reference.issue_date)}` : null,
+    reference.description,
+  ].filter(present).join(' · ') || null;
 }
 
 function renderReferences(data) {
   const refs = data.references || {};
-  const delivery = data.delivery || {};
   const rows = [
-    ['Bestellreferenz Käufer', refs.buyer_order],
-    ['Bestellreferenz Verkäufer', refs.seller_order],
-    ['Vertrag', refs.contract],
-    ['Projekt', refs.project],
-    ['Vorgängerrechnungen', (refs.preceding_invoices || []).join(', ')],
-    ['Lieferdatum', formatDate(delivery.date)],
-    ['Versandavis', delivery.despatch_advice_reference],
-    ['Wareneingangsavis', delivery.receiving_advice_reference],
+    ['Bestellreferenz Käufer', formatReference(refs.buyer_order)],
+    ['Bestellreferenz Verkäufer', formatReference(refs.seller_order)],
+    ['Vertragsreferenz', formatReference(refs.contract)],
+    ['Ausschreibungs-/Losreferenz', formatReference(refs.tender)],
+    ['Projektreferenz', formatReference(refs.project)],
+    ['Kontierungsreferenz des Käufers', refs.buyer_accounting_reference],
+    ['Kennung des fakturierten Objekts', formatReference(refs.invoiced_object)],
+    ['Vorgängerrechnungen', (refs.preceding_invoices || []).map(formatReference).filter(present).join(', ')],
+    ['Versandavis', formatReference(refs.despatch_advice)],
+    ['Wareneingangsavis', formatReference(refs.receiving_advice)],
   ];
-  const additional = (refs.additional_documents || []).filter((item) => Object.values(item || {}).some(present));
+  const supportingDocuments = refs.supporting_documents || [];
   let html = detailRows(rows);
-  if (additional.length) {
-    html += '<h3>Weitere Dokumente</h3>' + additional.map((item) => detailRows([
-      ['ID', item.id], ['Typ', item.name || item.type_code], ['Beschreibung', item.description],
-      ['Datei', item.attachment_filename], ['MIME', item.attachment_mime], ['URI', item.external_uri],
+  if (supportingDocuments.length) {
+    html += subsectionHeading('Belege und Anlagen') + supportingDocuments.map((item) => detailRows([
+      ['ID', identifierDisplay(item.id, null)],
+      ['Typ', codeDisplay(item.type, null)],
+      ['Name', item.name],
+      ['Beschreibung', item.description],
+      ['Datei', item.attachment_filename],
+      ['MIME', item.attachment_mime_type],
+      ['Eingebettet', item.embedded ? 'Ja' : 'Nein'],
+      ['URI', item.external_uri],
     ])).join('');
   }
   $('#references-section').innerHTML = html;
@@ -396,29 +898,43 @@ function renderReferences(data) {
 function renderNotes(data) {
   const notes = data.document?.notes || [];
   $('#notes-section').innerHTML = notes.length
-    ? notes.map((note) => `<p class="note-box">${escapeHtml(note)}</p>`).join('')
+    ? notes.map((note) => {
+      const subject = note.subject_code ? `<strong>${escapeHtml(codeDisplay(note.subject_code))}</strong><br>` : '';
+      return `<p class="note-box">${subject}${escapeHtml(note.text)}</p>`;
+    }).join('')
     : '<p class="empty-state">Keine allgemeinen Rechnungshinweise enthalten.</p>';
 }
 
 function renderSource(data) {
   const source = data.source || {};
   const container = source.container || {};
+  const upload = source.upload;
+  const invoiceXml = source.invoice_xml;
   const attachments = source.attachments || [];
   let html = detailRows([
-    ['Datei', source.filename],
-    ['Dateityp', source.media_type],
-    ['Größe', formatBytes(source.size)],
-    ['Container', container.type],
-    ['XML-Datei', source.xml_filename],
-    ['XML-Größe', formatBytes(source.xml_size)],
+    ['Datei', upload?.filename],
+    ['Dateityp', upload?.media_type],
+    ['Größe', upload ? formatBytes(upload.size_bytes) : null],
+    ['SHA-256 Quelldatei', upload?.sha256],
+    ['Container', container.kind],
     ['Seiten', container.page_count],
-    ['SHA-256 Quelldatei', source.sha256],
-    ['SHA-256 XML', source.xml_sha256],
-    ['Verarbeitung', data.processing?.duration_ms ? `${formatNumber(data.processing.duration_ms, 2)} ms` : null],
+    ['Gewählte Einbettung', container.selected_attachment],
+    ['Anzahl Einbettungen', container.attachment_count],
+    ['XML-Datei', invoiceXml?.filename],
+    ['XML-Dateityp', invoiceXml?.media_type],
+    ['XML-Größe', invoiceXml ? formatBytes(invoiceXml.size_bytes) : null],
+    ['SHA-256 XML', invoiceXml?.sha256],
+    ['Verarbeitung', present(data.runtime?.duration_ms) ? `${formatNumber(data.runtime.duration_ms, 2)} ms` : null],
+    ['Erstellt', data.runtime?.generated_at],
+    ['Anwendungsversion', data.runtime?.application_version],
   ]);
   if (attachments.length) {
-    html += '<h3>Eingebettete Dateien</h3>' + attachments.map((item) => detailRows([
-      ['Name', item.name], ['Größe', formatBytes(item.size)], ['XML', item.is_xml ? 'Ja' : 'Nein'], ['SHA-256', item.sha256],
+    html += subsectionHeading('Eingebettete Dateien') + attachments.map((item) => detailRows([
+      ['Name', item.name],
+      ['Größe', formatBytes(item.size_bytes)],
+      ['XML', item.is_xml ? 'Ja' : 'Nein'],
+      ['Ausgewählt', item.selected ? 'Ja' : 'Nein'],
+      ['SHA-256', item.sha256],
     ])).join('');
   }
   $('#source-section').innerHTML = html;
@@ -428,55 +944,140 @@ function findingIcon(severity) {
   return severity === 'error' ? '×' : severity === 'warning' ? '!' : 'i';
 }
 
-function renderValidation(data) {
-  const validation = data.validation || {};
-  const builtin = validation.builtin || {};
-  const official = validation.official || {};
-  $('#validation-assessment').textContent = validation.assessment || 'Prüfergebnis';
-  $('#builtin-scope').textContent = builtin.scope || '';
-  let officialHtml;
-  if (official.executed) {
-    officialHtml = `<strong>${official.accepted ? 'KoSIT: akzeptiert' : 'KoSIT: abgelehnt'}</strong><span>${escapeHtml(text(official.summary))}</span>`;
-  } else if (official.configured) {
-    officialHtml = `<strong>KoSIT nicht ausgeführt</strong><span>${escapeHtml(text(official.summary))}</span>`;
-  } else {
-    const reason = present(official.summary)
-      ? text(official.summary)
-      : 'Für die vollständige XSD-/Schematron-Prüfung kann der offizielle Validator angebunden werden.';
-    officialHtml = `<strong>KoSIT nicht eingerichtet</strong><span>${escapeHtml(reason)}</span>`;
-  }
-  $('#official-state').innerHTML = officialHtml;
+const OCCURRENCE_SCOPE_LABELS = {
+  document: 'Dokument',
+  profile: 'Profil',
+  party: 'Partei',
+  period: 'Zeitraum',
+  reference: 'Referenz',
+  line: 'Rechnungsposition',
+  'allowance-charge': 'Nachlass/Zuschlag',
+  tax: 'Steuer',
+  total: 'Summe',
+  payment: 'Zahlung',
+  source: 'Quelle',
+  technical: 'Technik',
+  runtime: 'Verarbeitung',
+};
 
-  const findings = validation.findings || [];
-  $('#findings-list').innerHTML = findings.map((item) => {
-    const meta = [
-      item.location ? `Ort: ${item.location}` : null,
-      present(item.actual) ? `Ist: ${item.actual}` : null,
-      present(item.expected) ? `Erwartet: ${item.expected}` : null,
-      item.source ? `Quelle: ${item.source}` : null,
-    ].filter(present);
-    return `
-      <article class="finding ${escapeHtml(item.severity || 'info')}">
-        <span class="finding-icon" aria-hidden="true">${findingIcon(item.severity)}</span>
-        <div><h3>${escapeHtml(text(item.title, 'Prüfmeldung'))}</h3><p>${escapeHtml(text(item.message, ''))}</p>
-        ${meta.length ? `<div class="finding-meta">${meta.map((entry) => `<span>${escapeHtml(entry)}</span>`).join('')}</div>` : ''}</div>
-        <span class="finding-code">${escapeHtml(text(item.id, '–'))}</span>
-      </article>`;
-  }).join('') || '<p class="empty-state">Keine Prüfmeldungen vorhanden.</p>';
+function semanticReferenceDisplay(reference) {
+  if (!reference || !present(reference.id)) return null;
+  return present(reference.label)
+    ? `${reference.label} (${reference.id})`
+    : `Semantische Referenz ${reference.id}`;
+}
+
+function evidenceDisplay(evidence) {
+  if (!evidence || !present(evidence.value)) return null;
+  return `${evidence.value}${present(evidence.unit) ? ` ${evidence.unit}` : ''}`;
+}
+
+function renderFinding(item) {
+  const rule = item.rule || {};
+  const occurrence = item.occurrence;
+  const xmlLocation = item.xml_location;
+  const semanticReferences = (item.semantic_references || [])
+    .map(semanticReferenceDisplay)
+    .filter(present);
+  const occurrenceDescription = occurrence
+    ? [
+      OCCURRENCE_SCOPE_LABELS[occurrence.scope] || occurrence.scope,
+      present(occurrence.index) ? `Nr. ${Number(occurrence.index) + 1}` : null,
+      occurrence.identifier,
+    ].filter(present).join(' · ')
+    : null;
+  const xmlDescription = xmlLocation
+    ? [
+      present(xmlLocation.path) ? `XML-Pfad: ${xmlLocation.path}` : null,
+      xmlLocation.line ? `Zeile ${xmlLocation.line}` : null,
+      xmlLocation.column ? `Spalte ${xmlLocation.column}` : null,
+    ].filter(present).join(' · ')
+    : null;
+  const meta = [
+    semanticReferences.length ? `Semantik: ${semanticReferences.join(', ')}` : null,
+    occurrenceDescription ? `Vorkommen: ${occurrenceDescription}` : null,
+    occurrence?.json_pointer ? `JSON-Pointer: ${occurrence.json_pointer}` : null,
+    xmlDescription,
+    evidenceDisplay(item.actual) ? `Ist: ${evidenceDisplay(item.actual)}` : null,
+    evidenceDisplay(item.expected) ? `Erwartet: ${evidenceDisplay(item.expected)}` : null,
+    rule.source ? `Quelle: ${rule.source}` : null,
+    rule.reference ? `Regelreferenz: ${rule.reference}` : null,
+    rule.profile ? `Profil: ${rule.profile}` : null,
+    rule.version ? `Version: ${rule.version}` : null,
+  ].filter(present);
+  return `
+    <article class="finding ${escapeHtml(item.severity || 'info')}">
+      <span class="finding-icon" aria-hidden="true">${findingIcon(item.severity)}</span>
+      <div>
+        <h3>${escapeHtml(text(rule.title, 'Prüfmeldung'))}</h3>
+        <p>${escapeHtml(text(rule.message, ''))}</p>
+        ${meta.length ? `<div class="finding-meta">${meta.map((entry) => `<span>${escapeHtml(entry)}</span>`).join('')}</div>` : ''}
+      </div>
+      <span class="finding-code">${escapeHtml(text(rule.id, '–'))}</span>
+    </article>`;
+}
+
+function renderProcessingLimitation(item) {
+  const meta = item.affected_json_pointer
+    ? `<div class="finding-meta"><span>${escapeHtml(`JSON-Pointer: ${item.affected_json_pointer}`)}</span></div>`
+    : '';
+  return `
+    <article class="finding info">
+      <span class="finding-icon" aria-hidden="true">i</span>
+      <div><h3>Verarbeitungsbegrenzung</h3><p>${escapeHtml(item.message)}</p>${meta}</div>
+      <span class="finding-code">${escapeHtml(item.code)}</span>
+    </article>`;
+}
+
+function renderAxisFindings(label, axis, limitations = []) {
+  const findings = axis.findings || [];
+  const content = [
+    ...findings.map(renderFinding),
+    ...limitations.map(renderProcessingLimitation),
+  ].join('');
+  return `
+    <section class="content-card wide-card">
+      <div class="section-heading">
+        <div><p class="eyebrow">${escapeHtml(label)}</p><h2>${escapeHtml(text(axis.summary, 'Keine Zusammenfassung vorhanden.'))}</h2></div>
+      </div>
+      ${content ? `<div class="findings-list">${content}</div>` : '<p class="empty-state">Keine Befunde auf dieser Achse.</p>'}
+    </section>`;
+}
+
+function renderValidation(data) {
+  const assessment = data.assessment || {};
+  const official = assessment.official || {};
+  const internal = assessment.internal || {};
+  const processing = assessment.processing || {};
+  $('#validation-assessment').textContent = 'Prüfergebnis nach drei getrennten Achsen';
+  $('#builtin-scope').textContent = internal.scope
+    || 'Offizielle Konformität, interne Prüfungen und technische Verarbeitung werden unabhängig voneinander ausgewiesen.';
+  $('#official-state').innerHTML = [
+    ['Offizielle Konformitätsprüfung', OFFICIAL_STATUS_LABELS[official.status], official.summary],
+    ['Interne Prüfung', INTERNAL_STATUS_LABELS[internal.status], internal.summary],
+    ['Verarbeitung', PROCESSING_STATUS_LABELS[processing.status], processing.summary],
+  ].map(([label, status, summary]) => `
+    <div><strong>${escapeHtml(label)}: ${escapeHtml(text(status, 'Unbekannt'))}</strong><span>${escapeHtml(text(summary, 'Keine Zusammenfassung.'))}</span></div>
+  `).join('');
+
+  $('#findings-list').innerHTML = [
+    renderAxisFindings('Offizielle Konformitätsprüfung', official),
+    renderAxisFindings('Interne Prüfung', internal),
+    renderAxisFindings('Verarbeitung', processing, processing.limitations || []),
+  ].join('');
 
   const details = $('#official-report-details');
-  if (present(official.raw_report)) {
-    details.hidden = false;
-    $('#official-report-raw').textContent = official.raw_report;
-  } else {
-    details.hidden = true;
-    $('#official-report-raw').textContent = '';
-  }
+  const technicalReport = [
+    official.raw_report,
+    official.technical_output,
+  ].filter(present).join('\n\n');
+  details.hidden = !technicalReport;
+  $('#official-report-raw').textContent = technicalReport;
 }
 
 function filteredTechnicalRows() {
   const query = ($('#technical-search').value || '').trim().toLowerCase();
-  const rows = state.analysis?.technical?.rows || [];
+  const rows = state.analysis?.technical?.fields || [];
   if (!query) return rows;
   return rows.filter((row) => [row.kind, row.path, row.name, row.namespace, row.value]
     .some((value) => String(value || '').toLowerCase().includes(query)));
@@ -503,15 +1104,15 @@ function renderTechnical(data) {
   $('#technical-summary').textContent = `${Number(technical.field_count || 0).toLocaleString('de-DE')} dargestellte Werte und Strukturangaben${technical.truncated ? ' (Darstellungsgrenze erreicht)' : ''}.`;
   $('#technical-search').value = '';
   renderTechnicalPage(true);
-  $('#raw-xml').textContent = technical.raw_xml || '';
+  $('#raw-xml').textContent = technical.source_xml || '';
 }
 
 function renderAll(data) {
   state.analysis = data;
   renderSummary(data);
   renderFacts(data);
-  $('#seller-card').innerHTML = renderParty(data.seller || {});
-  $('#buyer-card').innerHTML = renderParty(data.buyer || {});
+  $('#seller-card').innerHTML = renderParty(data.parties?.seller);
+  $('#buyer-card').innerHTML = renderParty(data.parties?.buyer);
   renderAdditionalParties(data);
   renderHeaderAdjustments(data);
   renderLines(data);
@@ -566,6 +1167,9 @@ async function analyzeFile(file) {
     const response = await fetch('/api/analyze', { method: 'POST', body: form });
     if (!response.ok) throw new Error(await parseError(response));
     const data = await response.json();
+    if (data.schema_version !== 2) {
+      throw new Error('Die Serverantwort entspricht nicht dem erwarteten Analyse-Schema 2.');
+    }
     renderAll(data);
     $('#upload-view').hidden = true;
     $('#result-view').hidden = false;
@@ -611,18 +1215,19 @@ async function downloadXml() {
     const blob = await response.blob();
     const disposition = response.headers.get('content-disposition') || '';
     const match = disposition.match(/filename="?([^";]+)"?/i);
-    const filename = match?.[1] || state.analysis.source?.xml_filename || 'rechnung.xml';
+    const filename = match?.[1] || state.analysis.source?.invoice_xml?.filename || 'rechnung.xml';
     downloadBlob(blob, safeFilename(filename, 'rechnung.xml'));
   } catch (error) {
     window.alert(error instanceof Error ? error.message : String(error));
   }
 }
 
-async function fetchHtmlReport() {
+async function fetchHtmlReport(scope = 'readable') {
   if (!state.file) throw new Error('Keine Rechnung geladen.');
   const form = new FormData();
   form.append('file', state.file, state.file.name);
   form.append('official', officialValidationRequested() ? 'true' : 'false');
+  form.append('scope', scope);
   const response = await fetch('/api/report', { method: 'POST', body: form });
   if (!response.ok) throw new Error(await parseError(response));
   return response.blob();
@@ -630,9 +1235,19 @@ async function fetchHtmlReport() {
 
 async function downloadHtml() {
   try {
-    const blob = await fetchHtmlReport();
+    const blob = await fetchHtmlReport('readable');
     const id = state.analysis?.document?.id || 'bericht';
     downloadBlob(blob, `${safeFilename(id)}-lesbare-e-rechnung.html`);
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function downloadCompleteHtml() {
+  try {
+    const blob = await fetchHtmlReport('complete');
+    const id = state.analysis?.document?.id || 'bericht';
+    downloadBlob(blob, `${safeFilename(id)}-vollstaendiger-e-rechnungsbericht.html`);
   } catch (error) {
     window.alert(error instanceof Error ? error.message : String(error));
   }
@@ -646,13 +1261,23 @@ async function printReport() {
   }
   printWindow.document.write('<!doctype html><title>Bericht wird erstellt</title><p style="font-family:system-ui;padding:2rem">Bericht wird erstellt …</p>');
   try {
-    const blob = await fetchHtmlReport();
+    const blob = await fetchHtmlReport('readable');
     const url = URL.createObjectURL(blob);
-    printWindow.location.href = url;
-    setTimeout(() => {
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      URL.revokeObjectURL(url);
+    };
+    const cleanupFallback = setTimeout(cleanup, 60_000);
+    printWindow.addEventListener('afterprint', () => {
+      clearTimeout(cleanupFallback);
+      cleanup();
+    }, { once: true });
+    printWindow.addEventListener('load', () => {
       try { printWindow.focus(); printWindow.print(); } catch (_error) { /* The report remains open for manual printing. */ }
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    }, 1200);
+    }, { once: true });
+    printWindow.location.href = url;
   } catch (error) {
     printWindow.close();
     window.alert(error instanceof Error ? error.message : String(error));
@@ -660,7 +1285,7 @@ async function printReport() {
 }
 
 async function copyXml() {
-  const xml = state.analysis?.technical?.raw_xml || '';
+  const xml = state.analysis?.technical?.source_xml || '';
   try {
     await navigator.clipboard.writeText(xml);
     const button = $('#copy-xml-button');
@@ -730,6 +1355,7 @@ function initialise() {
   $('#download-json-button').addEventListener('click', downloadJson);
   $('#download-xml-button').addEventListener('click', downloadXml);
   $('#download-html-button').addEventListener('click', downloadHtml);
+  $('#download-complete-html-button').addEventListener('click', downloadCompleteHtml);
   $('#print-button').addEventListener('click', printReport);
   $('#copy-xml-button').addEventListener('click', copyXml);
 

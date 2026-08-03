@@ -8,12 +8,22 @@ Version in folgenden Dateien ändern:
 - `pyproject.toml`
 - `app/__init__.py`
 - `USER_AGENT` in `scripts/install_kosit.py`
+- Versionskopf in `START_HERE.txt`; außerdem den gesamten Einstiegstext auf releasebezogene Beispiele und
+  weiterhin zutreffende Upgradehinweise prüfen
 
-Anschließend `CHANGELOG.md` aktualisieren.
+Anschließend die Änderungen in `CHANGELOG.md` aus „Unveröffentlicht“ unter eine datierte Überschrift
+`## <Version> – JJJJ-MM-TT` verschieben; ein leerer Abschnitt „Unveröffentlicht“ bleibt darüber bestehen. Bei
+einem Breaking Release müssen Upgradehinweis, betroffene Consumer und die Migrationsanleitung ausdrücklich
+genannt sein.
 
 ```sh
 python scripts/verify_version.py
 ```
+
+Vor dem Vorab-Workflow und dem Tag muss `git status --short` ausschließlich die beabsichtigten Änderungen
+zeigen. Alle releasekritischen Dateien – insbesondere neue Laufzeitdaten, Sperrdateien, Migrationsdokumente und
+Tests – müssen im zu taggenden Commit enthalten sein; ein lokaler Build aus ungetrackten Dateien ist kein
+Nachweis für den Inhalt des späteren Tag-Builds.
 
 ## 2. Qualitätsprüfung
 
@@ -26,6 +36,41 @@ Der Projektmodus prüft die in `pyproject.toml` deklarierten Fremdabhängigkeite
 installierte und nicht auf PyPI veröffentlichte Projekt selbst als externe Distribution zu behandeln.
 
 Zusätzlich die Anwendung mit den anonymisierten CII-/UBL-Beispielen und einer Hybrid-PDF manuell öffnen. Bei KoSIT-Änderungen mindestens einen Annahme-, Ablehnungs- und Startfehlerfall prüfen.
+
+### Analyseschema-2-Gate
+
+Analyseschema 2 ist ein sofortiger Breaking Change am bestehenden Endpunkt. Vor einem Release müssen Server,
+Browseroberfläche, Berichtsrenderer und alle mitgelieferten Automatisierungsconsumer atomar auf Schema 2 stehen.
+Es darf kein Legacy-Endpunkt, Versionsparameter oder Adapter für Schema 1 in ein Artefakt gelangen.
+
+Mindestens ausführen:
+
+```sh
+python -m pytest \
+  tests/test_api_v2.py \
+  tests/test_assessment_contract.py \
+  tests/test_analysis_schema_v2.py \
+  tests/test_document_types.py \
+  tests/test_document_semantics.py \
+  tests/test_payment_validation.py \
+  tests/test_profiles.py \
+  tests/test_kosit.py
+```
+
+Die Abnahme muss zusätzlich bestätigen:
+
+- `POST /api/analyze` liefert ausschließlich `schema_version == 2`;
+- HTML und PDF liefern alle sechs Schema-2-Header einschließlich `X-Einvoice-Report-Scope` und keinen der
+  früheren Statusheader;
+- offizielle, interne und technische Achse werden nicht zu einem Sammelstatus verdichtet;
+- BG-/BT-Codes stehen unter `semantic_references`, nicht in `xml_location`;
+- unbekannte/fehlende Dokumenttypen und unpassende UBL-Roots werden nicht als Standardrechnung geraten;
+- Kartenkennungen sind in strukturiertem Ergebnis und technischen Textansichten maskiert, während `/api/xml`
+  weiterhin bytegetreu bleibt.
+
+Die Release Notes und `CHANGELOG.md` müssen den inkompatiblen Vertrag und
+[`API_MIGRATION_V2.md`](API_MIGRATION_V2.md) ausdrücklich nennen. Eine bloße Aktualisierung des Servers ohne
+gleichzeitige Consumer-Migration ist kein unterstützter Upgradepfad.
 
 ## 3. Artefakte bauen
 
@@ -41,6 +86,12 @@ python scripts/build_release.py
 - `E-Rechnungs-Pruefer-<Version>-SHA256SUMS.txt`
 
 Der Repository-Build schließt `.git`, virtuelle Umgebungen, lokale `.env`-Dateien, KoSIT-Dateien, gebündelte Java-Laufzeiten, Download-Caches, PDFs, Schlüsselmaterial, Berichte und nicht freigegebene XML-Dateien aus.
+
+Wheel, Source Distribution und Repository-ZIP müssen außerdem alle zur Laufzeit beziehungsweise zur
+dokumentierten Einrichtung benötigten Metadaten enthalten. Für 2.0.0 sind insbesondere
+`app/presentation_contract.json`, `packaging/kosit/components.lock.json` und
+`docs/examples/node-red-e-rechnungs-pruefer-flow.json` stichprobenartig im jeweils vorgesehenen Artefakt zu
+kontrollieren.
 
 ### Windows-x64-Installer
 
@@ -100,13 +151,31 @@ gemeinsame SHA-256-Datei enthält alle fünf signierten Dateien und das ZIP selb
 die beiden Installer kann das Manifest vollständig geprüft werden. Gebündelte Drittprogramme wie Java erhalten keine
 Projektsignatur.
 
-Ein reduzierter Build mit `-WithoutOfficialValidation` ist nur ein Entwicklungsartefakt. Vor einem Endbenutzerrelease müssen Java, KoSIT und XRechnung aus `components.lock.json` eingebunden und durch den installierten Pakettest ausgeführt worden sein.
+Ein reduzierter Build mit `-WithoutOfficialValidation` ist nur ein Entwicklungsartefakt. Vor einem
+Endbenutzerrelease müssen Java, KoSIT und XRechnung gemäß
+[`packaging/windows/components.lock.json`](../packaging/windows/components.lock.json) eingebunden und durch den
+installierten Pakettest ausgeführt worden sein. Die KoSIT- und XRechnung-Einträge dieses Windows-Locks müssen
+den beiden Einträgen des nachfolgend genannten zentralen KoSIT-Locks entsprechen; nur der Windows-Lock ergänzt
+die Java-Laufzeit.
+
+Für KoSIT und XRechnung ist
+[`packaging/kosit/components.lock.json`](../packaging/kosit/components.lock.json) die maßgebliche Sperrdatei:
+
+| Komponente | Festgelegter Stand | SHA-256 |
+|---|---|---|
+| KoSIT Validator | `validator-1.6.2-standalone.jar` / 1.6.2 | `244978514ad48f67c7573acfffc8f4fd73d81feda6f276710033f9913579857e` |
+| XRechnung-Konfiguration | `xrechnung-3.0.2-validator-configuration-2026-01-31.zip` | `6a5a5911a421b25fbc423f62f93f894df7b236f5d73ca4f84bb222a945082704` |
+
+Die darin ausgewiesenen Standards sind XRechnung 3.0.2, Konfigurationsstand 2026-01-31,
+CEN-EN-16931-Regeln 1.3.15 und XRechnung-Schematron 2.5.0. Dateiname, URL, Version und Hash müssen gemeinsam
+aktualisiert werden; `app/component_versions.py`, Health-Antwort, Tests und Dokumenttyp-Registry müssen denselben
+Stand nennen. Ein Hash- oder Versionsunterschied ist ein Releasefehler.
 
 ## 4. Artefakte prüfen
 
 ```sh
 unzip -l dist/E-Rechnungs-Pruefer-*-Codex-GitHub.zip
-python -m twine check dist/*
+python -m twine check dist/*.whl dist/*.tar.gz
 ```
 
 Empfohlen ist außerdem ein Installationstest in einer neuen virtuellen Umgebung:
@@ -155,8 +224,10 @@ prüfen. Neben den automatisierten Paket-, Modusausschluss- und Recoverytests um
    unverändert lassen. Danach den Desktop unter der zweiten Identität regulär deinstallieren und wieder abmelden;
 4. Dienstkonto, Service-SID, DACLs, Starttyp, Recovery und Öffnen-Client;
 5. tatsächlichen Windows-Neustart und erfolgreichen verzögerten Dienststart vor der ersten Benutzeranmeldung;
-6. API ohne, mit falschem und mit richtigem Token, PDF-Bericht, bytegetreuen XML-Export sowie echte
-   KoSIT-Annahme und -Ablehnung;
+6. API ohne, mit falschem und mit richtigem Token, `schema_version == 2`, alle sechs neuen Berichtsheader,
+   `scope=readable|complete`, PDF-Bericht, bytegetreuen XML-Export sowie echte KoSIT-Annahme und -Ablehnung; die
+   früheren Header
+   `X-Einvoice-Validation-Status` und `X-Einvoice-Official-Status` dürfen nicht erscheinen;
 7. Update eines laufenden und eines gestoppten Dienstes, automatisierten Fehler-Rollback, tatsächlichen
    Recovery-Neustart sowie Deinstallation mit erhaltenem Maschinenzustand und mit ausdrücklicher vollständiger
    Löschung;

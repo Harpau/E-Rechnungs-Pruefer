@@ -7,6 +7,7 @@ import argparse
 import re
 import sys
 import tomllib
+from datetime import date
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,26 @@ def _read_installer_version() -> str:
     return match.group(1)
 
 
+def _read_start_here_version() -> str:
+    content = (PROJECT_ROOT / "START_HERE.txt").read_text(encoding="utf-8")
+    match = re.search(r"^E-RECHNUNGS-VIEWER & PRUEFER\s+([^\s]+)\s*$", content, re.MULTILINE)
+    if not match:
+        raise ValueError("In START_HERE.txt wurde kein Versionskopf gefunden.")
+    return match.group(1)
+
+
+def _changelog_release_date(content: str, version: str) -> str:
+    pattern = re.compile(rf"^## {re.escape(version)} – (?P<date>\d{{4}}-\d{{2}}-\d{{2}})$", re.MULTILINE)
+    matches = [match.group("date") for match in pattern.finditer(content)]
+    if len(matches) != 1:
+        raise ValueError(f"CHANGELOG.md muss genau eine datierte Überschrift '## {version} – YYYY-MM-DD' enthalten.")
+    try:
+        date.fromisoformat(matches[0])
+    except ValueError as exc:
+        raise ValueError(f"CHANGELOG.md enthält für Version {version} kein gültiges ISO-Datum.") from exc
+    return matches[0]
+
+
 def collect_versions() -> dict[str, str]:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     return {
@@ -36,6 +57,7 @@ def collect_versions() -> dict[str, str]:
         "pyproject.toml": str(pyproject["project"]["version"]),
         "app/__init__.py": _read_app_version(),
         "scripts/install_kosit.py": _read_installer_version(),
+        "START_HERE.txt": _read_start_here_version(),
     }
 
 
@@ -48,6 +70,8 @@ def verify() -> str:
     version = next(iter(unique))
     if not SEMVER_PATTERN.fullmatch(version):
         raise ValueError(f"Die Version {version!r} entspricht nicht dem erwarteten SemVer-Format.")
+    changelog = (PROJECT_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    _changelog_release_date(changelog, version)
     return version
 
 

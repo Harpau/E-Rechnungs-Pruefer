@@ -17,6 +17,8 @@ from starlette.concurrency import run_in_threadpool
 
 from . import __version__
 from .analyzer import analyze_bytes
+from .api_models import AnalysisResponse
+from .component_versions import ANALYSIS_SCHEMA_VERSION, KOSIT_COMPONENT_VERSIONS
 from .desktop_security import (
     DESKTOP_PORT_ENV,
     DESKTOP_TOKEN_ENV,
@@ -26,6 +28,7 @@ from .desktop_security import (
     get_service_browser_sessions,
 )
 from .pdf_report import render_pdf_report
+from .report_presentation import ReportPresentation, ReportScope, build_report_presentation
 from .settings import settings
 from .source import extract_source
 from .validators.kosit import KositValidator
@@ -34,20 +37,45 @@ from .xml_utils import InvoiceInputError
 APP_DIR = Path(__file__).resolve().parent
 EXAMPLES_DIR = APP_DIR / "examples"
 REPORT_RESPONSE_HEADERS = {
+    "X-Einvoice-Analysis-Schema": {
+        "description": "Version des maschinenlesbaren Analysevertrags.",
+        "schema": {"type": "integer", "enum": [ANALYSIS_SCHEMA_VERSION]},
+    },
     "X-Einvoice-Syntax": {
         "description": "Erkannte Rechnungssyntax.",
         "schema": {"type": "string", "enum": ["CII", "UBL", "UNKNOWN"]},
     },
-    "X-Einvoice-Validation-Status": {
-        "description": "Gemeinsamer Status der internen und gegebenenfalls offiziellen Prüfung.",
-        "schema": {"type": "string", "enum": ["ok", "warning", "invalid"]},
-    },
-    "X-Einvoice-Official-Status": {
-        "description": "Differenzierter Ausführungs- und Entscheidungsstatus der KoSIT-Prüfung.",
+    "X-Einvoice-Conformity-Status": {
+        "description": "Status der angeforderten offiziellen Konformitätsprüfung.",
         "schema": {
             "type": "string",
-            "enum": ["accepted", "rejected", "not-requested", "unavailable", "indeterminate"],
+            "enum": [
+                "accepted",
+                "rejected",
+                "not-requested",
+                "unsupported",
+                "unavailable",
+                "indeterminate",
+            ],
         },
+    },
+    "X-Einvoice-Internal-Status": {
+        "description": "Status der internen Vorprüfungen und Plausibilitätskontrollen.",
+        "schema": {
+            "type": "string",
+            "enum": ["clear", "attention", "errors", "not-run"],
+        },
+    },
+    "X-Einvoice-Processing-Status": {
+        "description": "Vollständigkeit der technischen Verarbeitung.",
+        "schema": {
+            "type": "string",
+            "enum": ["complete", "limited", "incomplete"],
+        },
+    },
+    "X-Einvoice-Report-Scope": {
+        "description": "Umfang des menschenlesbaren Berichts und seiner technischen Anhänge.",
+        "schema": {"type": "string", "enum": ["readable", "complete"]},
     },
 }
 ANALYSIS_BUSY_RESPONSE: dict[int | str, dict[str, Any]] = {
@@ -114,12 +142,22 @@ def _render_pdf_report_limited(
     *,
     generated_at: str,
     version: str,
+    scope: ReportScope,
+    presentation: ReportPresentation,
 ) -> bytes:
     with _pdf_render_slots:
-        return render_pdf_report(result, generated_at=generated_at, version=version)
+        return render_pdf_report(
+            result,
+            generated_at=generated_at,
+            version=version,
+            scope=scope,
+            presentation=presentation,
+        )
 
 
 def _format_number(value: Any, digits: int | None = None) -> str:
+    if isinstance(value, dict) and "value" in value:
+        value = value["value"]
     if value is None or value == "":
         return "–"
     try:
@@ -146,6 +184,9 @@ def _format_number(value: Any, digits: int | None = None) -> str:
 
 
 def _format_money(value: Any, currency: str | None = None) -> str:
+    if isinstance(value, dict):
+        currency = str(value.get("currency") or currency or "") or None
+        value = value.get("value")
     formatted = _format_number(value, 2)
     return f"{formatted} {currency}".strip() if formatted != "–" else formatted
 
@@ -199,27 +240,15 @@ def _safe_download_filename(value: Any, fallback: str, extension: str) -> str:
     return f"{(text[:120] or fallback)}.{extension.lstrip('.')}"
 
 
-def _official_report_status(result: dict[str, Any], *, requested: bool) -> str:
-    if not requested:
-        return "not-requested"
-
-    official = result["validation"]["official"]
-    if official.get("executed"):
-        if official.get("accepted") is True:
-            return "accepted"
-        if official.get("accepted") is False:
-            return "rejected"
-        return "indeterminate"
-    if not official.get("configured"):
-        return "unavailable"
-    return "indeterminate"
-
-
-def _report_status_headers(result: dict[str, Any], *, official_requested: bool) -> dict[str, str]:
+def _report_status_headers(result: dict[str, Any], *, scope: ReportScope) -> dict[str, str]:
+    assessment = result["assessment"]
     return {
-        "X-Einvoice-Syntax": str(result["document"]["syntax"]),
-        "X-Einvoice-Validation-Status": str(result["validation"]["status"]),
-        "X-Einvoice-Official-Status": _official_report_status(result, requested=official_requested),
+        "X-Einvoice-Analysis-Schema": str(result["schema_version"]),
+        "X-Einvoice-Syntax": str(result["capabilities"]["syntax"]),
+        "X-Einvoice-Conformity-Status": str(assessment["official"]["status"]),
+        "X-Einvoice-Internal-Status": str(assessment["internal"]["status"]),
+        "X-Einvoice-Processing-Status": str(assessment["processing"]["status"]),
+        "X-Einvoice-Report-Scope": scope,
     }
 
 
@@ -295,7 +324,11 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "version": __version__,
-        "kosit": {"configured": bool(kosit_state["configured"])},
+        "analysis_schema_version": ANALYSIS_SCHEMA_VERSION,
+        "kosit": {
+            "configured": bool(kosit_state["configured"]),
+            "components": KOSIT_COMPONENT_VERSIONS,
+        },
     }
 
 
@@ -311,11 +344,15 @@ async def example(example_name: str):
     return FileResponse(path, media_type="application/xml", filename=path.name)
 
 
-@app.post("/api/analyze", responses=ANALYSIS_BUSY_RESPONSE)
+@app.post(
+    "/api/analyze",
+    response_model=AnalysisResponse,
+    responses=ANALYSIS_BUSY_RESPONSE,
+)
 async def analyze(
     file: UploadFile = File(...),
     official: bool = Form(True),
-):
+) -> AnalysisResponse:
     try:
         data = await _read_upload(file)
         result = await run_in_threadpool(
@@ -325,7 +362,7 @@ async def analyze(
             file.content_type,
             run_official_validation=official,
         )
-        return JSONResponse(result)
+        return AnalysisResponse.model_validate(result)
     finally:
         await file.close()
 
@@ -365,6 +402,7 @@ async def report(
     request: Request,
     file: UploadFile = File(...),
     official: bool = Form(True),
+    scope: ReportScope = Form("readable"),
 ):
     try:
         data = await _read_upload(file)
@@ -375,13 +413,16 @@ async def report(
             file.content_type,
             run_official_validation=official,
         )
-        response_headers = _report_status_headers(result, official_requested=official)
+        presentation = build_report_presentation(result, scope=scope)
+        response_headers = _report_status_headers(result, scope=scope)
         response_headers["Content-Disposition"] = 'inline; filename="E-Rechnungs-Pruefbericht.html"'
         return templates.TemplateResponse(
             request=request,
             name="report.html",
             context={
                 "analysis": result,
+                "presentation": presentation,
+                "report_scope": scope,
                 "generated_at": datetime.now().astimezone().strftime("%d.%m.%Y %H:%M:%S %Z"),
                 "version": __version__,
             },
@@ -406,6 +447,7 @@ async def report(
 async def pdf_report(
     file: UploadFile = File(...),
     official: bool = Form(True),
+    scope: ReportScope = Form("readable"),
 ):
     try:
         data = await _read_upload(file)
@@ -417,13 +459,16 @@ async def pdf_report(
             run_official_validation=official,
         )
         generated_at = datetime.now().astimezone().strftime("%d.%m.%Y %H:%M:%S %Z")
-        response_headers = _report_status_headers(result, official_requested=official)
+        presentation = build_report_presentation(result, scope=scope)
+        response_headers = _report_status_headers(result, scope=scope)
         response_headers["Content-Disposition"] = 'attachment; filename="E-Rechnungs-Pruefbericht.pdf"'
         payload = await run_in_threadpool(
             _render_pdf_report_limited,
             result,
             generated_at=generated_at,
             version=__version__,
+            scope=scope,
+            presentation=presentation,
         )
         return Response(
             content=payload,

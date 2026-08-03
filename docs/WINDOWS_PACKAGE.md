@@ -46,9 +46,9 @@ bei schreibenden Browseranfragen der Origin geprüft. Die geschützte Laufzeitda
 `%LOCALAPPDATA%\E-Rechnungs-Pruefer` enthält Port, Prozess-ID und Browser-Token.
 
 Für Automatisierungen erzeugt der Launcher ein davon getrenntes persistentes Bearer-Token unter
-`%LOCALAPPDATA%\E-Rechnungs-Pruefer\api-token.txt`. Es schützt ausschließlich `/api/*` und erscheint weder in der
-Browser-URL noch in `runtime.json`. Der Parameter `--background` startet Server und Infobereich ohne automatisches
-Browserfenster.
+`%LOCALAPPDATA%\E-Rechnungs-Pruefer\api-token.txt`. Es schützt die fachlichen `/api/*`-Endpunkte; `/api/health`
+bleibt als lokaler Healthcheck tokenfrei. Das Token erscheint weder in der Browser-URL noch in `runtime.json`.
+Der Parameter `--background` startet Server und Infobereich ohne automatisches Browserfenster.
 
 Die optionale, standardmäßig abgewählte Installeraufgabe **Bei Windows-Anmeldung automatisch starten** legt für
 den aktuellen Benutzer einen exakten Eintrag unter
@@ -146,8 +146,8 @@ konfigurierten SCM-Recovery-Aktionen tatsächlich greifen.
 
 ## API-Token für Node-RED provisionieren und rotieren
 
-Der unveränderte Automatisierungsvertrag verwendet
-`Authorization: Bearer <Token>` gegen `http://127.0.0.1:8080/api/report/pdf`. Das Diensttoken darf nicht durch
+Der Automatisierungsvertrag verwendet `Authorization: Bearer <Token>` gegen
+`http://127.0.0.1:8080/api/report/pdf` und fordert `scope=readable` an. Das Diensttoken darf nicht durch
 Leserechte für allgemeine lokale Gruppen freigegeben werden. Zuerst muss die konkrete Windows-Identität des
 Node-RED-Prozesses ermittelt werden. Anschließend kann ein Administrator genau dieser Identität Leserechte geben:
 

@@ -57,4 +57,4 @@ python scripts/build_release.py
 
 ## Größere Änderungen
 
-Bei neuen Syntaxen oder tiefen Modelländerungen zuerst `docs/ARCHITECTURE.md` aktualisieren und eine kurze Designentscheidung unter `docs/decisions/` anlegen. Bei rein lokalen Fehlerkorrekturen genügt ein fokussierter Test und Changelog-Eintrag.
+Bei neuen Syntaxen oder tiefen Modelländerungen zuerst `docs/ARCHITECTURE.md` aktualisieren und eine kurze Designentscheidung unter `docs/adr/` anlegen. Bei rein lokalen Fehlerkorrekturen genügt ein fokussierter Test und Changelog-Eintrag.

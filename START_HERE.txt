@@ -1,45 +1,126 @@
-E-RECHNUNGS-VIEWER & PRUEFER 1.5.0
+E-RECHNUNGS-VIEWER & PRUEFER 2.0.0
 ====================================
 
-NUTZUNG UNTER WINDOWS
+WAS DIE ANWENDUNG MACHT
+-----------------------
+Die Anwendung stellt strukturierte CII-, UBL-, XRechnung-, ZUGFeRD- und
+Factur-X-Rechnungen lesbar dar und prueft sie lokal. Unterstuetzt werden XML
+und Hybrid-PDFs mit eingebetteter Rechnungs-XML. Reine Sicht- oder Scan-PDFs
+werden nicht per OCR rekonstruiert.
+
+Die interne Pruefung ist eine transparente Vorpruefung. Sie ersetzt weder die
+optionale offizielle KoSIT-Pruefung noch Steuer- oder Rechtsberatung.
+
+SCHNELLSTART AUS DEM QUELL- ODER REPOSITORY-ZIP
+-----------------------------------------------
+Voraussetzung: Python 3.11 oder neuer.
+
+Windows:
+
+   scripts\start.bat
+
+Linux oder macOS:
+
+   chmod +x scripts/start.sh
+   ./scripts/start.sh
+
+Beim ersten Start wird eine lokale Python-Umgebung erstellt. Danach oeffnet
+sich die Anwendung normalerweise unter http://127.0.0.1:8080.
+
+WINDOWS-X64-INSTALLER
 ---------------------
-1. ZIP-Datei vollstaendig entpacken.
-2. scripts\start.bat ausfuehren.
-3. Beim ersten Start wird eine lokale Python-Umgebung erstellt.
-4. Die Anwendung oeffnet sich unter http://127.0.0.1:8080.
+Ein GitHub Release kann zwei alternative, signierte Installer enthalten:
 
-ENTWICKLUNG MIT CODEX
----------------------
-1. Repository in Codex oeffnen.
-2. AGENTS.md wird als Projektanweisung verwendet.
-3. Entwicklungsumgebung einrichten:
+- E-Rechnungs-Pruefer-<Version>-Windows-x64-Setup.exe
+  Benutzerbezogener Desktop-/Tray-Modus ohne Administratorrechte.
 
-   .\scripts\bootstrap_dev.ps1
+- E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe
+  Administrativer Systemdienst, der vor der Benutzeranmeldung starten kann.
 
-4. Vor jedem Commit pruefen:
+Beide Betriebsarten enthalten Python, Java und die festgeschriebenen
+KoSIT-/XRechnung-Komponenten. Sie duerfen nicht gleichzeitig installiert oder
+als Backend betrieben werden. Vor einem Wechsel muss die bisherige Betriebsart
+vollstaendig deinstalliert werden; API-Tokens werden nicht uebernommen.
 
-   .\scripts\check.ps1
+Details: docs\WINDOWS_PACKAGE.md
 
-GITHUB VORBEREITEN
-------------------
+WICHTIG: BREAKING CHANGE SEIT VERSION 2.0.0
+-------------------------------------------
+Die Analyse-API verwendet ausschliesslich Analyseschema 2. Der bestehende
+Endpunkt POST /api/analyze wurde inkompatibel umgestellt. Es gibt keinen
+Legacy-Endpunkt und keinen Kompatibilitaetsadapter fuer Schema 1.
 
-   .\scripts\init_git.ps1 -RemoteUrl https://github.com/OWNER/REPOSITORY.git
-   git status
-   git push -u origin main
+Eigene API-Consumer und bereits importierte Node-RED-Flows muessen gemeinsam
+mit dem Server umgestellt werden. Sie muessen schema_version == 2 sowie die
+drei getrennten Achsen fuer offizielle Konformitaet, interne Pruefung und
+technische Verarbeitung auswerten.
 
-OFFIZIELLE KOSIT-PRUEFUNG
--------------------------
-Die interne Pruefung funktioniert sofort. Fuer XSD-/Schematron-Pruefungen:
+Migration:       docs\API_MIGRATION_V2.md
+Automatisierung: docs\AUTOMATION_INTEGRATION.md
+Node-RED:        docs\NODE_RED.md
+
+BERICHTE UND DRUCKEN
+--------------------
+"Drucken / PDF" und "HTML-Bericht" verwenden standardmaessig den lesbaren
+Berichtsumfang. "Vollstaendiger Bericht" ergaenzt technische XML-Felder,
+XML-Darstellungen und KoSIT-Rohdaten. Die API-Endpunkte /api/report und
+/api/report/pdf verwenden dafuer scope=readable oder scope=complete; ohne
+Angabe gilt readable.
+
+OFFIZIELLE KOSIT-PRUEFUNG IM QUELLBETRIEB
+-----------------------------------------
+Die interne Pruefung funktioniert sofort. Fuer die offizielle XSD-/
+Schematron-Pruefung im Quellbetrieb:
 
    python scripts\install_kosit.py
 
-Der Installer verwendet nur das ausfuehrbare Standalone-JAR. KoSIT-Dateien,
-lokale Konfigurationen und Rechnungen werden nicht in Git aufgenommen.
+Unter Linux oder macOS lautet der Pfad scripts/install_kosit.py. Der Installer
+verwendet ausschliesslich die in packaging\kosit\components.lock.json
+festgeschriebenen Versionen und verpflichtenden SHA-256-Pruefsummen. Lokale
+KoSIT-Dateien und Konfigurationen werden nicht in Git oder Quell-/Repository-
+Release-ZIPs aufgenommen. Die Windows-Binaries enthalten dagegen nur die beim
+Build geprueften, festgeschriebenen KoSIT- und Java-Komponenten.
+
+API-TOKEN UND BROWSER
+---------------------
+Installierte Windows-Betriebsarten schuetzen die fachlichen /api/*-Endpunkte
+mit einem persistenten Bearer-Token; /api/health bleibt als lokaler Healthcheck
+tokenfrei. Der Oeffnen-Client beziehungsweise der Desktopstart richtet fuer die
+Browseroberflaeche eine getrennte, kurzlebige Sitzung ein; das dauerhafte Token
+gelangt nicht in Browser oder URL.
+
+Auch im Quellbetrieb kann EINVOICE_API_TOKEN gesetzt werden. Die Startskripte
+oeffnen die Oberflaeche dann ueber eine getrennte Browsersitzung. Automationen
+senden das Token weiterhin als Header "Authorization: Bearer <Token>".
+
+DATENSCHUTZ UND TESTDATEN
+------------------------
+Uploads werden von der Anwendung nicht dauerhaft gespeichert. Trotzdem koennen
+Berichte und API-Antworten Namen, Anschriften, Steuerkennungen und Kontodaten
+enthalten. Keine echten Rechnungen, Tokens, Schluessel, Berichte oder lokale
+.env-Dateien in Git, Issues oder Release-Artefakte aufnehmen.
+
+ENTWICKLUNG MIT CODEX
+---------------------
+1. Repository in Codex oeffnen; AGENTS.md enthaelt die Projektanweisungen.
+2. Entwicklungsumgebung einrichten:
+
+   .\scripts\bootstrap_dev.ps1
+
+3. Vor jedem Commit und Release pruefen:
+
+   .\scripts\check.ps1
+
+Unter Linux oder macOS entsprechend ./scripts/bootstrap_dev.sh und
+./scripts/check.sh verwenden.
 
 WEITERE INFORMATIONEN
 ---------------------
-README.md             Nutzung und Entwicklung
-docs\CODEX.md         Codex-Arbeitsweise
-docs\GITHUB_SETUP.md  GitHub-Einrichtung
-docs\VALIDATION.md    Umfang der Pruefungen
-SECURITY.md            Sicherheitshinweise
+README.md                       Nutzung, Funktionen und API-Uebersicht
+CHANGELOG.md                    Aenderungen und Upgrade-Hinweise je Version
+docs\API_MIGRATION_V2.md        Migration und zentrale Feldzuordnungen
+docs\VALIDATION.md              Umfang und Grenzen der Pruefungen
+docs\WINDOWS_PACKAGE.md         Windows-Desktop- und Dienstmodus
+docs\RELEASE.md                 Release- und Signierungsprozess
+docs\CODEX.md                   Weiterentwicklung mit Codex
+SECURITY.md                     Sicherheitshinweise

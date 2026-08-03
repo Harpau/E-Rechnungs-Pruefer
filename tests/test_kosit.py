@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 import zipfile
@@ -12,6 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from app.component_versions import KOSIT_COMPONENT_VERSIONS
 from app.desktop_security import API_TOKEN_ENV
 from app.settings import Settings
 from app.validators import kosit as kosit_module
@@ -456,6 +458,47 @@ def test_kosit_accept_report_is_reported_as_accepted(tmp_path, monkeypatch):
     assert result["accepted"] is True
 
 
+def test_report_parser_ignores_embedded_xhtml_and_preserves_varl_source_coordinates() -> None:
+    report = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rep:report
+  xmlns:rep="http://www.xoev.de/de/validator/varl/1"
+  xmlns:h="http://www.w3.org/1999/xhtml"
+  valid="false">
+  <rep:message
+    id="val-xsd.1"
+    level="error"
+    lineNumber="7"
+    columnNumber="13"
+    code="cvc-complex-type.2.4.b">Synthetischer Strukturfehler</rep:message>
+  <rep:assessment><rep:reject/></rep:assessment>
+  <rep:explanation>
+    <h:table class="tbl-errors"><h:tr class="error"><h:td>Nur Darstellung</h:td></h:tr></h:table>
+    <h:p class="important error">Nur Darstellung</h:p>
+    <h:p class="info">Nur Darstellung</h:p>
+  </rep:explanation>
+</rep:report>"""
+
+    findings, decision, assessment, valid = KositValidator._parse_report(report)
+
+    assert valid is True
+    assert decision is False
+    assert assessment == "reject"
+    assert findings == [
+        {
+            "id": "val-xsd.1",
+            "severity": "error",
+            "title": "KoSIT-Prüfmeldung",
+            "message": "Synthetischer Strukturfehler",
+            "location": None,
+            "line": 7,
+            "column": 13,
+            "actual": None,
+            "expected": None,
+            "source": "KoSIT Validator",
+        }
+    ]
+
+
 def test_windows_kosit_process_is_started_without_console(tmp_path, monkeypatch):
     jar = tmp_path / "validator-1.6.2-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
@@ -477,28 +520,78 @@ def test_windows_kosit_process_is_started_without_console(tmp_path, monkeypatch)
     assert observed["creationflags"] == expected
 
 
-def test_installer_selects_only_standalone_jar(tmp_path):
+def test_installer_uses_locked_components_and_selects_only_standalone_jar(tmp_path):
     script_path = Path(__file__).resolve().parents[1] / "scripts" / "install_kosit.py"
     spec = importlib.util.spec_from_file_location("kosit_installer_test", script_path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    release = {
-        "tag_name": "v1.6.2",
-        "assets": [
-            {"name": "validator-1.6.2.jar", "size": 1},
-            {"name": "validator-1.6.2.zip", "size": 100},
-            {"name": "validator-1.6.2-standalone.jar", "size": 10},
-        ],
+    locked = module.load_lock(module.DEFAULT_LOCK_FILE)
+    assert locked["components"]["validator"]["version"] == "KoSIT Validator 1.6.2"
+    assert locked["components"]["xrechnung"]["version"].endswith("2026-01-31")
+    assert locked["standards"] == {
+        "xrechnung": "3.0.2",
+        "xrechnung_configuration": "2026-01-31",
+        "cen_en16931": "1.3.15",
+        "xrechnung_schematron": "2.5.0",
     }
-    assert module.choose_validator_asset(release)["name"] == "validator-1.6.2-standalone.jar"
 
     normal = tmp_path / "validator-1.6.2.jar"
     standalone = tmp_path / "validator-1.6.2-standalone.jar"
     _write_jar(normal, None)
     _write_jar(standalone, "de.kosit.validationtool.cmd.CommandLineApplication")
     assert module.find_validator_jar(tmp_path) == standalone
+
+
+def test_installer_rejects_unknown_lock_schema_and_invalid_digest(tmp_path):
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "install_kosit.py"
+    spec = importlib.util.spec_from_file_location("kosit_installer_invalid_lock_test", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    lock_path = tmp_path / "components.lock.json"
+    lock_path.write_text(json.dumps({"schema_version": 2, "components": {}}), encoding="utf-8")
+    with pytest.raises(module.InstallError, match="Schema-Version"):
+        module.load_lock(lock_path)
+
+    component = {
+        "version": "1",
+        "filename": "component.bin",
+        "url": "https://example.test/component.bin",
+        "sha256": "falsch",
+    }
+    lock_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "components": {"validator": component, "xrechnung": component},
+                "standards": {
+                    "xrechnung": "3.0.2",
+                    "xrechnung_configuration": "2026-01-31",
+                    "cen_en16931": "1.3.15",
+                    "xrechnung_schematron": "2.5.0",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(module.InstallError, match="Prüfsumme"):
+        module.load_lock(lock_path)
+
+
+def test_public_kosit_component_versions_match_the_locked_bundle() -> None:
+    lock_path = Path(__file__).resolve().parents[1] / "packaging" / "kosit" / "components.lock.json"
+    payload = json.loads(lock_path.read_text(encoding="utf-8"))
+
+    assert KOSIT_COMPONENT_VERSIONS == {
+        "validator": payload["components"]["validator"]["version"].removeprefix("KoSIT Validator "),
+        "xrechnung": payload["standards"]["xrechnung"],
+        "xrechnung_configuration": payload["standards"]["xrechnung_configuration"],
+        "cen_en16931": payload["standards"]["cen_en16931"],
+        "xrechnung_schematron": payload["standards"]["xrechnung_schematron"],
+    }
 
 
 def test_serialized_report_file_avoids_print_format_error(tmp_path, monkeypatch):

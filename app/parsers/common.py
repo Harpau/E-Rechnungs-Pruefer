@@ -82,6 +82,7 @@ def empty_party() -> dict:
         "trading_name": None,
         "description": None,
         "ids": [],
+        "legal_registration_ids": [],
         "tax_ids": [],
         "endpoint": None,
         "contact": {
