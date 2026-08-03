@@ -380,12 +380,15 @@ def test_windows_package_test_exercises_packaged_pdf_report() -> None:
         "X-Einvoice-Conformity-Status:\\s*not-requested",
         "X-Einvoice-Internal-Status:\\s*attention",
         "X-Einvoice-Processing-Status:\\s*complete",
+        "X-Einvoice-Report-Scope:\\s*readable",
+        "if ($PdfResponseHeaders -match $ForbiddenHeader)",
+        "nicht mehr zulässigen Legacy-Header",
         "Der installierte PDF-Endpunkt veröffentlicht fachliche Daten in Antwort-Headern.",
     ):
         assert expected in script
 
-    assert "X-Einvoice-Validation-Status" not in script
-    assert "X-Einvoice-Official-Status" not in script
+    assert "(?im)^X-Einvoice-Validation-Status\\s*:" in script
+    assert "(?im)^X-Einvoice-Official-Status\\s*:" in script
 
 
 def test_windows_package_test_uses_only_the_schema_two_analysis_contract() -> None:

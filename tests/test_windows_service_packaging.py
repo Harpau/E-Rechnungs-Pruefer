@@ -990,6 +990,26 @@ def test_service_package_test_uses_only_the_schema_two_analysis_contract() -> No
     assert ".validation.official" not in script
 
 
+def test_service_package_test_exercises_the_complete_pdf_header_contract() -> None:
+    script = _read("scripts/test_windows_service_package.ps1")
+
+    for expected in (
+        '$PdfHeaders = Join-Path $TestRoot "report-headers.txt"',
+        "--dump-header $PdfHeaders --output $PdfOutput",
+        "X-Einvoice-Analysis-Schema:\\s*2",
+        "X-Einvoice-Syntax:\\s*CII",
+        "X-Einvoice-Conformity-Status:\\s*not-requested",
+        "X-Einvoice-Internal-Status:\\s*attention",
+        "X-Einvoice-Processing-Status:\\s*complete",
+        "X-Einvoice-Report-Scope:\\s*readable",
+        "(?im)^X-Einvoice-Validation-Status\\s*:",
+        "(?im)^X-Einvoice-Official-Status\\s*:",
+        "if ($PdfResponseHeaders -match $ForbiddenHeader)",
+        "nicht mehr zulässigen Legacy-Header",
+    ):
+        assert expected in script
+
+
 def test_service_package_test_uses_locale_neutral_account_identifiers() -> None:
     script = _read("scripts/test_windows_service_package.ps1")
 

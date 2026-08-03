@@ -878,6 +878,7 @@ $FailedUpdateLog = Join-Path $TestRoot "update-rollback.log"
 $CommitHardKillLog = Join-Path $TestRoot "update-commit-hard-kill.log"
 $CommitRecoveryLog = Join-Path $TestRoot "update-commit-recovery.log"
 $PdfOutput = Join-Path $TestRoot "report.pdf"
+$PdfHeaders = Join-Path $TestRoot "report-headers.txt"
 $XmlOutput = Join-Path $TestRoot "export.xml"
 New-Item $TestRoot -ItemType Directory | Out-Null
 Assert-ValidSignature $Setup
@@ -1027,10 +1028,32 @@ if ($Disabled.schema_version -ne 2 -or
 }
 
 & curl.exe --silent --show-error --fail --header "Authorization: Bearer $Token" `
-    --form "file=@$Example;type=application/xml" --form "official=false" --output $PdfOutput `
+    --form "file=@$Example;type=application/xml" --form "official=false" `
+    --dump-header $PdfHeaders --output $PdfOutput `
     "http://127.0.0.1:$Port/api/report/pdf"
 if ($LASTEXITCODE -ne 0 -or [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($PdfOutput), 0, 5) -ne "%PDF-") {
     throw "PDF-Bericht des Dienstes ist ungültig."
+}
+$PdfResponseHeaders = Get-Content $PdfHeaders -Raw
+foreach ($ExpectedHeader in @(
+    '(?im)^X-Einvoice-Analysis-Schema:\s*2\s*\r?$',
+    '(?im)^X-Einvoice-Syntax:\s*CII\s*\r?$',
+    '(?im)^X-Einvoice-Conformity-Status:\s*not-requested\s*\r?$',
+    '(?im)^X-Einvoice-Internal-Status:\s*attention\s*\r?$',
+    '(?im)^X-Einvoice-Processing-Status:\s*complete\s*\r?$',
+    '(?im)^X-Einvoice-Report-Scope:\s*readable\s*\r?$'
+)) {
+    if ($PdfResponseHeaders -notmatch $ExpectedHeader) {
+        throw "Dem installierten Dienst-PDF-Endpunkt fehlt ein erwarteter Antwort-Header: $ExpectedHeader"
+    }
+}
+foreach ($ForbiddenHeader in @(
+    '(?im)^X-Einvoice-Validation-Status\s*:',
+    '(?im)^X-Einvoice-Official-Status\s*:'
+)) {
+    if ($PdfResponseHeaders -match $ForbiddenHeader) {
+        throw "Der installierte Dienst-PDF-Endpunkt liefert einen nicht mehr zulässigen Legacy-Header: $ForbiddenHeader"
+    }
 }
 & curl.exe --silent --show-error --fail --header "Authorization: Bearer $Token" `
     --form "file=@$Example;type=application/xml" --output $XmlOutput `
