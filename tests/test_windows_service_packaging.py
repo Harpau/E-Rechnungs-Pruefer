@@ -1100,6 +1100,28 @@ def test_mode_exclusion_test_proves_manual_switch_and_no_mutation_on_rejection()
     assert "Get-SanitizedInnoLogTail" in invoke_setup
     assert "Get-SanitizedInnoLogTail" in invoke_expected_failure
 
+    wait_for_desktop_cleanup = script[
+        script.index("function Wait-DesktopFootprintsAbsent") : script.index("function Get-DiagnosticPathMasks")
+    ]
+    for expected in (
+        "[int]$Seconds = 60",
+        "$Timer.Elapsed.TotalSeconds -ge $Seconds",
+        "Start-Sleep -Milliseconds 250",
+        '"Installationsverzeichnis"',
+        '"lokales Datenverzeichnis"',
+        '"Uninstall-Registrierung"',
+        '"Autostart-Registrierung"',
+        "Get-SanitizedInnoLogTail -LogPath $LogPath",
+        "$($Remaining -join ', ')",
+    ):
+        assert expected in wait_for_desktop_cleanup
+    assert script.count("Wait-DesktopFootprintsAbsent -DesktopDir $DesktopDir") == 2
+    first_desktop_cleanup = script.index(
+        "Wait-DesktopFootprintsAbsent -DesktopDir $DesktopDir",
+        script.index("$DesktopProcess = $null"),
+    )
+    assert first_desktop_cleanup < script.index("$ServiceInstallArguments = @(")
+
     sanitizer = script[script.index("function Get-DiagnosticPathMasks") : script.index("function Invoke-Setup")]
     for expected in (
         "<REPOSITORY>",
