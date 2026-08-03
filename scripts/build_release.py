@@ -61,6 +61,8 @@ def should_include(relative: Path) -> bool:
     posix = PurePosixPath(relative.as_posix())
     if any(part in EXCLUDED_PARTS or part.endswith(".egg-info") for part in posix.parts):
         return False
+    if relative.name != ".env.example" and (relative.name == ".env" or relative.name.startswith(".env.")):
+        return False
     if relative.name in EXCLUDED_NAMES:
         return False
     if relative.suffix.lower() in SENSITIVE_SUFFIXES:

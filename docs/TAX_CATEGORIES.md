@@ -4,6 +4,14 @@
 
 Die Rechnungsansicht bewahrt den maschinenlesbaren Code und ergänzt eine verständliche Bezeichnung. Sie zeigt Basisbetrag, Steuerbetrag, Steuersatz, Begründung und Begründungscode gemeinsam. Ein Freitext darf nicht nur deshalb verschwinden, weil eine Bemessungsgrundlage vorhanden ist.
 
+In den Rechnungspositionen ist der tatsächlich angegebene Steuersatz der hervorgehobene Primärwert; der rohe
+Kategoriecode steht kleiner darunter. Fehlt der Steuersatz, wird stattdessen der Kategoriecode hervorgehoben:
+bei `O` mit dem Zusatz „ohne Steuersatz“, sonst mit „Steuersatz nicht angegeben“. Fehlen Satz und Kategorie,
+erscheint nur ein nicht hervorgehobener Gedankenstrich. Langbezeichnung und vollständige Steuerdetails bleiben
+im Abschnitt „Umsatzsteuer“. Eine reguläre Legende wird nicht wiederholt; ein deduplizierter Hinweis erscheint
+nur, wenn eine in den Positionen verwendete Kombination aus Kategorie und Satz in der Steueraufschlüsselung
+fehlt.
+
 | Code | Darstellung | Erwartung der internen Prüfung |
 |---|---|---|
 | `S` | Standardsteuersatz | positiver Steuersatz |

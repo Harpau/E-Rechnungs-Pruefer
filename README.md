@@ -1,8 +1,16 @@
 # E‑Rechnungs‑Viewer & Prüfer
 
-Lokale Webanwendung zum Öffnen, verständlichen Darstellen und Prüfen strukturierter E‑Rechnungen. Sie liest XML-Rechnungen direkt oder extrahiert die Rechnungs-XML aus einer Hybrid-PDF. Neben einer lesbaren Rechnungsansicht entstehen ein gemeinsamer Prüfbericht, XML-Textansichten und ein navigierbarer technischer Tabellenanhang mit erfassten Elementwerten, Attributen, Namespace-URIs und Pfaden.
+Lokale Webanwendung zum Öffnen, verständlichen Darstellen und Prüfen strukturierter E‑Rechnungen. Sie liest XML-Rechnungen direkt oder extrahiert die Rechnungs-XML aus einer Hybrid-PDF. Neben einer lesbaren Rechnungsansicht entstehen ein Prüfbericht mit getrennten Bewertungsachsen, XML-Textansichten und ein navigierbarer technischer Tabellenanhang mit erfassten Elementwerten, Attributen, Namespace-URIs und Pfaden.
 
 Die Anwendung ist als nachvollziehbares Prüf- und Analysewerkzeug konzipiert. Die eingebaute Prüfung ersetzt weder eine fachliche Steuerberatung noch eine vollständige Profilvalidierung. Für XSD-/Schematron-Prüfungen kann der offizielle KoSIT-Validator angebunden werden.
+
+> [!IMPORTANT]
+> Seit Version **2.0.0** verwendet die Analyse-API ausschließlich **Analyseschema 2**. `POST /api/analyze` wurde am
+> bestehenden Endpunkt inkompatibel umgestellt; es gibt keinen Legacy-Endpunkt, Versionsparameter oder
+> Kompatibilitätsadapter für Schema 1. Auch die Statusheader der HTML- und PDF-Berichte wurden ersetzt.
+> Integrationen müssen Server und Consumer gemeinsam umstellen und `schema_version == 2` beziehungsweise
+> `X-Einvoice-Analysis-Schema: 2` verlangen. Die Migrationsanleitung mit den zentralen Feldzuordnungen steht in
+> [`docs/API_MIGRATION_V2.md`](docs/API_MIGRATION_V2.md).
 
 ## Unterstützte Eingaben
 
@@ -19,7 +27,16 @@ Reine Sicht- oder Scan-PDFs ohne eingebettete strukturierte XML werden bewusst n
 - XML-Text- und Tabellenansichten sowie bytegetreuer Export der ursprünglichen XML-Bytes
 - interne Pflichtfeld-, Datums-, Format-, Rechen- und Plausibilitätsprüfungen
 - optionale KoSIT-Prüfung mit zuverlässiger Auswertung des VARL-Berichts
-- JSON-, XML-, eigenständiger HTML- und paginierter PDF-Prüfbericht
+- geschlossenes Analyseschema 2 mit getrennten Achsen für offizielle Konformität, interne Prüfung und
+  technischen Verarbeitungsabschluss
+- versionierte Dokumenttypauflösung für 62 UNTDID-1001-Codes aus CEN EN 16931 1.3.15 sowie abgeleitete
+  Dokument-, Gläubiger-/Schuldner- und erwartete Zahlungsrollen
+- übersichtliche Rechnungsdarstellung mit 30 wesentlichen Kopffakten, expliziter Rechnungsart sowie getrenntem
+  Dokument- und erwartetem Zahlungsfluss
+- kompakte USt-Angabe je Rechnungsposition mit hervorgehobenem Steuersatz und kleinerem Kategoriecode;
+  Abweichungshinweise erscheinen nur bei fehlenden Kombinationen in der Steueraufschlüsselung
+- Schema-2-JSON-Analyse, bytegetreuer XML-Export, eigenständige HTML-Berichte in lesbarem oder vollständigem
+  Umfang sowie paginierter PDF-Bericht
 - lokale HTTP-API mit OpenAPI-Dokumentation
 - Docker-Konfiguration, automatisierte Tests, Typprüfung, Linting, Coverage und Release-Build
 - vorbereitetes GitHub-Repository mit CI, CodeQL, Dependency Audit, Dependabot, Issue- und Pull-Request-Vorlagen
@@ -27,7 +44,8 @@ Reine Sicht- oder Scan-PDFs ohne eingebettete strukturierte XML werden bewusst n
 
 ## Schnellstart für die Nutzung
 
-Voraussetzung ist Python 3.11 oder neuer.
+Für den Start aus dem Quellcode oder als Python-Paket wird Python 3.11 oder neuer benötigt. Die
+Windows-x64-Installer bringen Python, Java und KoSIT mit; für den Containerstart wird Docker benötigt.
 
 ### Windows-x64-Installer
 
@@ -62,6 +80,9 @@ chmod +x scripts/start.sh
 
 Danach ist die Anwendung standardmäßig unter `http://127.0.0.1:8080` erreichbar.
 
+Die Startskripte öffnen den Browser automatisch. Ist `EINVOICE_API_TOKEN` gesetzt, richtet das geöffnete
+Bootstrapfenster eine vom dauerhaften API-Token getrennte Browsersitzung ein.
+
 ### Installation als Python-Paket
 
 ```sh
@@ -78,6 +99,19 @@ docker compose up --build
 ```
 
 Der Port wird in `compose.yaml` ausschließlich an `127.0.0.1` gebunden. Das lokale `vendor/`-Verzeichnis wird eingebunden, damit eine optionale KoSIT-Installation erhalten bleibt.
+
+## Oberfläche und Berichtsausgaben
+
+- **Prüfbericht JSON** lädt die vollständige Schema-2-Analyse.
+- **XML speichern** exportiert die ausgewählte Rechnungs-XML bytegetreu.
+- **HTML-Bericht** erzeugt den eigenständigen Bericht mit `scope=readable`.
+- **Vollständiger Bericht** erzeugt den HTML-Bericht mit `scope=complete` einschließlich technischer Anhänge.
+- **Drucken / PDF** lädt den lesbaren HTML-Bericht und öffnet den Browserdruck. Der eigenständige paginierte
+  PDF-Bericht für Automatisierungen wird dagegen über `POST /api/report/pdf` erzeugt.
+
+Die sichtbare Kennzeichnung „Ausgewertet“, „Mit Hinweisen“ oder „Handlungsbedarf“ fasst die Darstellung für
+Menschen zusammen. Sie ist keine vierte API-Achse und darf von Integrationen nicht anstelle von
+`assessment.official`, `assessment.internal` und `assessment.processing` ausgewertet werden.
 
 ## Entwicklungsumgebung
 
@@ -149,7 +183,11 @@ Alternativ stehen die manuellen Schritte und Hinweise für Branch-Schutz, Action
 
 ## KoSIT-Validator einrichten
 
-Die interne Prüfung funktioniert ohne Java. In Quell-, Wheel- und Repository-Paketen werden der KoSIT-Validator und die XRechnung-Konfiguration bewusst nicht mitgeliefert, sondern auf ausdrücklichen Aufruf installiert. Der Windows-x64-Installer enthält dagegen die beim Build festgeschriebenen und verifizierten Versionen samt Java-Laufzeit.
+Die interne Prüfung funktioniert ohne Java. In Quell-, Wheel- und Repository-Paketen werden der KoSIT-Validator
+und die XRechnung-Konfiguration bewusst nicht mitgeliefert. Der folgende Einrichtungsbefehl steht im Quell-,
+Repository- und entpackten Source-Distribution-Paket zur Verfügung; ein allein installiertes Wheel enthält das
+Repository-Skript nicht. Der Windows-x64-Installer bringt dagegen die beim Build festgeschriebenen und
+verifizierten Versionen samt Java-Laufzeit mit.
 
 ```sh
 python scripts/install_kosit.py
@@ -165,18 +203,26 @@ Der Installer:
 
 - lädt ausschließlich ein `validator-<Version>-standalone.jar`;
 - prüft das JAR-Manifest auf `Main-Class`;
-- prüft eine veröffentlichte SHA-256-Prüfsumme, sofern vorhanden;
+- installiert ausschließlich die in `packaging/kosit/components.lock.json` festgelegten Artefakte;
+- prüft deren verpflichtende SHA-256-Prüfsummen vor der Installation;
 - installiert die XRechnung-Szenarien nach `vendor/kosit/`;
 - schreibt die lokale, von Git ausgeschlossene Datei `.env.kosit`.
 
 Die Anwendung verwendet KoSIT ohne `-p/--print`, liest primär die erzeugte `*-report.xml` und wertet die ausdrückliche VARL-Entscheidung `<rep:accept/>` oder `<rep:reject/>` aus. Java-, JAR-, Konfigurations- und Timeoutfehler werden als „nicht ausgeführt“ und nicht als Rechnungsablehnung ausgewiesen.
 
-## Steuerkategorien und Version 1.1
+Die Sperrdatei [`packaging/kosit/components.lock.json`](packaging/kosit/components.lock.json) legt derzeit
+KoSIT Validator **1.6.2** und die XRechnung-Validator-Konfiguration **2026-01-31** für XRechnung **3.0.2**
+fest. Darin enthalten sind CEN-EN-16931-Regeln **1.3.15** und XRechnung-Schematron **2.5.0**. Installer und
+Windows-Build prüfen die festgelegten SHA-256-Werte; `/api/health` veröffentlicht die Komponentenversionen ohne
+lokale Pfade.
+
+## Steuerkategorien
 
 Die Ansicht zeigt für jede Steuergruppe gleichzeitig:
 
 - den maschinenlesbaren Kategoriecode und seine Bezeichnung;
-- den Steuersatz, sofern im XML vorhanden und für die Kategorie zulässig;
+- den im XML tatsächlich angegebenen Steuersatz; unzulässige Kombinationen bleiben sichtbar und erzeugen einen
+  Befund;
 - den Basis- beziehungsweise Kategorienettobetrag;
 - den Befreiungs- oder Begründungstext;
 - einen Befreiungsgrundcode.
@@ -191,9 +237,9 @@ Interaktive Dokumentation: `http://127.0.0.1:8080/api/docs`
 |---|---|---|
 | `GET` | `/api/health` | Anwendungsversion und KoSIT-Bereitschaft |
 | `GET` | `/api/examples/{cii|ubl}` | anonymisierte Beispieldatei |
-| `POST` | `/api/analyze` | normalisiertes Modell und gemeinsamer Prüfbericht als JSON |
-| `POST` | `/api/report` | eigenständiger HTML-Bericht |
-| `POST` | `/api/report/pdf` | eigenständiger PDF-Bericht für Mail-Automatisierungen |
+| `POST` | `/api/analyze` | geschlossenes Analyseschema 2 mit drei unabhängigen Bewertungsachsen |
+| `POST` | `/api/report` | eigenständiger HTML-Bericht; standardmäßig `scope=readable` |
+| `POST` | `/api/report/pdf` | eigenständiger PDF-Bericht; standardmäßig `scope=readable` |
 | `POST` | `/api/xml` | ursprüngliche oder aus PDF extrahierte XML bytegetreu |
 
 Beispiel:
@@ -203,10 +249,44 @@ curl -F "file=@rechnung.xml" -F "official=false" \
   http://127.0.0.1:8080/api/analyze > pruefbericht.json
 ```
 
+Sobald `EINVOICE_API_TOKEN` gesetzt ist – in installierten Windows-Betriebsarten immer – benötigen direkte
+Aufrufe von `/api/*` den Bearer-Header; nur `/api/health` bleibt öffentlich. Das Token gehört nicht in die URL
+oder ein Skript-Repository:
+
+```sh
+curl -H "Authorization: Bearer ${EINVOICE_API_TOKEN}" \
+  -F "file=@rechnung.xml" -F "official=false" \
+  http://127.0.0.1:8080/api/analyze > pruefbericht.json
+```
+
+Erfolgreiche JSON-Antworten von `POST /api/analyze` enthalten ausschließlich Schema 2 und beginnen mit
+`"schema_version": 2`. Die drei Statusachsen liegen unter:
+
+- `assessment.official`: offizielle Konformitätsentscheidung;
+- `assessment.internal`: interne Vorprüfungen und Plausibilitätskontrollen;
+- `assessment.processing`: Vollständigkeit der technischen Verarbeitung.
+
+Diese Achsen dürfen nicht wieder zu einem einzigen `ok`-/`warning`-/`invalid`-Wert verdichtet werden.
+
 `POST /api/report` liefert den eigenständigen HTML-Bericht, `POST /api/report/pdf` einen direkt öffnungsfähigen
-PDF-Bericht für Mail-Automatisierungen. Beide Antworten enthalten die Header `X-Einvoice-Syntax`,
-`X-Einvoice-Validation-Status` und `X-Einvoice-Official-Status`; ihre Download-Dateinamen enthalten keine
-Rechnungs- oder Originaldateikennung. Der verbindliche Wertebereich und die Automatisierungsregeln stehen in
+PDF-Bericht für Mail-Automatisierungen. Beide Endpunkte akzeptieren den Form-Parameter
+`scope=readable|complete`: Ohne Angabe wird der menschenlesbare Bericht (`readable`) erzeugt; nur
+`scope=complete` ergänzt technische XML-Felder, XML-Darstellungen und KoSIT-Rohdaten. Beispiel:
+
+```sh
+curl -F "file=@rechnung.xml" -F "official=false" -F "scope=complete" \
+  -o vollstaendiger-pruefbericht.html http://127.0.0.1:8080/api/report
+```
+
+Als anwendungsspezifische Analyseheader senden beide Antworten
+`X-Einvoice-Analysis-Schema`, `X-Einvoice-Syntax`, `X-Einvoice-Conformity-Status`,
+`X-Einvoice-Internal-Status`, `X-Einvoice-Processing-Status` und `X-Einvoice-Report-Scope`. Die früheren Header
+`X-Einvoice-Validation-Status` und `X-Einvoice-Official-Status` werden nicht mehr gesendet. Die
+von diesen API-Endpunkten gelieferten `Content-Disposition`-Dateinamen enthalten keine Rechnungs- oder
+Originaldateikennung.
+
+Das konkrete Alt→Neu-Mapping steht in [`docs/API_MIGRATION_V2.md`](docs/API_MIGRATION_V2.md). Verbindliche
+Automatisierungs- und Routingregeln beschreibt
 [`docs/AUTOMATION_INTEGRATION.md`](docs/AUTOMATION_INTEGRATION.md).
 
 Die installierten Windows-Betriebsarten binden ausschließlich an `127.0.0.1` auf dem festen Port `8080`
@@ -244,6 +324,11 @@ Der Windows-Dienst liest Port und KoSIT-Einstellungen stattdessen aus der streng
 `%ProgramData%\E-Rechnungs-Pruefer\service.json` und aktiviert diese Werte zusammen mit dem Maschinentoken vor
 dem Import der Webanwendung. Seine Bind-Adresse ist fest auf `127.0.0.1` gesetzt und nicht konfigurierbar.
 
+Ist `EINVOICE_API_TOKEN` beim interaktiven Quellstart mit `--open` gesetzt, erzeugt die Anwendung für den
+geöffneten Browser automatisch eine davon getrennte Sitzung. Das dauerhafte Bearer-Token wird weder an den
+Browser noch an JavaScript übergeben; API-Automatisierungen verwenden es weiterhin im
+`Authorization: Bearer ...`-Header.
+
 ## Sicherheit und Datenschutz
 
 - Standardmäßig Bindung nur an `127.0.0.1`
@@ -253,15 +338,21 @@ dem Import der Webanwendung. Seine Bind-Adresse ist fest auf `127.0.0.1` gesetzt
 - deaktivierte externe Entitäten, DTD-Nachladung und XML-Netzwerkzugriffe
 - begrenzte Upload- und Darstellungsgrößen
 - bereinigte Download-Dateinamen, Sicherheitsheader und Content Security Policy
-- zufällige Sitzung, Host- und Origin-Prüfung im Windows-Desktop-Modus
-- geschützte ProgramData-DACLs, dienstspezifischer SID und einmaliger IPC-Browserbootstrap im Windows-Dienstmodus
+- persistentes Bearer-Token für `/api/*` in den installierten Windows-Modi; `/api/health` bleibt die öffentliche
+  Ausnahme
+- vom API-Token getrennte Browsersitzung sowie Host- und Origin-Prüfung im Windows-Desktop-Modus
+- geschützte ProgramData-DACLs, dienstspezifischer SID und einmaliger, authentifizierter
+  IPC-Browserbootstrap im Windows-Dienstmodus
 - nicht privilegierter Benutzer im Docker-Image
 
 Ein öffentlicher oder mehrbenutzerfähiger Betrieb benötigt zusätzlich Authentifizierung, TLS, Rate Limits, sichere Protokollierung, Malware-Prüfung und Ressourcenbegrenzung. Siehe [`SECURITY.md`](SECURITY.md) und [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).
 
 ## Dokumentation
 
+- [`START_HERE.txt`](START_HERE.txt) – kompakter Einstieg, Installerwahl und aktuelle Upgradehinweise
+- [`CHANGELOG.md`](CHANGELOG.md) – kuratierte Änderungen und Breaking Changes je Version
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) – Komponenten und Datenfluss
+- [`docs/API_MIGRATION_V2.md`](docs/API_MIGRATION_V2.md) – sofortige Migration von Analyseschema 1 auf 2
 - [`docs/VALIDATION.md`](docs/VALIDATION.md) – interne und offizielle Prüfung
 - [`docs/AUTOMATION_INTEGRATION.md`](docs/AUTOMATION_INTEGRATION.md) – verbindliche Status- und Fehlerregeln für Node-RED und andere Automatisierungen
 - [`docs/NODE_RED.md`](docs/NODE_RED.md) – Import und Konfiguration des anonymisierten Node-RED-Beispielflows

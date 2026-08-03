@@ -25,12 +25,20 @@ def test_pdf_with_embedded_xml_is_supported(ubl_path, pdf_bytes_factory):
     )
 
     assert result["document"]["id"] == "UBL-DEMO-1"
-    assert result["source"]["size"] == len(pdf)
-    assert result["source"]["sha256"] == sha256(pdf).hexdigest()
-    assert result["source"]["xml_size"] == len(payload)
-    assert result["source"]["xml_sha256"] == sha256(payload).hexdigest()
+    assert result["source"]["upload"] == {
+        "filename": "hybrid-rechnung.pdf",
+        "media_type": "application/pdf",
+        "size_bytes": len(pdf),
+        "sha256": sha256(pdf).hexdigest(),
+    }
+    assert result["source"]["invoice_xml"] == {
+        "filename": "factur-x.xml",
+        "media_type": "application/xml",
+        "size_bytes": len(payload),
+        "sha256": sha256(payload).hexdigest(),
+    }
     assert result["source"]["container"] == {
-        "type": "PDF mit eingebetteter XML",
+        "kind": "pdf",
         "page_count": 1,
         "selected_attachment": "factur-x.xml",
         "attachment_count": 1,
@@ -38,9 +46,10 @@ def test_pdf_with_embedded_xml_is_supported(ubl_path, pdf_bytes_factory):
     assert result["source"]["attachments"] == [
         {
             "name": "factur-x.xml",
-            "size": len(payload),
+            "size_bytes": len(payload),
             "sha256": sha256(payload).hexdigest(),
             "is_xml": True,
+            "selected": True,
         }
     ]
 

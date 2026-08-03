@@ -214,6 +214,7 @@ jobs:
             --draft \
             --verify-tag \
             --title "E-Rechnungs-Pruefer ${GITHUB_REF_NAME#v}" \
-            --generate-notes
+            --generate-notes \
+            --notes "**Breaking Change seit 2.0.0:** Der bestehende Analyseendpunkt verwendet ausschließlich Analyseschema 2; es gibt keinen Legacy-Adapter. [Migrationsanleitung für Analyseschema 2](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/API_MIGRATION_V2.md) · [Vollständige kuratierte Änderungsübersicht](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)"
           gh release upload "${GITHUB_REF_NAME}" release-dist/*
           gh release edit "${GITHUB_REF_NAME}" --draft=false

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from app.desktop_security import DesktopSessionMiddleware, OneTimeBrowserSessions
+from app.desktop_security import DESKTOP_COOKIE_NAME, DesktopSessionMiddleware, OneTimeBrowserSessions
 from app.main import app
 
 
@@ -40,7 +40,10 @@ def test_service_api_requires_correct_bearer_and_keeps_health_loopback_only(cii_
         **request,
     )
     assert accepted.status_code == 200
-    assert accepted.json()["validation"]["official"]["executed"] is False
+    official = accepted.json()["assessment"]["official"]
+    assert official["status"] == "not-requested"
+    assert official["requested"] is False
+    assert official["executed"] is False
 
 
 def test_service_api_pdf_and_xml_contract_with_bearer(cii_path) -> None:
@@ -63,6 +66,43 @@ def test_service_api_pdf_and_xml_contract_with_bearer(cii_path) -> None:
 
     assert pdf.status_code == 200
     assert pdf.content.startswith(b"%PDF-")
-    assert pdf.headers["x-einvoice-official-status"] == "not-requested"
+    assert pdf.headers["x-einvoice-conformity-status"] == "not-requested"
     assert exported.status_code == 200
     assert exported.content == payload
+
+
+def test_interactive_source_browser_and_bearer_api_work_together(cii_path) -> None:
+    api_token = "a" * 43
+    desktop_token = "separate-browser-session"
+    protected = DesktopSessionMiddleware(
+        app,
+        token=desktop_token,
+        port=8080,
+        api_token=api_token,
+    )
+    browser = TestClient(protected, base_url="http://127.0.0.1:8080")
+    payload = cii_path.read_bytes()
+    analyze_request = {
+        "files": {"file": (cii_path.name, payload, "application/xml")},
+        "data": {"official": "false"},
+    }
+
+    assert browser.get("/api/examples/cii").status_code == 403
+    assert browser.post("/api/analyze", **analyze_request).status_code == 403
+
+    bootstrap = browser.get(
+        f"/desktop/bootstrap?token={desktop_token}",
+        follow_redirects=False,
+    )
+    assert bootstrap.status_code == 303
+    assert "HttpOnly" in bootstrap.headers["set-cookie"]
+    assert "SameSite=strict" in bootstrap.headers["set-cookie"]
+    assert browser.cookies.get(DESKTOP_COOKIE_NAME) == desktop_token
+    assert browser.get("/api/examples/cii").status_code == 200
+    assert browser.post("/api/analyze", **analyze_request).status_code == 200
+
+    automation = TestClient(protected, base_url="http://127.0.0.1:8080")
+    bearer = {"authorization": f"Bearer {api_token}"}
+    assert automation.get("/api/examples/cii", headers=bearer).status_code == 200
+    assert automation.post("/api/analyze", headers=bearer, **analyze_request).status_code == 200
+    assert automation.get("/", headers=bearer).status_code == 403

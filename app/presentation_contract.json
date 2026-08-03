@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "overall_status": {
+    "ok": "Ausgewertet",
+    "warning": "Mit Hinweisen",
+    "invalid": "Handlungsbedarf"
+  },
+  "axes": [
+    {
+      "key": "official",
+      "title": "Offizielle Konformitätsprüfung",
+      "labels": {
+        "accepted": "Akzeptiert",
+        "rejected": "Abgelehnt",
+        "not-requested": "Nicht angefordert",
+        "unsupported": "Nicht unterstützt",
+        "unavailable": "Nicht verfügbar",
+        "indeterminate": "Unbestimmt"
+      }
+    },
+    {
+      "key": "internal",
+      "title": "Interne Prüfung",
+      "labels": {
+        "clear": "Unauffällig",
+        "attention": "Hinweise",
+        "errors": "Fehler",
+        "not-run": "Nicht ausgeführt"
+      }
+    },
+    {
+      "key": "processing",
+      "title": "Verarbeitung",
+      "labels": {
+        "complete": "Vollständig",
+        "limited": "Begrenzt",
+        "incomplete": "Unvollständig"
+      }
+    }
+  ],
+  "header_facts": [
+    {"key": "invoice_number", "label": "Rechnungsnummer"},
+    {"key": "invoice_date", "label": "Rechnungsdatum"},
+    {"key": "invoice_period", "label": "Rechnungszeitraum"},
+    {"key": "delivery_period", "label": "Liefer-/Leistungszeitraum"},
+    {"key": "actual_delivery_date", "label": "Tatsächliches Lieferdatum (BT-72)"},
+    {"key": "delivery_location_id", "label": "Kennung des Lieferorts (BT-71)"},
+    {"key": "delivery_location_address", "label": "Lieferort"},
+    {"key": "due_date", "label": "Fälligkeit"},
+    {"key": "document_currency", "label": "Rechnungswährung"},
+    {"key": "vat_accounting_currency", "label": "USt-Abrechnungswährung"},
+    {"key": "profile", "label": "Profil"},
+    {"key": "invoice_type", "label": "Rechnungsart"},
+    {"key": "document_type_status", "label": "Dokumenttyp-Status"},
+    {"key": "document_family", "label": "Dokumentfamilie"},
+    {"key": "base_polarity", "label": "Grundpolarität"},
+    {"key": "settlement_relevance", "label": "Abrechnungsrelevanz"},
+    {"key": "self_billing", "label": "Selbstausstellung"},
+    {"key": "buyer_reference", "label": "Käuferreferenz"},
+    {"key": "syntax", "label": "Syntax"},
+    {"key": "format", "label": "Format"},
+    {"key": "document_type_recognition", "label": "Dokumenttyperkennung"},
+    {"key": "rendering_scope", "label": "Darstellungsumfang"},
+    {"key": "internal_checks_scope", "label": "Interner Prüfumfang"},
+    {"key": "official_validation", "label": "Offizielle Prüfung"},
+    {"key": "business_process", "label": "Geschäftsprozess"},
+    {"key": "tax_point_date", "label": "Steuerdatum"},
+    {"key": "tax_point_date_code", "label": "Code des Steuerdatums"},
+    {"key": "profile_id", "label": "Profilkennung"},
+    {"key": "ubl_root", "label": "UBL-Wurzelelement"},
+    {"key": "root_compatibility", "label": "Wurzel/Typ-Kompatibilität"}
+  ],
+  "sections": [
+    {"id": "document_overview", "label": "Übersicht", "scope": "readable"},
+    {"id": "parties", "label": "Parteien", "scope": "readable"},
+    {"id": "allowances_charges", "label": "Nachlässe und Zuschläge", "scope": "readable"},
+    {"id": "lines", "label": "Rechnungspositionen", "scope": "readable"},
+    {"id": "tax_totals", "label": "Umsatzsteuer und Summen", "scope": "readable"},
+    {"id": "payment", "label": "Zahlung", "scope": "readable"},
+    {"id": "references_delivery", "label": "Referenzen und Lieferung", "scope": "readable"},
+    {"id": "notes_source", "label": "Hinweise und Quelle", "scope": "readable"},
+    {"id": "assessment", "label": "Prüfbericht", "scope": "readable"},
+    {"id": "kosit_raw", "label": "Technischer KoSIT-Bericht", "scope": "complete"},
+    {"id": "technical_fields", "label": "Technische XML-Felder", "scope": "complete"},
+    {"id": "source_xml", "label": "XML-Darstellung", "scope": "complete"}
+  ]
+}

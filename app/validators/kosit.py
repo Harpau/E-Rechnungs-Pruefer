@@ -45,6 +45,7 @@ TECHNICAL_START_PATTERNS = (
 _REPORT_END_RE = re.compile(rb"</(?:[A-Za-z_][A-Za-z0-9_.-]*:)?report\s*>", re.IGNORECASE)
 _FORMAT_ERROR_PREFIX = b"[Format error!] <"
 _FORMAT_ERROR_SUFFIX = b"> with params <"
+_XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml"
 WINDOWS_SUBPROCESS_CREATION_FLAGS = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if sys.platform == "win32" else 0
 _RUNNING_PROCESS_LOCK = Lock()
 _RUNNING_PROCESSES: set[subprocess.Popen[bytes]] = set()
@@ -667,6 +668,11 @@ class KositValidator:
         for element in root.iter():
             if not isinstance(element.tag, str):
                 continue
+            if namespace_uri(element) == _XHTML_NAMESPACE:
+                # KoSIT embeds a complete human-readable XHTML rendering in
+                # the VARL report. Its CSS classes such as "error" and "info"
+                # describe layout and must not become duplicate findings.
+                continue
             lname = local_name(element).lower()
             if lname in {"accepted", "acceptrecommendation", "acceptance", "status"}:
                 value = (clean_text(element) or "").strip().lower()
@@ -700,6 +706,11 @@ class KositValidator:
             if len(findings) >= 500:
                 break
             if not isinstance(element.tag, str):
+                continue
+            if namespace_uri(element) == _XHTML_NAMESPACE:
+                # KoSIT embeds a complete human-readable XHTML rendering in
+                # the VARL report. Its CSS classes such as "error" and "info"
+                # describe layout and must not become duplicate findings.
                 continue
             lname = local_name(element).lower()
             attrs = {key.split("}")[-1].lower(): value for key, value in element.attrib.items()}
@@ -736,6 +747,8 @@ class KositValidator:
                     "title": "KoSIT-Prüfmeldung",
                     "message": text,
                     "location": attrs.get("location") or attrs.get("xpath") or attrs.get("context"),
+                    "line": int(line) if (line := attrs.get("linenumber")) and line.isdigit() else None,
+                    "column": int(column) if (column := attrs.get("columnnumber")) and column.isdigit() else None,
                     "actual": None,
                     "expected": None,
                     "source": "KoSIT Validator",

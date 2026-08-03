@@ -19,6 +19,36 @@ Gleiche Server- und Zugangsdaten in zwei getrennten Account-Knoten reichen nicht
 Account-ID im signierten ACK-Token bindet. Die Vorlage ist bereits entsprechend verdrahtet; beim Bearbeiten oder
 Ersetzen des Kontoknotens muss diese gemeinsame Referenz erhalten bleiben.
 
+## Sofortige Migration auf Schema 2
+
+Die Vorlage akzeptiert ausschließlich den harten Schema-2-Vertrag. Es gibt keine Übergangsfrist und keinen
+Fallback auf frühere Antwortfelder oder -Header. Eine bereits importierte Flow-Kopie muss zusammen mit dem
+Prüfer aktualisiert werden; andernfalls laufen erfolgreiche API-Antworten absichtlich in den Protokollfehlerpfad.
+
+Der Flow fordert mit dem Multipart-Feld `scope=readable` ausdrücklich den menschenlesbaren Bericht an. Der
+Klassifizierer verlangt bei jedem `2xx`-PDF exakt diese sechs Header:
+
+| Header | Erlaubte Werte |
+|---|---|
+| `X-Einvoice-Analysis-Schema` | exakt `2` |
+| `X-Einvoice-Syntax` | `CII`, `UBL`, `UNKNOWN` |
+| `X-Einvoice-Conformity-Status` | `accepted`, `rejected`, `not-requested`, `unsupported`, `unavailable`, `indeterminate` |
+| `X-Einvoice-Internal-Status` | `clear`, `attention`, `errors`, `not-run` |
+| `X-Einvoice-Processing-Status` | `complete`, `limited`, `incomplete` |
+| `X-Einvoice-Report-Scope` | exakt `readable` |
+
+Für eigene Function-Nodes gilt dieselbe atomare Migration:
+
+| Bisher gelesen | Ab Schema 2 lesen |
+|---|---|
+| `validation.status` beziehungsweise `X-Einvoice-Validation-Status` | kein Einzelersatz; alle drei Bewertungsachsen getrennt lesen |
+| `validation.official` beziehungsweise `X-Einvoice-Official-Status` | `assessment.official.status` beziehungsweise `X-Einvoice-Conformity-Status` |
+| `validation.builtin` | `assessment.internal.status` beziehungsweise `X-Einvoice-Internal-Status` |
+| impliziter technischer Abschluss | `assessment.processing.status` beziehungsweise `X-Einvoice-Processing-Status` |
+
+Die vollständige Status- und Prioritätstabelle steht in
+[`AUTOMATION_INTEGRATION.md`](AUTOMATION_INTEGRATION.md).
+
 ## Erforderliche Umgebung
 
 Die folgenden Werte müssen in der Prozessumgebung von Node-RED gesetzt werden:
@@ -113,22 +143,31 @@ Der Flow:
 1. ruft das konfigurierte IMAP-Postfach regelmäßig ab und berücksichtigt nur Nachrichten ohne `\Seen`;
 2. lädt die Mailanhänge und sammelt alle XML- und PDF-Kandidaten, XML vor PDF;
 3. verwirft byteidentische Anhänge;
-4. sendet jeden Kandidaten sequenziell als `multipart/form-data` an `/api/report/pdf`;
-5. wertet Syntax-, Prüf- und KoSIT-Header getrennt aus;
+4. sendet jeden Kandidaten sequenziell mit `scope=readable` als `multipart/form-data` an `/api/report/pdf`;
+5. verlangt Schemaversion `2`, bestätigt den Scope `readable` und wertet Syntax sowie `official`, `internal`
+   und `processing` getrennt aus;
 6. hängt für jede erkannte CII-/UBL-Rechnung einen PDF-Bericht mit einer korrelationsbezogen eindeutigen,
    ausschließlich technischen Dateibezeichnung an;
-7. wiederholt `408`, `429`, `5xx`, Verbindungsfehler und bei verpflichtendem KoSIT ein `indeterminate` nach etwa
-   30 Sekunden, 2 Minuten und 10 Minuten; `Retry-After` wird sowohl in Sekunden als auch als HTTP-Datum
-   ausgewertet und auf höchstens 10 Minuten begrenzt;
+7. wiederholt `408`, `429`, `5xx`, Verbindungsfehler, `processing=incomplete` und bei verpflichtender offizieller
+   Prüfung ein `official=indeterminate` nach etwa 30 Sekunden, 2 Minuten und 10 Minuten; `Retry-After` wird sowohl
+   in Sekunden als auch als HTTP-Datum ausgewertet und auf höchstens 10 Minuten begrenzt;
 8. quittiert die Eingangsmail erst nach erfolgreichem SMTP-Versand oder wenn alle Kandidaten terminal als nicht
    unterstützt beziehungsweise unlesbar klassifiziert wurden.
 
-Eine erkannte Rechnung mit Prüfstatus `invalid` bleibt eine E-Rechnung und erhält ebenfalls einen Bericht.
-`unavailable` oder `not-requested` bei verpflichtendem KoSIT führt in den technischen Fehlerpfad. Eine reine PDF
-ohne eingebettete Rechnungs-XML wird nicht per OCR rekonstruiert.
+Eine erkannte Rechnung mit `official=rejected` oder `internal=errors` bleibt eine E-Rechnung und erhält bei
+`processing=complete` oder `processing=limited` ebenfalls einen Bericht. `internal=not-run` ist zusammen mit
+`processing=complete` ein Protokollfehler; bei `processing=incomplete` ist es erwartbar und der Flow wiederholt
+die Verarbeitung. `official=not-requested`, `unsupported` oder `unavailable` führt bei verpflichtender
+offizieller Prüfung in den technischen Fehlerpfad, sofern nicht bereits `processing=incomplete` die Wiederholung
+bestimmt. Eine reine PDF ohne eingebettete Rechnungs-XML wird nicht per OCR rekonstruiert.
 
 Bei `EINVOICE_REQUIRE_KOSIT=false` sendet der Flow das API-Feld `official=false`. Die Anwendung startet dann für
 diesen Aufruf keine KoSIT-Prüfung; der Antwortstatus `not-requested` ist in diesem Modus ein reguläres Ergebnis.
+
+Die Bezeichnung `BG-16` in Findings ist die fachliche Referenz auf die EN-16931-Gruppe
+„Zahlungsanweisungen“, nicht eine Fundstelle. Automationen verwenden für eine normalisierte Position
+`occurrence.json_pointer` und für eine konkrete XML-Fundstelle `xml_location.path` beziehungsweise
+`xml_location.line`.
 
 Der HTTP-Client erhält für jeden Versuch über `msg.requestTimeout` eine Zeitgrenze von 90 Sekunden. Die
 Flow-Vorlage verlässt sich dabei bewusst nicht auf ein gleichnamiges, von aktuellen Node-RED-Versionen nicht

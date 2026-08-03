@@ -4,10 +4,24 @@ import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from ..xml_utils import date_object, decimal_value, money_string
+from ..document_semantics import PartyReference, derive_document_semantics
+from ..document_types import (
+    DocumentTypeStatus,
+    RootCompatibility,
+    UblRoot,
+    resolve_document_type,
+)
+from ..profiles import resolve_profile
+from ..xml_utils import clean_text, date_object, money_string, xml_decimal_value
 
 TOLERANCE = Decimal("0.02")
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+BANK_ACCOUNT_PAYMENT_CODES = frozenset({"30", "31", "42", "49", "57", "58", "59"})
+XRECHNUNG_PROFILE_PATTERN = re.compile(
+    r"(?:^|#)urn:xeinkauf\.de:kosit:xrechnung(?:_[0-9]+(?:\.[0-9]+)*)?$",
+    re.IGNORECASE,
+)
+XRECHNUNG_RECOMMENDED_DOCUMENT_TYPES = frozenset({"326", "380", "381", "384", "389", "875", "876", "877"})
 
 
 def _finding(
@@ -19,8 +33,14 @@ def _finding(
     location: str | None = None,
     actual: Any = None,
     expected: Any = None,
+    source: str = "Interne Prüfung",
+    reference: str | None = None,
+    rule_class: str | None = None,
+    profile: str | None = None,
+    semantic_reference: list[str] | None = None,
+    location_label: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    finding: dict[str, Any] = {
         "id": rule_id,
         "severity": severity,
         "title": title,
@@ -28,8 +48,19 @@ def _finding(
         "location": location,
         "actual": None if actual is None else str(actual),
         "expected": None if expected is None else str(expected),
-        "source": "Interne Prüfung",
+        "source": source,
     }
+    if reference is not None:
+        finding["reference"] = reference
+    if rule_class is not None:
+        finding["rule_class"] = rule_class
+    if profile is not None:
+        finding["profile"] = profile
+    if semantic_reference is not None:
+        finding["semantic_reference"] = semantic_reference
+    if location_label is not None:
+        finding["location_label"] = location_label
+    return finding
 
 
 def _is_close(left: Decimal, right: Decimal, tolerance: Decimal = TOLERANCE) -> bool:
@@ -40,15 +71,24 @@ def _rounded(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def _sum_amounts(items: list[dict], item_type: str) -> Decimal:
+def _optional_decimal(value: Any, default: Decimal) -> Decimal | None:
+    if clean_text(value) is None:
+        return default
+    return xml_decimal_value(value)
+
+
+def _sum_amounts(items: list[dict], item_type: str) -> tuple[Decimal, bool]:
     total = Decimal("0")
+    complete = True
     for item in items:
         if item.get("type") != item_type:
             continue
-        amount = decimal_value(item.get("amount"))
-        if amount is not None:
-            total += amount
-    return total
+        amount = xml_decimal_value(item.get("amount"))
+        if amount is None:
+            complete = False
+            continue
+        total += amount
+    return total, complete
 
 
 def _iban_valid(value: str) -> bool:
@@ -62,6 +102,84 @@ def _iban_valid(value: str) -> bool:
         for digit in digits:
             remainder = (remainder * 10 + int(digit)) % 97
     return remainder == 1
+
+
+def _has_payment_terms(payment: dict[str, Any]) -> bool:
+    for term in payment.get("terms") or []:
+        if isinstance(term, dict):
+            if clean_text(term.get("description")) is not None:
+                return True
+        elif clean_text(term) is not None:
+            return True
+    return False
+
+
+def _is_known_xrechnung_profile(analysis: dict[str, Any]) -> bool:
+    profile = analysis.get("profile")
+    if isinstance(profile, dict):
+        family = clean_text(profile.get("family"))
+        status = clean_text(profile.get("status"))
+        if family and status and family.casefold() == "xrechnung" and status.casefold() == "known":
+            return True
+
+    document = analysis.get("document")
+    candidates = [
+        document.get("profile_id") if isinstance(document, dict) else None,
+        profile.get("id") if isinstance(profile, dict) else None,
+    ]
+    return any(
+        XRECHNUNG_PROFILE_PATTERN.search(identifier) is not None
+        for candidate in candidates
+        if (identifier := clean_text(candidate)) is not None
+    )
+
+
+def _declared_identifier(
+    means: dict[str, Any],
+    *,
+    generic_key: str,
+    legacy_key: str,
+    schemes: set[str],
+) -> str | None:
+    entry = means.get(generic_key)
+    if isinstance(entry, dict):
+        scheme = clean_text(entry.get("scheme"))
+        if scheme is not None and scheme.upper() in schemes:
+            return clean_text(entry.get("value"))
+    return clean_text(means.get(legacy_key))
+
+
+def _expected_payment_recipient_name(
+    analysis: dict[str, Any],
+    payable: Any,
+) -> tuple[str, list[str]] | None:
+    document = analysis.get("document")
+    document_data = document if isinstance(document, dict) else {}
+    profile = analysis.get("profile")
+    profile_data = profile if isinstance(profile, dict) else {}
+    payee = analysis.get("payee")
+    payee_data = payee if isinstance(payee, dict) else {}
+    payee_name = clean_text(payee_data.get("name"))
+    semantics = derive_document_semantics(
+        resolve_document_type(clean_text(document_data.get("type_code"))),
+        resolve_profile(clean_text(profile_data.get("id")) or clean_text(document_data.get("profile_id"))),
+        payable,
+        has_payee=payee_name is not None,
+    )
+    recipient = semantics.settlement.expected_recipient
+    if recipient is PartyReference.PAYEE and payee_name is not None:
+        return payee_name, ["BG-10"]
+    if recipient is PartyReference.SELLER:
+        seller = analysis.get("seller")
+        seller_data = seller if isinstance(seller, dict) else {}
+        seller_name = clean_text(seller_data.get("name"))
+        return (seller_name, ["BG-4"]) if seller_name is not None else None
+    if recipient is PartyReference.BUYER:
+        buyer = analysis.get("buyer")
+        buyer_data = buyer if isinstance(buyer, dict) else {}
+        buyer_name = clean_text(buyer_data.get("name"))
+        return (buyer_name, ["BG-7"]) if buyer_name is not None else None
+    return None
 
 
 def _semantic_text(*values: Any) -> str:
@@ -160,6 +278,72 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
         "Zahlbetrag fehlt",
         "BT-115",
     )
+
+    type_code = clean_text(document.get("type_code"))
+    root_name = clean_text((analysis.get("technical") or {}).get("root_element"))
+    ubl_root = UblRoot.INVOICE if root_name == "Invoice" else UblRoot.CREDIT_NOTE if root_name == "CreditNote" else None
+    type_resolution = resolve_document_type(type_code, ubl_root)
+    if type_resolution.status is DocumentTypeStatus.UNKNOWN:
+        location_label = "Rechnungsartcode (BT-3)"
+        findings.append(
+            _finding(
+                "BR-CL-01",
+                "error",
+                "Rechnungsartcode ist nicht unterstützt",
+                "Der Rechnungsartcode gehört nicht zur mit CEN EN 16931 1.3.15 gebündelten UNTDID-1001-Auswahl.",
+                location=location_label,
+                actual=type_code,
+                expected="ein unterstützter UNTDID-1001-Code",
+                source="EN 16931",
+                reference="BR-CL-01",
+                rule_class="core_precheck",
+                semantic_reference=["BT-3"],
+                location_label=location_label,
+            )
+        )
+    elif type_resolution.root_compatibility is RootCompatibility.INCOMPATIBLE:
+        root_label = f"UBL {root_name}"
+        location_label = "Rechnungsartcode (BT-3)"
+        findings.append(
+            _finding(
+                "BR-CL-01",
+                "error",
+                "Rechnungsartcode passt nicht zum UBL-Wurzelelement",
+                f"Der Rechnungsartcode ist gemäß CEN EN 16931 1.3.15 nicht für {root_label} vorgesehen.",
+                location=location_label,
+                actual=type_code,
+                expected=f"ein mit {root_label} kompatibler UNTDID-1001-Code",
+                source="EN 16931",
+                reference="BR-CL-01",
+                rule_class="core_precheck",
+                semantic_reference=["BT-3"],
+                location_label=location_label,
+            )
+        )
+
+    if (
+        _is_known_xrechnung_profile(analysis)
+        and type_code is not None
+        and type_code not in XRECHNUNG_RECOMMENDED_DOCUMENT_TYPES
+    ):
+        location_label = "Rechnungsartcode (BT-3)"
+        findings.append(
+            _finding(
+                "XRECHNUNG-BR-DE-17",
+                "warning",
+                "Rechnungsartcode ist für XRechnung nicht empfohlen",
+                "Für XRechnung sollen ausschließlich die in BR-DE-17 aufgeführten Rechnungsartcodes verwendet werden.",
+                location=location_label,
+                actual=type_code,
+                expected=", ".join(sorted(XRECHNUNG_RECOMMENDED_DOCUMENT_TYPES)),
+                source="XRechnung",
+                reference="BR-DE-17",
+                rule_class="profile_precheck",
+                profile="XRechnung",
+                semantic_reference=["BT-3"],
+                location_label=location_label,
+            )
+        )
 
     if not document.get("profile_id"):
         findings.append(
@@ -273,10 +457,10 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                 )
             )
 
-        quantity = decimal_value(line.get("quantity"))
-        price = decimal_value(line.get("price"))
-        base = decimal_value(line.get("base_quantity")) or Decimal("1")
-        line_total = decimal_value(line.get("line_total"))
+        quantity = xml_decimal_value(line.get("quantity"))
+        price = xml_decimal_value(line.get("price"))
+        base = _optional_decimal(line.get("base_quantity"), Decimal("1"))
+        line_total = xml_decimal_value(line.get("line_total"))
 
         if quantity is None:
             findings.append(
@@ -322,7 +506,28 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
         else:
             computed_line_total += line_total
 
-        if base == 0:
+        line_allowances, line_allowances_complete = _sum_amounts(
+            line.get("allowances_charges", []),
+            "allowance",
+        )
+        line_charges, line_charges_complete = _sum_amounts(
+            line.get("allowances_charges", []),
+            "charge",
+        )
+
+        if base is None:
+            findings.append(
+                _finding(
+                    "LINE-010",
+                    "error",
+                    "Preisbasismenge ist ungültig",
+                    "Die Preisbasismenge entspricht keinem gültigen XML-Dezimalwert.",
+                    location=location,
+                    actual=line.get("base_quantity"),
+                    expected="endlicher Dezimalwert ohne Komma oder Exponent",
+                )
+            )
+        elif base == 0:
             findings.append(
                 _finding(
                     "LINE-008",
@@ -332,10 +537,16 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     location=location,
                 )
             )
-        elif quantity is not None and price is not None and line_total is not None:
+        elif (
+            quantity is not None
+            and price is not None
+            and line_total is not None
+            and line_allowances_complete
+            and line_charges_complete
+        ):
             expected = quantity * price / base
-            expected -= _sum_amounts(line.get("allowances_charges", []), "allowance")
-            expected += _sum_amounts(line.get("allowances_charges", []), "charge")
+            expected -= line_allowances
+            expected += line_charges
             expected = _rounded(expected)
             if not _is_close(line_total, expected):
                 findings.append(
@@ -350,13 +561,13 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     )
                 )
 
-        if base != Decimal("1"):
+        if base not in {None, Decimal("0"), Decimal("1")}:
             findings.append(
                 _finding(
                     "LINE-009",
                     "info",
                     "Abweichende Preisbasismenge",
-                    "Der angegebene Preis gilt nicht für genau eine Einheit; dies wurde bei der Rechenprüfung berücksichtigt.",
+                    "Der angegebene Preis gilt nicht für genau eine Einheit und muss bei Berechnungen entsprechend berücksichtigt werden.",
                     location=location,
                     actual=line.get("base_quantity"),
                 )
@@ -380,7 +591,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                 )
 
         category = line.get("tax_category")
-        rate = decimal_value(line.get("tax_rate"))
+        rate = xml_decimal_value(line.get("tax_rate"))
         if not category:
             findings.append(
                 _finding(
@@ -427,7 +638,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                 )
             )
 
-    header_line_total = decimal_value(totals.get("line_total"))
+    header_line_total = xml_decimal_value(totals.get("line_total"))
     if (
         computed_line_total_complete
         and header_line_total is not None
@@ -445,10 +656,15 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
-    allowance_total = decimal_value(totals.get("allowance_total")) or Decimal("0")
-    charge_total = decimal_value(totals.get("charge_total")) or Decimal("0")
-    tax_basis_total = decimal_value(totals.get("tax_basis_total"))
-    if header_line_total is not None and tax_basis_total is not None:
+    allowance_total = _optional_decimal(totals.get("allowance_total"), Decimal("0"))
+    charge_total = _optional_decimal(totals.get("charge_total"), Decimal("0"))
+    tax_basis_total = xml_decimal_value(totals.get("tax_basis_total"))
+    if (
+        header_line_total is not None
+        and allowance_total is not None
+        and charge_total is not None
+        and tax_basis_total is not None
+    ):
         expected_basis = _rounded(header_line_total - allowance_total + charge_total)
         if not _is_close(tax_basis_total, expected_basis):
             findings.append(
@@ -463,9 +679,20 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                 )
             )
 
-    listed_header_allowances = _sum_amounts(analysis.get("header_allowances_charges", []), "allowance")
-    listed_header_charges = _sum_amounts(analysis.get("header_allowances_charges", []), "charge")
-    if totals.get("allowance_total") is not None and not _is_close(allowance_total, listed_header_allowances):
+    listed_header_allowances, listed_header_allowances_complete = _sum_amounts(
+        analysis.get("header_allowances_charges", []),
+        "allowance",
+    )
+    listed_header_charges, listed_header_charges_complete = _sum_amounts(
+        analysis.get("header_allowances_charges", []),
+        "charge",
+    )
+    if (
+        totals.get("allowance_total") is not None
+        and allowance_total is not None
+        and listed_header_allowances_complete
+        and not _is_close(allowance_total, listed_header_allowances)
+    ):
         findings.append(
             _finding(
                 "CALC-HDR-003",
@@ -477,7 +704,12 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                 expected=money_string(listed_header_allowances),
             )
         )
-    if totals.get("charge_total") is not None and not _is_close(charge_total, listed_header_charges):
+    if (
+        totals.get("charge_total") is not None
+        and charge_total is not None
+        and listed_header_charges_complete
+        and not _is_close(charge_total, listed_header_charges)
+    ):
         findings.append(
             _finding(
                 "CALC-HDR-004",
@@ -490,14 +722,14 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
-    tax_total = decimal_value(totals.get("tax_total"))
+    tax_total = xml_decimal_value(totals.get("tax_total"))
     if taxes:
         tax_rows_sum = Decimal("0")
         tax_rows_complete = True
         for index, tax in enumerate(taxes, start=1):
-            row_amount = decimal_value(tax.get("tax_amount"))
-            basis = decimal_value(tax.get("basis_amount"))
-            rate = decimal_value(tax.get("rate"))
+            row_amount = xml_decimal_value(tax.get("tax_amount"))
+            basis = xml_decimal_value(tax.get("basis_amount"))
+            rate = xml_decimal_value(tax.get("rate"))
             category = tax.get("category_code")
             if row_amount is None:
                 tax_rows_complete = False
@@ -636,7 +868,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
-    grand_total = decimal_value(totals.get("grand_total"))
+    grand_total = xml_decimal_value(totals.get("grand_total"))
     if tax_basis_total is not None and tax_total is not None and grand_total is not None:
         expected_grand = _rounded(tax_basis_total + tax_total)
         if not _is_close(grand_total, expected_grand):
@@ -652,10 +884,10 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                 )
             )
 
-    prepaid = decimal_value(totals.get("prepaid_amount")) or Decimal("0")
-    rounding = decimal_value(totals.get("rounding_amount")) or Decimal("0")
-    payable = decimal_value(totals.get("due_payable_amount"))
-    if grand_total is not None and payable is not None:
+    prepaid = _optional_decimal(totals.get("prepaid_amount"), Decimal("0"))
+    rounding = _optional_decimal(totals.get("rounding_amount"), Decimal("0"))
+    payable = xml_decimal_value(totals.get("due_payable_amount"))
+    if grand_total is not None and prepaid is not None and rounding is not None and payable is not None:
         expected_payable = _rounded(grand_total - prepaid + rounding)
         if not _is_close(payable, expected_payable):
             findings.append(
@@ -671,20 +903,81 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
             )
 
     payment_means = payment.get("means") or []
-    if payable is not None and payable > 0 and not payment_means:
+    if (
+        payable is not None
+        and payable > 0
+        and clean_text(document.get("due_date")) is None
+        and not _has_payment_terms(payment)
+    ):
+        location_label = "Zahlbetrag (BT-115) / Fälligkeitsdatum (BT-9) / Zahlungsbedingungen (BT-20)"
         findings.append(
             _finding(
-                "PAY-001",
-                "warning",
-                "Zahlungsweg fehlt",
-                "Bei einem positiven Zahlbetrag ist kein Zahlungsweg angegeben.",
-                location="BG-16",
+                "BR-CO-25",
+                "error",
+                "Fälligkeitsdatum oder Zahlungsbedingungen fehlen",
+                "Bei einem positiven Zahlbetrag muss entweder ein Fälligkeitsdatum oder eine Zahlungsbedingung angegeben sein.",
+                location=location_label,
+                source="EN 16931",
+                reference="BR-CO-25",
+                rule_class="core_precheck",
+                semantic_reference=["BT-115", "BT-9", "BT-20"],
+                location_label=location_label,
             )
         )
 
-    for index, means in enumerate(payment_means, start=1):
-        iban = means.get("iban")
-        bic = means.get("bic")
+    if _is_known_xrechnung_profile(analysis) and not payment_means:
+        location_label = "Zahlungsanweisungen (BG-16)"
+        findings.append(
+            _finding(
+                "XRECHNUNG-BR-DE-1",
+                "error",
+                "Zahlungsanweisungen fehlen",
+                "Für ein sicher erkanntes XRechnung-Profil muss mindestens eine Zahlungsanweisung angegeben sein.",
+                location=location_label,
+                source="XRechnung",
+                reference="BR-DE-1",
+                rule_class="profile_precheck",
+                profile="XRechnung",
+                semantic_reference=["BG-16"],
+                location_label=location_label,
+            )
+        )
+
+    for index, means_value in enumerate(payment_means, start=1):
+        means = means_value if isinstance(means_value, dict) else {}
+        payment_code = clean_text(means.get("type_code"))
+        if payment_code is None:
+            location_label = f"Zahlungsanweisung {index}: Zahlungsart (BT-81) / Zahlungsanweisungen (BG-16)"
+            findings.append(
+                _finding(
+                    "BR-49",
+                    "error",
+                    "Zahlungsart fehlt",
+                    "Eine vorhandene Zahlungsanweisung muss einen Zahlungsartcode enthalten.",
+                    location=location_label,
+                    source="EN 16931",
+                    reference="BR-49",
+                    rule_class="core_precheck",
+                    semantic_reference=["BG-16", "BT-81"],
+                    location_label=location_label,
+                )
+            )
+
+        if payment_code not in BANK_ACCOUNT_PAYMENT_CODES:
+            continue
+
+        iban = _declared_identifier(
+            means,
+            generic_key="account_id",
+            legacy_key="iban",
+            schemes={"IBAN"},
+        )
+        bic = _declared_identifier(
+            means,
+            generic_key="service_provider_id",
+            legacy_key="bic",
+            schemes={"BIC", "BICFI"},
+        )
         if iban and not _iban_valid(iban):
             findings.append(
                 _finding(
@@ -707,18 +1000,26 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     actual=bic,
                 )
             )
-        account_name = (means.get("account_name") or "").strip().lower()
-        seller_name = (seller.get("name") or "").strip().lower()
-        if account_name and seller_name and account_name != seller_name:
+        account_name = clean_text(means.get("account_name"))
+        expected_recipient = _expected_payment_recipient_name(analysis, totals.get("due_payable_amount"))
+        if (
+            account_name is not None
+            and expected_recipient is not None
+            and account_name.casefold() != expected_recipient[0].casefold()
+        ):
+            location_label = f"Zahlungsanweisung {index}: erwarteter Zahlungsempfänger"
             findings.append(
                 _finding(
                     "PAY-004",
                     "info",
-                    "Kontoinhaber weicht vom vollständigen Verkäufernamen ab",
-                    "Die Bezeichnung kann eine zulässige Kurzform sein, sollte aber bei Bedarf geprüft werden.",
-                    location=f"Zahlungsweg {index}",
+                    "Kontoinhaber weicht vom erwarteten Zahlungsempfänger ab",
+                    "Die Bezeichnung kann eine zulässige Kurzform oder ein zulässiger Drittempfänger sein, sollte aber bei Bedarf geprüft werden.",
+                    location=location_label,
                     actual=means.get("account_name"),
-                    expected=seller.get("name"),
+                    expected=expected_recipient[0],
+                    rule_class="plausibility",
+                    semantic_reference=["BG-16", *expected_recipient[1]],
+                    location_label=location_label,
                 )
             )
 

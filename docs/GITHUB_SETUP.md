@@ -24,7 +24,7 @@ Die Skripte initialisieren `main`, prüfen den Index und erstellen den ersten Co
 git init -b main
 git add .
 git diff --cached --check
-git commit -m "Initial import of E-Rechnungs-Pruefer 1.1.0"
+git commit -m "Initial import of E-Rechnungs-Pruefer"
 git remote add origin https://github.com/OWNER/REPOSITORY.git
 git push -u origin main
 ```
@@ -45,10 +45,11 @@ Die Sichtbarkeit später nur nach einer Prüfung auf Datenschutz, Lizenzen und e
 
 Enthaltene Workflows:
 
-- `ci.yml`: Lint, Format, Typen, Coverage, Python-Matrix, Windows-x64-Installer samt Installationstest und Docker-Build
+- `ci.yml`: Lint, Format, Typen, Coverage, Python-Matrix, beide Windows-x64-Installer samt Installationstests und Docker-Build
 - `codeql.yml`: statische Sicherheitsanalyse für Python und JavaScript
 - `dependency-audit.yml`: regelmäßige Prüfung der Python-Abhängigkeiten
-- `release.yml`: Tagprüfung, Quellartefakte, signierter Windows-x64-Installer, Prüfsummen und GitHub Release
+- `release.yml`: Tagprüfung, Quellartefakte, beide signierten Windows-x64-Installer, Windows-Binaries-ZIP,
+  Prüfsummen und GitHub Release
 
 Für Releases benötigt der Workflow Schreibrechte auf `contents`. Diese werden nur im Release-Job angefordert.
 
@@ -99,6 +100,9 @@ git tag -a vX.Y.Z -m "E-Rechnungs-Pruefer X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-Vor dem ersten Tag kann der Workflow unter **Actions → Release → Run workflow** auf `main` manuell gestartet werden. Nach Freigabe der Umgebung `release` wird der signierte Installer als kurzlebiges Actions-Artefakt bereitgestellt, ohne einen öffentlichen Release anzulegen.
+Vor dem ersten Tag kann der Workflow unter **Actions → Release → Run workflow** auf `main` manuell gestartet
+werden. Nach Freigabe der Umgebung `release` werden beide signierten Installer, das Windows-Binaries-ZIP und die
+Prüfsummen als kurzlebiges Actions-Artefakt bereitgestellt, ohne einen öffentlichen Release anzulegen. Das
+getrennte interne Recovery-Testartefakt bleibt ausschließlich für die isolierte Abnahme bestimmt.
 
 Vorher müssen `VERSION`, `pyproject.toml`, `app/__init__.py`, KoSIT-Installer und Changelog synchron sein. Details stehen in `docs/RELEASE.md`.

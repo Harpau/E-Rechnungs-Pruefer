@@ -137,9 +137,12 @@ function automationState({
 }
 
 function apiResponse({
+  analysisSchema = "2",
+  reportScope = "readable",
   syntax = "CII",
-  validation = "ok",
   official = "accepted",
+  internal = "clear",
+  processing = "complete",
   statusCode = 200,
   contentType = REPORT_ARTIFACT.contentType,
   body = REPORT_ARTIFACT.body,
@@ -155,9 +158,12 @@ function apiResponse({
     followRedirects: false,
     headers: {
       "content-type": contentType,
+      "x-einvoice-analysis-schema": analysisSchema,
+      "x-einvoice-report-scope": reportScope,
       "x-einvoice-syntax": syntax,
-      "x-einvoice-validation-status": validation,
-      "x-einvoice-official-status": official,
+      "x-einvoice-conformity-status": official,
+      "x-einvoice-internal-status": internal,
+      "x-einvoice-processing-status": processing,
       ...extraHeaders,
     },
   };
@@ -267,7 +273,9 @@ test("multipart request is byte-exact, local, authenticated and actually gets a 
     Buffer.from(
       `\r\n--${boundary}\r\n` +
         'Content-Disposition: form-data; name="official"\r\n\r\n' +
-        `true\r\n--${boundary}--\r\n`,
+        `true\r\n--${boundary}\r\n` +
+        'Content-Disposition: form-data; name="scope"\r\n\r\n' +
+        `readable\r\n--${boundary}--\r\n`,
       "utf8",
     ),
   ]);
@@ -315,6 +323,11 @@ test("EINVOICE_REQUIRE_KOSIT controls the official multipart field end to end", 
         .includes(
           `Content-Disposition: form-data; name="official"\r\n\r\n${expected}\r\n`,
         ),
+    );
+    assert.ok(
+      msg.payload
+        .toString("utf8")
+        .includes('Content-Disposition: form-data; name="scope"\r\n\r\nreadable\r\n'),
     );
   }
 });
@@ -383,10 +396,20 @@ test("multipart API tokens must follow the shared URL-safe token contract", () =
   }
 });
 
-test("status classifier accepts CII and UBL reports and rejects no official invoice result", () => {
+test("status classifier keeps all three Schema 2 assessment axes separate", () => {
   const cases = [
-    { syntax: "CII", validation: "ok", official: "accepted" },
-    { syntax: "UBL", validation: "warning", official: "rejected" },
+    {
+      syntax: "CII",
+      official: "accepted",
+      internal: "clear",
+      processing: "complete",
+    },
+    {
+      syntax: "UBL",
+      official: "rejected",
+      internal: "errors",
+      processing: "limited",
+    },
   ];
 
   for (const values of cases) {
@@ -405,14 +428,35 @@ test("status classifier accepts CII and UBL reports and rejects no official invo
       REPORT_ARTIFACT.contentDisposition,
     );
     assert.deepEqual(msg.automation.reports[0].content, REPORT_ARTIFACT.body);
-    assert.equal(msg.automation.reports[0].official, values.official);
+    assert.equal(msg.automation.reports[0].analysisSchema, 2);
+    assert.equal(msg.automation.reports[0].reportScope, "readable");
+    assert.equal("validation" in msg.automation.reports[0], false);
+    assert.equal("official" in msg.automation.reports[0], false);
+    for (const axis of ["official", "internal", "processing"]) {
+      assert.equal(
+        msg.automation.reports[0].assessment[axis].status,
+        values[axis],
+      );
+      assert.equal(
+        msg.automation.results[0].assessment[axis].status,
+        values[axis],
+      );
+    }
     assert.equal("requestTimeout" in msg, false);
     assert.equal("followRedirects" in msg, false);
   }
 });
 
-test("successful responses require both PDF media type and PDF signature", () => {
+test("successful responses require the hard Schema 2 headers, PDF media type and signature", () => {
   const invalidResponses = [
+    apiResponse({ analysisSchema: "" }),
+    apiResponse({ analysisSchema: "1" }),
+    apiResponse({ analysisSchema: "3" }),
+    apiResponse({ reportScope: "" }),
+    apiResponse({ reportScope: "complete" }),
+    apiResponse({ official: "unknown-status" }),
+    apiResponse({ internal: "warning" }),
+    apiResponse({ processing: "partial" }),
     apiResponse({ body: Buffer.from("<html>not a PDF</html>", "utf8") }),
     apiResponse({ contentType: "text/html", body: REPORT_ARTIFACT.body }),
   ];
@@ -423,7 +467,7 @@ test("successful responses require both PDF media type and PDF signature", () =>
     assert.equal(output[1], null);
     assert.equal(output[2], msg);
     assert.equal(msg.automationError.class, "protocol");
-    assert.match(msg.automationError.message, /PDF- und Statusvertrag/);
+    assert.match(msg.automationError.message, /Schema-2-Statusvertrag/);
     assertIsoTimestamp(msg.automationError.occurredAt);
     assert.equal(msg.automation.reports.length, 0);
   }
@@ -451,9 +495,12 @@ test("report filenames are unique per message, ASCII-safe and contain no invoice
       statusCode: 200,
       headers: {
         "content-type": REPORT_ARTIFACT.contentType,
+        "x-einvoice-analysis-schema": "2",
+        "x-einvoice-report-scope": "readable",
         "x-einvoice-syntax": "CII",
-        "x-einvoice-validation-status": "ok",
-        "x-einvoice-official-status": "accepted",
+        "x-einvoice-conformity-status": "accepted",
+        "x-einvoice-internal-status": "clear",
+        "x-einvoice-processing-status": "complete",
       },
     });
     const classified = runFunction("HTTP- und Prüfstatus klassifizieren", msg).output;
@@ -472,21 +519,31 @@ test("report filenames are unique per message, ASCII-safe and contain no invoice
   }
 });
 
-test("UNKNOWN syntax and all KoSIT availability states follow the agreed policy", () => {
-  const unknown = apiResponse({ syntax: "UNKNOWN", validation: "invalid" });
+test("UNKNOWN syntax and all official assessment states follow the agreed policy", () => {
+  const unknown = apiResponse({
+    syntax: "UNKNOWN",
+    official: "not-requested",
+    internal: "not-run",
+    processing: "incomplete",
+  });
   const unknownOutput = runFunction("HTTP- und Prüfstatus klassifizieren", unknown).output;
   assert.equal(unknownOutput[0], unknown);
   assert.equal(unknown.automation.results[0].outcome, "not-supported");
   assert.equal(unknown.automation.reports.length, 0);
+  assert.equal(unknown.automation.results[0].assessment.processing.status, "incomplete");
 
-  for (const official of ["not-requested", "unavailable"]) {
-    const required = apiResponse({ official });
+  for (const official of ["not-requested", "unsupported", "unavailable"]) {
+    const required = apiResponse({
+      official,
+      processing: official === "unavailable" ? "limited" : "complete",
+    });
     const requiredOutput = runFunction("HTTP- und Prüfstatus klassifizieren", required).output;
     assert.equal(requiredOutput[2], required);
     assert.equal(required.automationError.class, "configuration");
 
     const optional = apiResponse({
       official,
+      processing: official === "unavailable" ? "limited" : "complete",
       state: automationState({ requireKosit: false }),
     });
     const optionalOutput = runFunction("HTTP- und Prüfstatus klassifizieren", optional).output;
@@ -512,6 +569,55 @@ test("UNKNOWN syntax and all KoSIT availability states follow the agreed policy"
   ).output;
   assert.equal(optionalOutput[0], indeterminateOptional);
   assert.equal(indeterminateOptional.automation.results[0].outcome, "processed");
+});
+
+test("internal assessment states remain distinct and complete with not-run is rejected", () => {
+  for (const internal of ["clear", "attention", "errors"]) {
+    const msg = apiResponse({ internal });
+    const output = runFunction("HTTP- und Prüfstatus klassifizieren", msg).output;
+    assert.equal(output[0], msg);
+    assert.equal(msg.automation.results[0].assessment.internal.status, internal);
+    assert.equal(msg.automation.reports[0].assessment.internal.status, internal);
+  }
+
+  const limitedNotRun = apiResponse({ internal: "not-run", processing: "limited" });
+  const limitedOutput = runFunction(
+    "HTTP- und Prüfstatus klassifizieren",
+    limitedNotRun,
+  ).output;
+  assert.equal(limitedOutput[0], limitedNotRun);
+  assert.equal(limitedNotRun.automation.results[0].assessment.internal.status, "not-run");
+
+  const inconsistent = apiResponse({ internal: "not-run", processing: "complete" });
+  const inconsistentOutput = runFunction(
+    "HTTP- und Prüfstatus klassifizieren",
+    inconsistent,
+  ).output;
+  assert.equal(inconsistentOutput[2], inconsistent);
+  assert.equal(inconsistent.automationError.class, "protocol");
+  assert.match(inconsistent.automationError.message, /Inkonsistenter Schema-2-Status/);
+});
+
+test("processing assessment independently controls completion and retries", () => {
+  for (const processing of ["complete", "limited"]) {
+    const msg = apiResponse({ processing });
+    const output = runFunction("HTTP- und Prüfstatus klassifizieren", msg).output;
+    assert.equal(output[0], msg);
+    assert.equal(msg.automation.results[0].assessment.processing.status, processing);
+  }
+
+  const incomplete = apiResponse({
+    official: "unavailable",
+    internal: "not-run",
+    processing: "incomplete",
+  });
+  const incompleteOutput = runFunction(
+    "HTTP- und Prüfstatus klassifizieren",
+    incomplete,
+  ).output;
+  assert.equal(incompleteOutput[1], incomplete);
+  assert.match(incomplete.automation.lastError, /processing=incomplete/);
+  assert.equal(incomplete.automation.reports.length, 0);
 });
 
 test("HTTP input errors are terminal while transient statuses are retried", () => {
@@ -637,9 +743,12 @@ test("multiple reports become mail attachments while IMAP ACK context survives",
     requestTimeout: 90000,
     headers: {
       "content-type": REPORT_ARTIFACT.contentType,
+      "x-einvoice-analysis-schema": "2",
+      "x-einvoice-report-scope": "readable",
       "x-einvoice-syntax": "UBL",
-      "x-einvoice-validation-status": "warning",
-      "x-einvoice-official-status": "rejected",
+      "x-einvoice-conformity-status": "rejected",
+      "x-einvoice-internal-status": "attention",
+      "x-einvoice-processing-status": "limited",
     },
   });
   output = runFunction("HTTP- und Prüfstatus klassifizieren", msg).output;
@@ -670,6 +779,8 @@ test("multiple reports become mail attachments while IMAP ACK context survives",
   assert.equal(reportNames[0].replace(/-1\.pdf$/, ""), reportNames[1].replace(/-2\.pdf$/, ""));
   assert.match(msg.email.text, /eins\.xml: CII/);
   assert.match(msg.email.text, /zwei\.xml: UBL/);
+  assert.match(msg.email.text, /Konformität accepted, interne Prüfung clear, Verarbeitung complete/);
+  assert.match(msg.email.text, /Konformität rejected, interne Prüfung attention, Verarbeitung limited/);
   assert.match(msg.email.text, /PDF-Prüfberichte/);
   assert.match(msg.email.text, /Darstellungsgrenzen/);
   assert.strictEqual(msg.imap, imap);
@@ -742,9 +853,13 @@ test("SMTP success is the only report path to ACK; errors never acknowledge", ()
     contentDisposition: REPORT_ARTIFACT.contentDisposition,
     contentType: REPORT_ARTIFACT.contentType,
     sourceFilename: "rechnung.xml",
+    analysisSchema: 2,
     syntax: "CII",
-    validation: "ok",
-    official: "accepted",
+    assessment: {
+      official: { status: "accepted" },
+      internal: { status: "clear" },
+      processing: { status: "complete" },
+    },
   });
   const missingRecipientOutput = runFunction("Mailergebnis abschließen", missingRecipient).output;
   assert.equal(missingRecipientOutput[0], null);

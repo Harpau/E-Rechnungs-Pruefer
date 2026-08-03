@@ -70,6 +70,7 @@
           <button id="download-json-button" class="secondary-button" type="button">Prüfbericht JSON</button>
           <button id="download-xml-button" class="secondary-button" type="button">XML speichern</button>
           <button id="download-html-button" class="secondary-button" type="button">HTML-Bericht</button>
+          <button id="download-complete-html-button" class="secondary-button" type="button" title="HTML-Bericht einschließlich technischer XML-Daten und Rohberichten">Vollständiger Bericht</button>
           <button id="print-button" class="primary-button" type="button">Drucken / PDF</button>
         </div>
       </div>
@@ -78,7 +79,7 @@
         <div class="summary-main">
           <span id="status-badge" class="status-badge">–</span>
           <div>
-            <p id="document-kind" class="eyebrow">E‑Rechnung</p>
+            <p id="document-type-summary" class="eyebrow">Rechnungsart · Nicht angegeben</p>
             <h1 id="document-title">–</h1>
             <p id="document-subtitle" class="muted">–</p>
           </div>
@@ -123,10 +124,19 @@
           <div class="section-heading"><div><p class="eyebrow">Leistungen und Waren</p><h2>Rechnungspositionen</h2></div><span id="line-count" class="count-pill"></span></div>
           <div class="table-scroll">
             <table class="data-table line-table">
+              <colgroup>
+                <col class="line-position-column">
+                <col class="line-description-column">
+                <col class="line-quantity-column">
+                <col class="line-price-column">
+                <col class="line-tax-column">
+                <col class="line-net-column">
+              </colgroup>
               <thead><tr><th>Pos.</th><th>Artikel / Leistung</th><th class="num">Menge</th><th class="num">Preis / Basis</th><th class="num">USt.</th><th class="num">Netto</th></tr></thead>
               <tbody id="line-items-body"></tbody>
             </table>
           </div>
+          <div id="line-tax-breakdown-notices" class="line-tax-breakdown-notice" hidden></div>
         </article>
 
         <div class="two-column totals-layout">

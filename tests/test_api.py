@@ -31,9 +31,11 @@ def test_health_endpoint():
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["version"] == main_module.__version__
-    assert set(payload) == {"status", "version", "kosit"}
-    assert set(payload["kosit"]) == {"configured"}
+    assert payload["analysis_schema_version"] == 2
+    assert set(payload) == {"status", "version", "analysis_schema_version", "kosit"}
+    assert set(payload["kosit"]) == {"configured", "components"}
     assert isinstance(payload["kosit"]["configured"], bool)
+    assert payload["kosit"]["components"]["cen_en16931"] == "1.3.15"
 
 
 def test_health_endpoint_does_not_expose_kosit_configuration_details(monkeypatch):
@@ -55,7 +57,11 @@ def test_health_endpoint_does_not_expose_kosit_configuration_details(monkeypatch
     assert response.json() == {
         "status": "ok",
         "version": main_module.__version__,
-        "kosit": {"configured": False},
+        "analysis_schema_version": 2,
+        "kosit": {
+            "configured": False,
+            "components": main_module.KOSIT_COMPONENT_VERSIONS,
+        },
     }
 
 
@@ -87,15 +93,28 @@ def test_openapi_documents_report_status_headers():
     assert response.status_code == 200
     document = response.json()
     headers = document["paths"]["/api/report"]["post"]["responses"]["200"]["headers"]
+    assert headers["X-Einvoice-Analysis-Schema"]["schema"]["enum"] == [2]
     assert headers["X-Einvoice-Syntax"]["schema"]["enum"] == ["CII", "UBL", "UNKNOWN"]
-    assert headers["X-Einvoice-Validation-Status"]["schema"]["enum"] == ["ok", "warning", "invalid"]
-    assert headers["X-Einvoice-Official-Status"]["schema"]["enum"] == [
+    assert headers["X-Einvoice-Conformity-Status"]["schema"]["enum"] == [
         "accepted",
         "rejected",
         "not-requested",
+        "unsupported",
         "unavailable",
         "indeterminate",
     ]
+    assert headers["X-Einvoice-Internal-Status"]["schema"]["enum"] == [
+        "clear",
+        "attention",
+        "errors",
+        "not-run",
+    ]
+    assert headers["X-Einvoice-Processing-Status"]["schema"]["enum"] == [
+        "complete",
+        "limited",
+        "incomplete",
+    ]
+    assert headers["X-Einvoice-Report-Scope"]["schema"]["enum"] == ["readable", "complete"]
     pdf_response = document["paths"]["/api/report/pdf"]["post"]["responses"]["200"]
     assert pdf_response["headers"] == headers
     assert set(pdf_response["content"]) == {"application/pdf"}
@@ -117,9 +136,10 @@ def test_analyze_and_report_endpoints(cii_path):
     )
     assert response.status_code == 200
     analysis = response.json()
+    assert analysis["schema_version"] == 2
     assert analysis["document"]["id"] == "CII-DEMO-1"
-    assert analysis["validation"]["official"]["executed"] is False
-    assert analysis["validation"]["official"]["findings"] == []
+    assert analysis["assessment"]["official"]["executed"] is False
+    assert analysis["assessment"]["official"]["findings"] == []
 
     report = client.post(
         "/api/report",
@@ -128,11 +148,14 @@ def test_analyze_and_report_endpoints(cii_path):
     )
     assert report.status_code == 200
     assert "Rechnungspositionen" in report.text
-    assert "Alle XML-Elemente" in report.text
-    assert "13820.42" in report.text
+    assert "Alle XML-Elemente" not in report.text
+    assert "13.820,42 EUR" in report.text
+    assert report.headers["x-einvoice-analysis-schema"] == "2"
     assert report.headers["x-einvoice-syntax"] == "CII"
-    assert report.headers["x-einvoice-validation-status"] == "warning"
-    assert report.headers["x-einvoice-official-status"] == "not-requested"
+    assert report.headers["x-einvoice-conformity-status"] == "not-requested"
+    assert report.headers["x-einvoice-internal-status"] == "attention"
+    assert report.headers["x-einvoice-processing-status"] == "complete"
+    assert report.headers["x-einvoice-report-scope"] == "readable"
     assert report.headers["content-disposition"] == 'inline; filename="E-Rechnungs-Pruefbericht.html"'
     report_headers = "\n".join(f"{name}: {value}" for name, value in report.headers.items())
     assert analysis["document"]["id"] not in report_headers
@@ -163,12 +186,15 @@ def test_pdf_report_endpoint_is_self_contained_and_keeps_status_contract(cii_pat
     assert pdf_report.status_code == 200
     assert pdf_report.headers["content-type"] == "application/pdf"
     assert pdf_report.headers["content-disposition"] == 'attachment; filename="E-Rechnungs-Pruefbericht.pdf"'
+    assert pdf_report.headers["x-einvoice-report-scope"] == "readable"
     assert pdf_report.content.startswith(b"%PDF-")
     assert pdf_report.content.rstrip().endswith(b"%%EOF")
     for name in (
+        "x-einvoice-analysis-schema",
         "x-einvoice-syntax",
-        "x-einvoice-validation-status",
-        "x-einvoice-official-status",
+        "x-einvoice-conformity-status",
+        "x-einvoice-internal-status",
+        "x-einvoice-processing-status",
     ):
         assert pdf_report.headers[name] == html_report.headers[name]
 
@@ -184,12 +210,52 @@ def test_pdf_report_endpoint_is_self_contained_and_keeps_status_contract(cii_pat
     assert "Rechnungspositionen" in extracted
     assert "13.820,42 EUR" in extracted
     assert "Prüfbericht" in extracted
-    assert "Technischer Anhang" in extracted
-    assert "vollständige Original" in extracted
+    assert "Technischer Anhang" not in extracted
+    assert "vollständige Original" not in extracted
     assert "Seite 2" in extracted
     assert document.metadata is not None
     assert document.metadata.title == "E-Rechnungs-Prüfbericht"
     assert "CII-DEMO-1" not in "\n".join(str(value) for value in document.metadata.values())
+
+
+@pytest.mark.parametrize(("path", "media_type"), [("/api/report", "text/html"), ("/api/report/pdf", "application/pdf")])
+def test_report_scope_defaults_to_readable_and_complete_is_explicit(cii_path, path, media_type):
+    request = {
+        "files": {"file": (cii_path.name, cii_path.read_bytes(), "application/xml")},
+        "data": {"official": "false"},
+    }
+
+    readable = client.post(path, **request)
+    complete = client.post(path, **{**request, "data": {"official": "false", "scope": "complete"}})
+
+    assert readable.status_code == 200
+    assert readable.headers["content-type"].startswith(media_type)
+    assert readable.headers["x-einvoice-report-scope"] == "readable"
+    assert complete.status_code == 200
+    assert complete.headers["content-type"].startswith(media_type)
+    assert complete.headers["x-einvoice-report-scope"] == "complete"
+
+    if path.endswith("/pdf"):
+        readable_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(readable.content)).pages)
+        complete_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(complete.content)).pages)
+    else:
+        readable_text = readable.text
+        complete_text = complete.text
+    assert "Technischer Anhang" not in readable_text
+    assert "Alle XML-Elemente" not in readable_text
+    assert "Technischer Anhang" in complete_text or "Alle XML-Elemente" in complete_text
+
+
+@pytest.mark.parametrize("path", ["/api/report", "/api/report/pdf"])
+def test_report_scope_rejects_unknown_values(cii_path, path):
+    response = client.post(
+        path,
+        files={"file": (cii_path.name, cii_path.read_bytes(), "application/xml")},
+        data={"official": "false", "scope": "technical"},
+    )
+
+    assert response.status_code == 422
+    assert any(item["loc"][-1] == "scope" for item in response.json()["detail"])
 
 
 def test_report_headers_identify_supported_ubl_and_unknown_xml(ubl_path):
@@ -206,34 +272,36 @@ def test_report_headers_identify_supported_ubl_and_unknown_xml(ubl_path):
 
     assert ubl.status_code == 200
     assert ubl.headers["x-einvoice-syntax"] == "UBL"
-    assert ubl.headers["x-einvoice-validation-status"] == "ok"
+    assert ubl.headers["x-einvoice-internal-status"] == "clear"
+    assert ubl.headers["x-einvoice-processing-status"] == "complete"
     assert unknown.status_code == 200
     assert unknown.headers["x-einvoice-syntax"] == "UNKNOWN"
-    assert unknown.headers["x-einvoice-validation-status"] == "invalid"
+    assert unknown.headers["x-einvoice-internal-status"] == "not-run"
+    assert unknown.headers["x-einvoice-processing-status"] == "incomplete"
 
 
 @pytest.mark.parametrize(
-    ("official_result", "expected_status", "expected_validation"),
+    ("official_result", "expected_status", "expected_processing"),
     [
         (
             {"configured": True, "executed": True, "accepted": True, "findings": []},
             "accepted",
-            "warning",
+            "complete",
         ),
         (
             {"configured": True, "executed": True, "accepted": False, "findings": []},
             "rejected",
-            "invalid",
+            "complete",
         ),
         (
             {"configured": False, "executed": False, "accepted": None, "findings": []},
             "unavailable",
-            "warning",
+            "incomplete",
         ),
         (
             {"configured": True, "executed": False, "accepted": None, "findings": []},
             "indeterminate",
-            "warning",
+            "incomplete",
         ),
     ],
 )
@@ -242,7 +310,7 @@ def test_report_header_maps_official_status(
     cii_path,
     official_result: dict[str, Any],
     expected_status: str,
-    expected_validation: str,
+    expected_processing: str,
 ):
     result = {
         "problems": [],
@@ -272,8 +340,8 @@ def test_report_header_maps_official_status(
     )
 
     assert response.status_code == 200
-    assert response.headers["x-einvoice-official-status"] == expected_status
-    assert response.headers["x-einvoice-validation-status"] == expected_validation
+    assert response.headers["x-einvoice-conformity-status"] == expected_status
+    assert response.headers["x-einvoice-processing-status"] == expected_processing
 
 
 def test_pdf_xml_export_preserves_selected_attachment_bytes(ubl_path, pdf_bytes_factory):

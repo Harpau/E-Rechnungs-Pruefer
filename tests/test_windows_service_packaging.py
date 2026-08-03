@@ -971,6 +971,25 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
     assert preserve_repair < script.index("Invoke-ServiceUninstaller", preserve_repair)
 
 
+def test_service_package_test_uses_only_the_schema_two_analysis_contract() -> None:
+    script = _read("scripts/test_windows_service_package.ps1")
+
+    for expected in (
+        "$Disabled.schema_version -ne 2",
+        '$Disabled.assessment.official.status -ne "not-requested"',
+        "$Disabled.assessment.official.executed -ne $false",
+        '$Disabled.assessment.internal.status -ne "attention"',
+        '$Disabled.assessment.processing.status -ne "complete"',
+        "$Accepted.schema_version -ne 2",
+        '$Accepted.assessment.official.status -ne "accepted"',
+        "$Rejected.schema_version -ne 2",
+        '$Rejected.assessment.official.status -ne "rejected"',
+    ):
+        assert expected in script
+
+    assert ".validation.official" not in script
+
+
 def test_service_package_test_uses_locale_neutral_account_identifiers() -> None:
     script = _read("scripts/test_windows_service_package.ps1")
 

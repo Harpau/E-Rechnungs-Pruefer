@@ -15,7 +15,12 @@
 3. XML-Inhalte, Namespaces, Attribute und Textwerte sind untrusted.
 4. Java-/KoSIT-Ausgaben und Berichtsdateien sind untrusted, bis sie sicher geparst wurden.
 5. Browserausgabe muss alle Rechnungswerte escapen.
-6. Downloads aus dem KoSIT-Installer erfolgen nur nach ausdrücklichem Benutzeraufruf. Der Windows-Build lädt ausschließlich festgeschriebene Komponenten und verifiziert ihre SHA-256-Prüfsummen.
+6. Downloads aus dem KoSIT-Installer erfolgen nur nach ausdrücklichem Benutzeraufruf. Für KoSIT Validator und
+   XRechnung ist `packaging/kosit/components.lock.json` maßgeblich. Der Windows-Lock unter
+   `packaging/windows/components.lock.json` spiegelt diese beiden Einträge und ergänzt die festgeschriebene
+   Java-Laufzeit; der Build verifiziert alle SHA-256-Prüfsummen. Der zentrale KoSIT-Lock pinnt Validator 1.6.2
+   und die XRechnung-3.0.2-Konfiguration 2026-01-31 mit CEN-Regeln 1.3.15 und
+   XRechnung-Schematron 2.5.0.
 
 ## Wesentliche Bedrohungen und Kontrollen
 
@@ -38,6 +43,40 @@ Uploadgröße, technische Zeilenanzahl und KoSIT-Laufzeit sind begrenzt. Bei Hyb
 ### Cross-Site Scripting
 
 Jinja2 escaped standardmäßig; die JavaScript-Oberfläche verwendet `escapeHtml` für Rechnungswerte. Änderungen an `innerHTML` müssen sicherstellen, dass jeder untrusted Wert vorab escaped wird. Die Content Security Policy verhindert fremde Skripte und Objekte.
+
+### Geschlossener Analysevertrag und Feldabdeckung
+
+`POST /api/analyze` validiert das Ergebnis gegen das geschlossene Analyseschema 2. Zusätzliche Parser- oder
+Validatorfelder dürfen nicht versehentlich in die API gelangen. Die explizite Abbildung deckt Dokument,
+Capabilities, Parteien, Rollen, Zeiträume, Referenzen, Positionen, Nachlässe/Zuschläge, Steuern, Summen,
+Zahlungsanweisungen, Quelle, technische Darstellung und Laufzeit ab. Nicht verstandene XML-Daten werden nicht
+als verstandene Fachfelder ausgegeben, bleiben aber in der technischen Feldliste, den XML-Textansichten und im
+bytegetreuen Export verfügbar.
+
+Diese Feldabdeckung ist keine Anonymisierung. Namen, Adressen, Steuerkennungen, IBANs, Referenzen und andere
+Rechnungsinhalte können im autorisierten Analyseergebnis enthalten sein. API-Antworten tragen `Cache-Control:
+no-store`; Integrationen dürfen sie trotzdem nicht in gewöhnliche Logs, Fehlertexte oder ungeschützte
+Zwischenspeicher kopieren.
+
+### Kartenmaskierung und Originalexport
+
+Erkannte Kartenkontokennungen werden an der Schema-2-Grenze auf höchstens die letzten vier Zeichen maskiert.
+Dieselben Rohwerte werden aus `technical.fields`, `technical.source_xml` und `technical.pretty_xml` redigiert.
+Browser-, HTML- und PDF-Renderer maskieren Kartenkennungen zusätzlich defensiv, falls ihnen entgegen dem Vertrag
+ein unmaskierter Wert übergeben wird.
+
+Der Endpunkt `POST /api/xml` ist ausdrücklich ausgenommen: Er muss die ausgewählte Rechnungs-XML bytegetreu
+zurückgeben und kann daher auch die ursprüngliche Kartenkennung und alle anderen Rechnungsdaten enthalten.
+Maskierte Analyse- und Berichtsdarstellungen dürfen nicht als Zusage eines anonymisierten Originalexports
+verstanden werden.
+
+### Strikte Syntax- und Decimal-Behandlung
+
+Die Syntaxerkennung verlangt unterstütztes Wurzelelement und exakten Namespace. Ein ähnlicher Name in einem
+anderen Namespace wird nicht als CII oder UBL hochgestuft. Die XML-Decimal-Konvertierung akzeptiert nur endliche
+Werte im vorgesehenen Dezimalraum; insbesondere werden `NaN`, Unendlichkeiten, Exponenten, Dezimalkomma und
+freie Texte nicht in Rechenwerte umgedeutet. Dadurch entstehen aus untrusted Eingaben weder nichtendliche
+Rechenoperationen noch irreführende Folgefehler auf Basis erfundener Ersatzwerte.
 
 ### Lokale Windows-Webserver
 
@@ -95,9 +134,10 @@ Rechte des angemeldeten Windows-Kontos geschützt und wird beim normalen Beenden
 Deinstallation entfernt.
 
 Ein davon getrenntes API-Token liegt dauerhaft unter
-`%LOCALAPPDATA%\E-Rechnungs-Pruefer\api-token.txt`. Bearer-Authentifizierung gilt nur für `/api/*` und gewährt
-keinen Zugriff auf Startseite oder Desktop-Bootstrap. Das Token besteht ausschließlich aus URL-sicherem ASCII,
-erscheint weder in URLs noch in der Laufzeitdatei und wird bei der Desktop-Deinstallation entfernt.
+`%LOCALAPPDATA%\E-Rechnungs-Pruefer\api-token.txt`. Bearer-Authentifizierung gilt für die fachlichen
+`/api/*`-Endpunkte und gewährt keinen Zugriff auf Startseite oder Desktop-Bootstrap; `/api/health` bleibt als
+lokaler Healthcheck tokenfrei. Das Token besteht ausschließlich aus URL-sicherem ASCII, erscheint weder in URLs
+noch in der Laufzeitdatei und wird bei der Desktop-Deinstallation entfernt.
 Nicht-ASCII-Eingaben werden kontrolliert abgewiesen. Prozesse desselben kompromittierten Benutzerkontos liegen
 weiterhin außerhalb der Schutzgrenze. Desktop-Installer und -Uninstaller verwenden zur kontrollierten Beendigung
 nur das benannte lokale Desktop-Shutdown-Ereignis.
@@ -212,7 +252,7 @@ Ein Prozessfehler ohne validen VARL-Bericht ist kein Rechnungsurteil. Eine vorha
 
 ## Nicht abgedeckt
 
-- Authentifizierung oder Mandantentrennung
+- netzwerk- oder mehrbenutzerfähige Benutzer-/Rollen-Authentifizierung, Autorisierung oder Mandantentrennung
 - Malware-Scanning beliebiger PDF-Inhalte
 - digitale Signaturprüfung
 - Hardware-Isolation des Java-Prozesses

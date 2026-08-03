@@ -55,15 +55,31 @@ def test_node_red_flow_implements_status_contract_and_safe_acknowledgement() -> 
     by_name = {node.get("name"): node for node in nodes if node.get("name")}
 
     classifier = by_name["HTTP- und Prüfstatus klassifizieren"]["func"]
+    assert "x-einvoice-analysis-schema" in classifier
+    assert "x-einvoice-report-scope" in classifier
     assert "x-einvoice-syntax" in classifier
-    assert "x-einvoice-validation-status" in classifier
-    assert "x-einvoice-official-status" in classifier
+    assert "x-einvoice-conformity-status" in classifier
+    assert "x-einvoice-internal-status" in classifier
+    assert "x-einvoice-processing-status" in classifier
+    assert "x-einvoice-validation-status" not in classifier
+    assert "x-einvoice-official-status" not in classifier
+    assert "analysisSchema !== '2'" in classifier
+    assert "'unsupported'" in classifier
+    assert "processingStatus === 'incomplete'" in classifier
+    assert "processingStatus === 'complete' && internalStatus === 'not-run'" in classifier
+    assert "assessment" in classifier
     assert "status === 413 || status === 422" in classifier
     assert "status === 408 || status === 429 || status >= 500" in classifier
     assert "mediaType !== 'application/pdf'" in classifier
     assert "=== '%PDF-'" in classifier
     assert "contentDisposition: 'attachment'" in classifier
-    assert "PDF- und Statusvertrag" in classifier
+    assert "PDF- und Schema-2-Statusvertrag" in classifier
+    finalizer = by_name["Mailergebnis abschließen"]["func"]
+    assert "report.assessment.official.status" in finalizer
+    assert "report.assessment.internal.status" in finalizer
+    assert "report.assessment.processing.status" in finalizer
+    assert "report.validation" not in finalizer
+    assert "report.official" not in finalizer
 
     retry = by_name["Begrenzt wiederholen"]["func"]
     assert "[30000, 120000, 600000]" in retry
@@ -143,6 +159,8 @@ def test_node_red_flow_uses_only_configured_local_report_endpoint() -> None:
     assert "multipart/form-data" in preparer["func"]
     assert "state.requireKosit === false ? 'false' : 'true'" in preparer["func"]
     assert "${officialValue}" in preparer["func"]
+    assert 'name=\\"scope\\"' in preparer["func"]
+    assert "readable" in preparer["func"]
     assert "'Accept': 'application/pdf'" in preparer["func"]
     assert "msg.requestTimeout = 90000" in preparer["func"]
     assert "msg.followRedirects = false" in preparer["func"]

@@ -36,7 +36,13 @@ PyInstaller und Inno Setup werden ausschließlich während des Builds verwendet.
 
 ## Optionale KoSIT-Komponenten
 
-Der KoSIT-Validator und die Validator-Konfiguration für XRechnung werden im Quell- und Repository-Release nicht mitgeliefert. `scripts/install_kosit.py` lädt sie nach ausdrücklichem Aufruf in das lokale, von Git und diesen Releases ausgeschlossene Verzeichnis `vendor/`. Der Windows-Installer enthält die in `packaging/windows/components.lock.json` festgeschriebenen und beim Build anhand ihrer SHA-256-Prüfsummen verifizierten Komponenten. Lizenz- und NOTICE-Dateien aus den offiziellen Archiven bleiben erhalten, soweit sie dort enthalten sind.
+Der KoSIT-Validator und die Validator-Konfiguration für XRechnung werden im Quell- und Repository-Release nicht
+mitgeliefert. `scripts/install_kosit.py` lädt nach ausdrücklichem Aufruf ausschließlich die in
+`packaging/kosit/components.lock.json` festgeschriebenen Artefakte in das lokale, von Git und Releases
+ausgeschlossene Verzeichnis `vendor/` und prüft ihre verpflichtenden SHA-256-Werte. Der Windows-Build spiegelt
+diese KoSIT-Stände in `packaging/windows/components.lock.json` und ergänzt dort die festgelegte Java-Laufzeit.
+Für Version 2.0.0 sind KoSIT Validator 1.6.2 und die XRechnung-3.0.2-Konfiguration vom 31.01.2026 gebunden.
+Lizenz- und NOTICE-Dateien aus den offiziellen Archiven bleiben erhalten, soweit sie dort enthalten sind.
 
 - KoSIT Validator: Apache License 2.0
 - Validator Configuration for XRechnung: Apache License 2.0

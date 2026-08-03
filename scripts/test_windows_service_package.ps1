@@ -1018,7 +1018,13 @@ $DisabledJson = & curl.exe --silent --show-error --fail --header "Authorization:
     --form "file=@$Example;type=application/xml" --form "official=false" `
     "http://127.0.0.1:$Port/api/analyze"
 $Disabled = $DisabledJson | ConvertFrom-Json
-if ($Disabled.validation.official.executed -ne $false) { throw "official=false hat KoSIT nicht übersprungen." }
+if ($Disabled.schema_version -ne 2 -or
+    $Disabled.assessment.official.status -ne "not-requested" -or
+    $Disabled.assessment.official.executed -ne $false -or
+    $Disabled.assessment.internal.status -ne "attention" -or
+    $Disabled.assessment.processing.status -ne "complete") {
+    throw "official=false entspricht nicht dem erwarteten Schema-2-Analysevertrag."
+}
 
 & curl.exe --silent --show-error --fail --header "Authorization: Bearer $Token" `
     --form "file=@$Example;type=application/xml" --form "official=false" --output $PdfOutput `
@@ -1034,13 +1040,17 @@ if ((Get-FileHash $Example).Hash -ne (Get-FileHash $XmlOutput).Hash) { throw "XM
 $Accepted = (& curl.exe --silent --show-error --fail --header "Authorization: Bearer $Token" `
     --form "file=@$Example;type=application/xml" --form "official=true" `
     "http://127.0.0.1:$Port/api/analyze") | ConvertFrom-Json
-if (-not $Accepted.validation.official.executed -or $Accepted.validation.official.accepted -ne $true) {
+if ($Accepted.schema_version -ne 2 -or
+    -not $Accepted.assessment.official.executed -or
+    $Accepted.assessment.official.status -ne "accepted") {
     throw "Realer KoSIT-Annahmefall fehlgeschlagen."
 }
 $Rejected = (& curl.exe --silent --show-error --fail --header "Authorization: Bearer $Token" `
     --form "file=@$RejectedExample;type=application/xml" --form "official=true" `
     "http://127.0.0.1:$Port/api/analyze") | ConvertFrom-Json
-if (-not $Rejected.validation.official.executed -or $Rejected.validation.official.accepted -ne $false) {
+if ($Rejected.schema_version -ne 2 -or
+    -not $Rejected.assessment.official.executed -or
+    $Rejected.assessment.official.status -ne "rejected") {
     throw "Realer KoSIT-Ablehnungsfall fehlgeschlagen."
 }
 

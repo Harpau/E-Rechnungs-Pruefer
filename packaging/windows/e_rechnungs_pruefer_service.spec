@@ -19,6 +19,7 @@ VERSION_PARTS = tuple(int(part) for part in VERSION.split("."))
 FILE_VERSION = (*VERSION_PARTS, *(0 for _ in range(4 - len(VERSION_PARTS))))[:4]
 
 datas = [
+    (str(PROJECT_ROOT / "app" / "presentation_contract.json"), "app"),
     (str(PROJECT_ROOT / "app" / "templates"), "app/templates"),
     (str(PROJECT_ROOT / "app" / "static"), "app/static"),
     (str(PROJECT_ROOT / "app" / "examples"), "app/examples"),

@@ -15,6 +15,7 @@ class InvoiceInputError(ValueError):
 
 
 FORBIDDEN_XML_MARKERS = (b"<!DOCTYPE", b"<!ENTITY")
+XML_DECIMAL_PATTERN = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
 
 
 def safe_parse_xml(xml_bytes: bytes) -> etree._Element:
@@ -129,9 +130,27 @@ def decimal_value(value: Any) -> Decimal | None:
     if "," in text and "." not in text:
         text = text.replace(",", ".")
     try:
-        return Decimal(text)
+        number = Decimal(text)
     except (InvalidOperation, ValueError):
         return None
+    return number if number.is_finite() else None
+
+
+def xml_decimal_value(value: Any) -> Decimal | None:
+    """Parse a finite value from the XML Schema ``decimal`` lexical space."""
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return Decimal(value)
+
+    text = clean_text(value)
+    if text is None or XML_DECIMAL_PATTERN.fullmatch(text) is None:
+        return None
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    return number if number.is_finite() else None
 
 
 def decimal_string(value: Decimal | str | int | float | None) -> str | None:
@@ -148,7 +167,11 @@ def money_string(value: Decimal | str | int | float | None) -> str | None:
     number = decimal_value(value)
     if number is None:
         return None
-    return format(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f")
+    try:
+        rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        return None
+    return format(rounded, "f")
 
 
 def parse_date_value(value: str | None, format_code: str | None = None) -> str | None:

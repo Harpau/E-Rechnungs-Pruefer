@@ -2,12 +2,17 @@
 
 Diese Liste ist unverbindlich und priorisiert nachvollziehbare, getestete Erweiterungen.
 
+## Mit Version 2.0.0 abgeschlossen
+
+- geschlossenes, dokumentiertes Analyseschema 2 mit stabilen Modelltypen und drei getrennten Bewertungsachsen
+- strukturierte Erfassung und Darstellung eingebetteter Dateien, belegender Dokumente und fachlicher Referenzen
+- versionierte Dokumenttyp-, Profil- und Zahlungsrollensemantik einschließlich Eigenabrechnungen und Gutschriften
+- gemeinsamer Präsentationsvertrag für Browser-, HTML- und PDF-Berichte
+
 ## Kurzfristig
 
 - weitere anonymisierte Steuer- und Gutschriftregressionen
-- strukturierte Anzeige von eingebetteten Dokumenten und Referenzen
 - bessere UI-Filter für KoSIT- und interne Befunde
-- dokumentierte API-Schemas und stabilere Modelltypen
 
 ## Mittelfristig
 
