@@ -163,6 +163,8 @@ h1, h2, h3, p { margin-top: 0; }
   backdrop-filter: blur(16px);
 }
 
+.upload-card.is-loading { backdrop-filter: none; }
+
 .upload-card h2 { margin-bottom: 18px; font-size: 1.2rem; }
 
 .drop-zone {
@@ -254,16 +256,15 @@ h1, h2, h3, p { margin-top: 0; }
 .progress-box strong, .progress-box small { display: block; }
 .progress-box small { opacity: .75; font-size: .76rem; }
 
-.spinner {
-  width: 24px;
-  height: 24px;
+.progress-marker {
+  width: 16px;
+  height: 16px;
+  margin: 4px;
   border: 3px solid rgba(11,100,119,.22);
-  border-top-color: var(--primary);
   border-radius: 50%;
-  animation: spin .8s linear infinite;
+  background: var(--primary);
   flex: none;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
 .error-box { background: var(--error-soft); color: var(--error); font-weight: 650; }
 

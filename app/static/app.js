@@ -1133,6 +1133,7 @@ function showError(message) {
 }
 
 function setLoading(loading) {
+  $('.upload-card').classList.toggle('is-loading', loading);
   $('#progress').hidden = !loading;
   $('#drop-zone').setAttribute('aria-busy', loading ? 'true' : 'false');
   $('#file-input').disabled = loading;
@@ -1160,10 +1161,10 @@ async function analyzeFile(file) {
   state.file = file;
   $('#error-box').hidden = true;
   setLoading(true);
-  const form = new FormData();
-  form.append('file', file, file.name);
-  form.append('official', officialValidationRequested() ? 'true' : 'false');
   try {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    form.append('official', officialValidationRequested() ? 'true' : 'false');
     const response = await fetch('/api/analyze', { method: 'POST', body: form });
     if (!response.ok) throw new Error(await parseError(response));
     const data = await response.json();

@@ -426,9 +426,14 @@ Windows-11-x64-VM zu prüfen:
 5. Vor der ersten Benutzeranmeldung über Dienststatus und technische Logs nachweisen, dass der Dienst erfolgreich
    gestartet und nur an `127.0.0.1` gebunden ist.
 6. Nach Anmeldung den Öffnen-Client, API-Authentifizierung, PDF/XML und echte KoSIT-Annahme und -Ablehnung prüfen.
-7. Falls der gesamte Node-RED-Ablauf vor Anmeldung gefordert ist, auch Node-RED unter der vorgesehenen
+7. In Microsoft Edge über eine RDP-Sitzung auf einer ressourcenarmen VM die offiziellen CII- und
+   UBL-Beispielprüfungen mit dem unveränderten Standardtimeout von 60 Sekunden ausführen. Als API-only-Kontrolle
+   dieselben Prüfungen ohne geöffnete Browseroberfläche ausführen und die Laufzeiten gegenüberstellen. Der Browser
+   darf während des sichtbaren Ladezustands die CPU nicht dauerhaft sättigen; eine kurzzeitig hohe CPU-Nutzung des
+   Java-Prozesses während der KoSIT-Ausführung ist dagegen erwartet.
+8. Falls der gesamte Node-RED-Ablauf vor Anmeldung gefordert ist, auch Node-RED unter der vorgesehenen
    Dienstidentität betreiben und den vollständigen Mailflow vor einer interaktiven Anmeldung abnehmen.
-8. Gegenseitigen Installationsausschluss, Update, service-only Hard-Kill-/Reboot-Recovery und beide
+9. Gegenseitigen Installationsausschluss, Update, service-only Hard-Kill-/Reboot-Recovery und beide
    Deinstallationsvarianten sowie Defender/SmartScreen kontrollieren.
 
 ## Drittkomponenten

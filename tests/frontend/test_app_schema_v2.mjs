@@ -12,33 +12,66 @@ const stylesSource = fs.readFileSync(stylesUrl, 'utf8');
 
 function rendererContext() {
   const elements = new Map();
-  const makeElement = () => ({
-    textContent: '',
-    innerHTML: '',
-    hidden: false,
-    className: '',
-    value: '',
-    disabled: false,
-    previousElementSibling: null,
-    addEventListener() {},
-    setAttribute() {},
-  });
+  const makeElement = (className = '') => {
+    const attributes = new Map();
+    const node = {
+      textContent: '',
+      innerHTML: '',
+      hidden: false,
+      className,
+      value: '',
+      checked: false,
+      disabled: false,
+      previousElementSibling: null,
+      addEventListener() {},
+      setAttribute(name, value) { attributes.set(name, String(value)); },
+      getAttribute(name) { return attributes.get(name) ?? null; },
+    };
+    const classTokens = () => new Set(node.className.split(/\s+/).filter(Boolean));
+    const writeClassTokens = (tokens) => { node.className = [...tokens].join(' '); };
+    node.classList = {
+      add(...names) {
+        const tokens = classTokens();
+        names.forEach((name) => tokens.add(name));
+        writeClassTokens(tokens);
+      },
+      remove(...names) {
+        const tokens = classTokens();
+        names.forEach((name) => tokens.delete(name));
+        writeClassTokens(tokens);
+      },
+      contains(name) { return classTokens().has(name); },
+      toggle(name, force) {
+        const tokens = classTokens();
+        const present = tokens.has(name);
+        const enabled = force === undefined ? !present : Boolean(force);
+        if (enabled) tokens.add(name);
+        else tokens.delete(name);
+        writeClassTokens(tokens);
+        return enabled;
+      },
+    };
+    return node;
+  };
+  const exampleButtons = [makeElement('example-button'), makeElement('example-button')];
   const element = (selector) => {
-    if (!elements.has(selector)) elements.set(selector, makeElement());
+    if (!elements.has(selector)) {
+      elements.set(selector, makeElement(selector === '.upload-card' ? 'upload-card' : ''));
+    }
     return elements.get(selector);
   };
   element('#payable-total').previousElementSibling = makeElement();
 
   const document = {
     querySelector: element,
-    querySelectorAll() {
-      return [];
+    querySelectorAll(selector) {
+      return selector === '.example-button' ? exampleButtons : [];
     },
     addEventListener() {},
   };
   const context = vm.createContext({ document });
   vm.runInContext(scriptSource, context, { filename: scriptUrl.pathname });
-  return { context, element };
+  return { context, element, exampleButtons };
 }
 
 function schemaTwoPayload() {
@@ -244,6 +277,47 @@ function schemaTwoPayload() {
     },
   };
 }
+
+test('Ladezustand schaltet Compositing und Bedienelemente vollständig um', () => {
+  const { context, element, exampleButtons } = rendererContext();
+
+  context.setLoading(true);
+  assert.equal(element('#progress').hidden, false);
+  assert.equal(element('#drop-zone').getAttribute('aria-busy'), 'true');
+  assert.equal(element('#file-input').disabled, true);
+  assert.equal(element('.upload-card').classList.contains('is-loading'), true);
+  assert.equal(element('.upload-card').classList.contains('upload-card'), true);
+  assert.equal(exampleButtons.every((button) => button.disabled), true);
+
+  context.setLoading(false);
+  assert.equal(element('#progress').hidden, true);
+  assert.equal(element('#drop-zone').getAttribute('aria-busy'), 'false');
+  assert.equal(element('#file-input').disabled, false);
+  assert.equal(element('.upload-card').classList.contains('is-loading'), false);
+  assert.equal(element('.upload-card').classList.contains('upload-card'), true);
+  assert.equal(exampleButtons.every((button) => !button.disabled), true);
+});
+
+test('Analysefehler räumt den Ladezustand im finally-Block auf', async () => {
+  const { context, element, exampleButtons } = rendererContext();
+  context.FormData = class {
+    append() {}
+  };
+  vm.runInContext(
+    "globalThis.fetch = async () => { throw new Error('Synthetischer Netzwerkfehler'); };",
+    context,
+  );
+
+  await context.analyzeFile({ name: 'synthetic.xml' });
+
+  assert.equal(element('#error-box').hidden, false);
+  assert.equal(element('#error-box').textContent, 'Synthetischer Netzwerkfehler');
+  assert.equal(element('#progress').hidden, true);
+  assert.equal(element('#drop-zone').getAttribute('aria-busy'), 'false');
+  assert.equal(element('#file-input').disabled, false);
+  assert.equal(element('.upload-card').classList.contains('is-loading'), false);
+  assert.equal(exampleButtons.every((button) => !button.disabled), true);
+});
 
 test('Schema-2 payload renders axes, semantic references and masked cards', () => {
   const { context, element } = rendererContext();
