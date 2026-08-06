@@ -88,7 +88,7 @@ python scripts/build_release.py
 Der Repository-Build schließt `.git`, virtuelle Umgebungen, lokale `.env`-Dateien, KoSIT-Dateien, gebündelte Java-Laufzeiten, Download-Caches, PDFs, Schlüsselmaterial, Berichte und nicht freigegebene XML-Dateien aus.
 
 Wheel, Source Distribution und Repository-ZIP müssen außerdem alle zur Laufzeit beziehungsweise zur
-dokumentierten Einrichtung benötigten Metadaten enthalten. Für 2.0.0 sind insbesondere
+dokumentierten Einrichtung benötigten Metadaten enthalten. Insbesondere sind
 `app/presentation_contract.json`, `packaging/kosit/components.lock.json` und
 `docs/examples/node-red-e-rechnungs-pruefer-flow.json` stichprobenartig im jeweils vorgesehenen Artefakt zu
 kontrollieren.
@@ -228,17 +228,22 @@ prüfen. Neben den automatisierten Paket-, Modusausschluss- und Recoverytests um
    `scope=readable|complete`, PDF-Bericht, bytegetreuen XML-Export sowie echte KoSIT-Annahme und -Ablehnung; die
    früheren Header
    `X-Einvoice-Validation-Status` und `X-Einvoice-Official-Status` dürfen nicht erscheinen;
-7. Update eines laufenden und eines gestoppten Dienstes, automatisierten Fehler-Rollback, tatsächlichen
+7. In Microsoft Edge über eine RDP-Sitzung auf einer ressourcenarmen VM die offiziellen CII- und
+   UBL-Beispielprüfungen mit dem unveränderten Standardtimeout von 60 Sekunden ausführen. Als API-only-Kontrolle
+   dieselben Prüfungen ohne geöffnete Browseroberfläche ausführen und die Laufzeiten gegenüberstellen. Der Browser
+   darf während des sichtbaren Ladezustands die CPU nicht dauerhaft sättigen; eine kurzzeitig hohe CPU-Nutzung des
+   Java-Prozesses während der KoSIT-Ausführung ist dagegen erwartet.
+8. Update eines laufenden und eines gestoppten Dienstes, automatisierten Fehler-Rollback, tatsächlichen
    Recovery-Neustart sowie Deinstallation mit erhaltenem Maschinenzustand und mit ausdrücklicher vollständiger
    Löschung;
-8. den gegenseitigen Installationsausschluss sowie den Preserve-Fall prüfen: Dienst ohne Datenlöschung
+9. den gegenseitigen Installationsausschluss sowie den Preserve-Fall prüfen: Dienst ohne Datenlöschung
    deinstallieren, Desktopmodus bei unverändertem ProgramData installieren und entfernen, danach den Dienst mit
    demselben Maschinentoken erneut installieren;
-9. auf einem sauberen Snapshot die persistente service-only Installer-Recovery mit
+10. auf einem sauberen Snapshot die persistente service-only Installer-Recovery mit
    `-CommitHardKillRecovery LeaveForReboot` vorbereiten, Exitcode `194` als absichtlich unvollständigen Lauf
    dokumentieren, die VM hart neu starten und denselben Testinstaller erneut ausführen; anschließend Roll-forward
    sowie die vollständige Marker- und Bundlebereinigung nachweisen;
-10. bei gefordertem Betrieb vor Anmeldung auch den vollständigen Node-RED-Ablauf, wobei Node-RED selbst als
+11. bei gefordertem Betrieb vor Anmeldung auch den vollständigen Node-RED-Ablauf, wobei Node-RED selbst als
    Dienst unter der vorgesehenen Identität laufen muss.
 
 Erst nach dokumentiert bestandenem Vorab-Probelauf, manueller Windows-Abnahme und ausdrücklicher Freigabe

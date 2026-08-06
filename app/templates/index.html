@@ -55,8 +55,8 @@
           <button class="text-button example-button" type="button" data-example="ubl">UBL-Beispiel</button>
         </div>
 
-        <div id="progress" class="progress-box" hidden aria-live="polite">
-          <span class="spinner" aria-hidden="true"></span>
+        <div id="progress" class="progress-box" hidden role="status" aria-live="polite" aria-atomic="true">
+          <span class="progress-marker" aria-hidden="true"></span>
           <div><strong>Rechnung wird ausgewertet</strong><small>XML-Struktur, Beträge und Prüfregeln werden verarbeitet.</small></div>
         </div>
         <div id="error-box" class="error-box" hidden role="alert"></div>

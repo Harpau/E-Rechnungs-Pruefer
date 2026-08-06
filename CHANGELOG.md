@@ -4,6 +4,15 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 2.0.1 – 2026-08-06
+
+### Browseroberfläche
+
+- Der Ladezustand kombiniert den animierten Fortschrittsindikator nicht mehr mit einer großflächigen
+  Hintergrundunschärfe. Dadurch sättigt Microsoft Edge bei offiziellen CII-/UBL-Prüfungen über RDP auf
+  ressourcenarmen Windows-VMs nicht mehr dauerhaft die CPU. KoSIT-Ausführung und Standardtimeout von 60 Sekunden
+  bleiben unverändert.
+
 ## 2.0.0 – 2026-08-03
 
 ### Breaking API-Änderung

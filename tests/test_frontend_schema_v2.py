@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "app" / "static" / "app.js"
-STYLES_PATH = Path(__file__).resolve().parents[1] / "app" / "static" / "styles.css"
-TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "app" / "templates" / "index.html"
+import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_PATH = PROJECT_ROOT / "app" / "static" / "app.js"
+STYLES_PATH = PROJECT_ROOT / "app" / "static" / "styles.css"
+TEMPLATE_PATH = PROJECT_ROOT / "app" / "templates" / "index.html"
+NODE_TEST_PATH = PROJECT_ROOT / "tests" / "frontend" / "test_app_schema_v2.mjs"
 
 
 def _script() -> str:
@@ -17,6 +24,36 @@ def _styles() -> str:
 
 def _template() -> str:
     return TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+def _css_rule(styles: str, selector: str) -> str:
+    match = re.search(rf"{re.escape(selector)}\s*\{{(?P<body>[^}}]*)\}}", styles)
+    assert match is not None, f"CSS-Regel für {selector!r} fehlt"
+    return match.group("body")
+
+
+def test_loading_indicator_avoids_animated_backdrop_compositing() -> None:
+    styles = _styles()
+    template = _template()
+
+    loading_rule = _css_rule(styles, ".upload-card.is-loading")
+    marker_rule = _css_rule(styles, ".progress-marker")
+    progress_markup = template.split('<div id="progress"', 1)[1].split('<div id="error-box"', 1)[0]
+    progress_tag = progress_markup.split(">", 1)[0]
+
+    assert "backdrop-filter: none;" in loading_rule
+    assert "animation:" not in marker_rule
+    assert "@keyframes spin" not in styles
+    assert ".spinner" not in styles
+
+    assert 'class="progress-marker"' in progress_markup
+    assert 'class="spinner"' not in progress_markup
+    assert 'role="status"' in progress_tag
+    assert 'aria-live="polite"' in progress_tag
+    assert 'aria-atomic="true"' in progress_tag
+    marker_tag = re.search(r'<span\b[^>]*class="progress-marker"[^>]*>', progress_markup)
+    assert marker_tag is not None
+    assert 'aria-hidden="true"' in marker_tag.group()
 
 
 def test_browser_renderer_uses_only_schema_two_roots_and_nested_models() -> None:
@@ -189,3 +226,19 @@ def test_browser_renderer_has_labels_for_every_document_family() -> None:
         "unknown",
     ):
         assert f"'{family}':" in script or f"{family}:" in script
+
+
+def test_browser_renderer_contracts_in_real_node_runtime() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js ist lokal nicht installiert")
+
+    completed = subprocess.run(
+        [node, "--test", str(NODE_TEST_PATH)],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
