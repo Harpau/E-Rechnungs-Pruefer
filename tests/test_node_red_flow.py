@@ -65,6 +65,8 @@ def test_node_red_flow_implements_status_contract_and_safe_acknowledgement() -> 
     assert "x-einvoice-official-status" not in classifier
     assert "analysisSchema !== '2'" in classifier
     assert "'unsupported'" in classifier
+    assert "['not-requested', 'unsupported', 'unavailable'].includes(officialStatus)" not in classifier
+    assert "['not-requested', 'unavailable'].includes(officialStatus)" in classifier
     assert "processingStatus === 'incomplete'" in classifier
     assert "processingStatus === 'complete' && internalStatus === 'not-run'" in classifier
     assert "assessment" in classifier
@@ -80,6 +82,14 @@ def test_node_red_flow_implements_status_contract_and_safe_acknowledgement() -> 
     assert "report.assessment.processing.status" in finalizer
     assert "report.validation" not in finalizer
     assert "report.official" not in finalizer
+    assert "Prüfergebnis mit Einschränkung" in finalizer
+    assert "Offizielle Prüfung: für dieses Format oder Profil nicht unterstützt" in finalizer
+    assert "weder eine offizielle Annahme noch eine offizielle Ablehnung" in finalizer
+    assert "errors: 'Fehler – Handlungsbedarf'" in finalizer
+    assert "Interne Prüfung: ${internalStatus}." in finalizer
+    assert "complete: 'vollständig'" in finalizer
+    assert "Verarbeitung: ${processingStatus}." in finalizer
+    assert "Details zu den Befunden stehen im jeweils angehängten PDF-Prüfbericht" in finalizer
 
     retry = by_name["Begrenzt wiederholen"]["func"]
     assert "[30000, 120000, 600000]" in retry

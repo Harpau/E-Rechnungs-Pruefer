@@ -157,9 +157,12 @@ Der Flow:
 Eine erkannte Rechnung mit `official=rejected` oder `internal=errors` bleibt eine E-Rechnung und erhält bei
 `processing=complete` oder `processing=limited` ebenfalls einen Bericht. `internal=not-run` ist zusammen mit
 `processing=complete` ein Protokollfehler; bei `processing=incomplete` ist es erwartbar und der Flow wiederholt
-die Verarbeitung. `official=not-requested`, `unsupported` oder `unavailable` führt bei verpflichtender
-offizieller Prüfung in den technischen Fehlerpfad, sofern nicht bereits `processing=incomplete` die Wiederholung
-bestimmt. Eine reine PDF ohne eingebettete Rechnungs-XML wird nicht per OCR rekonstruiert.
+die Verarbeitung. `official=unsupported` wird auch bei verpflichtender offizieller Prüfung als qualifizierter
+Bericht versendet; der Flow verarbeitet danach weitere Kandidaten. Der Status bedeutet weder eine offizielle
+Annahme noch eine offizielle Ablehnung. `official=not-requested` oder `official=unavailable` führt bei
+verpflichtender offizieller Prüfung weiterhin in den technischen Fehlerpfad, sofern nicht bereits
+`processing=incomplete` die Wiederholung bestimmt; `official=indeterminate` wird weiterhin wie oben beschrieben
+begrenzt wiederholt. Eine reine PDF ohne eingebettete Rechnungs-XML wird nicht per OCR rekonstruiert.
 
 Bei `EINVOICE_REQUIRE_KOSIT=false` sendet der Flow das API-Feld `official=false`. Die Anwendung startet dann für
 diesen Aufruf keine KoSIT-Prüfung; der Antwortstatus `not-requested` ist in diesem Modus ein reguläres Ergebnis.
@@ -211,5 +214,6 @@ Randfall einen zweiten Bericht erzeugen. Der dauerhafte Fehlerpfad sollte deshal
 
 Vor der Umschaltung des produktiven Postfachs sollten mindestens die Abnahmeszenarien aus
 [`AUTOMATION_INTEGRATION.md`](AUTOMATION_INTEGRATION.md) mit synthetischen Anhängen geprüft werden. Besonders
-wichtig sind eine Sicht-PDF neben gültiger XML, mehrere Rechnungsanhänge, KoSIT-Ausfall, falsches API-Token,
-SMTP-Ausfall und die korrekte Quittierung nach einem Retry.
+wichtig sind eine Sicht-PDF neben gültiger XML, mehrere Rechnungsanhänge, ein qualifizierter Bericht für
+`official=unsupported` mit anschließender Kandidatenfortsetzung, KoSIT-Ausfall, falsches API-Token, SMTP-Ausfall
+und die korrekte Quittierung nach einem Retry.

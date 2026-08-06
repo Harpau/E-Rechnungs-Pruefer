@@ -57,13 +57,17 @@ behandeln. Kein Status darf aus einem anderen abgeleitet oder zu einem gemeinsam
 | `accepted` | offizieller Bericht nimmt die Rechnung an | Bericht | Bericht |
 | `rejected` | offizieller Bericht lehnt die Rechnung ab | Bericht mit Status `rejected` | Bericht mit Status `rejected` |
 | `not-requested` | offizielle Prüfung wurde nicht angefordert | Konfigurationsfehler | Bericht |
-| `unsupported` | erkannter Fall wird von der offiziellen Prüfung nicht unterstützt | Konfigurationsfehler | Bericht |
+| `unsupported` | erkannter Fall wird von der offiziellen Prüfung nicht unterstützt | qualifizierter Bericht; weitere Kandidaten prüfen | Bericht; weitere Kandidaten prüfen |
 | `unavailable` | offizielle Prüfung ist nicht verfügbar | Konfigurationsfehler, sofern `processing` nicht bereits `incomplete` ist | Bericht, sofern `processing` nicht `incomplete` ist |
 | `indeterminate` | keine belastbare offizielle Entscheidung möglich | begrenzt wiederholen | Bericht, sofern `processing` nicht `incomplete` ist |
 
 `accepted` und `rejected` dürfen nur aus einem auswertbaren offiziellen Bericht gebildet werden. Eine vorhandene
 `<rep:accept/>`- oder `<rep:reject/>`-Entscheidung ist gegenüber dem Prozessrückgabecode maßgeblich.
 `not-requested`, `unsupported`, `unavailable` und `indeterminate` sind keine Ablehnungen.
+Insbesondere ist `unsupported` auch bei verpflichtender offizieller Prüfung ein abgeschlossenes,
+profilabhängig qualifiziertes Ergebnis: Der Bericht MUSS versendet und die Verarbeitung weiterer Kandidaten
+MUSS fortgesetzt werden. Daraus DARF weder `accepted` noch `rejected` abgeleitet werden. Die Behandlung von
+`not-requested`, `unavailable` und `indeterminate` bleibt unverändert.
 
 Für den produktiven Rechnungseingang SOLL KoSIT verpflichtend konfiguriert werden. Eine bewusste Abweichung MUSS
 in der Node-RED-Konfiguration sichtbar dokumentiert sein.
@@ -248,7 +252,8 @@ API und Flow MÜSSEN mindestens folgende anonymisierte Fälle automatisiert absi
 5. unbekannte, aber wohlgeformte XML-Syntax;
 6. beschädigte XML, verbotene DTD/ENTITY und Größenüberschreitung;
 7. mehrere unterschiedliche Rechnungsanhänge und byteidentische Duplikate;
-8. alle offiziellen Statuswerte einschließlich `unsupported`;
+8. alle offiziellen Statuswerte einschließlich `unsupported`; bei verpflichtender offizieller Prüfung MUSS
+   `unsupported` einen qualifizierten Bericht erzeugen und die Verarbeitung weiterer Kandidaten fortsetzen;
 9. `internal` mit `clear`, `attention`, `errors` und `not-run`;
 10. `processing` mit `complete`, `limited` und `incomplete` sowie die Invariante
     `internal=not-run`/`processing=complete`;
