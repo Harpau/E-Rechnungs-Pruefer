@@ -303,8 +303,7 @@ def _format_number(value: Any, digits: int | None = None) -> str:
     except (InvalidOperation, ValueError):
         return _text(value)
     if digits is not None:
-        number = number.quantize(Decimal(1).scaleb(-digits))
-        raw = f"{number:.{digits}f}"
+        raw = format(number, f".{digits}f")
     else:
         raw = format(number, "f")
         if "." in raw:

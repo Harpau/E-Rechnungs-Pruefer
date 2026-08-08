@@ -218,6 +218,11 @@ $InstallDir = Join-Path $TestRoot "Installation mit Leerzeichen"
 $Executable = Join-Path $InstallDir "E-Rechnungs-Pruefer.exe"
 $Uninstaller = Join-Path $InstallDir "unins000.exe"
 $CookieFile = Join-Path $TestRoot "cookies.txt"
+$BootstrapHtml = Join-Path $TestRoot "bootstrap.html"
+$BootstrapHeaders = Join-Path $TestRoot "bootstrap-headers.txt"
+$JavascriptOutput = Join-Path $TestRoot "app.js"
+$JavascriptHeaders = Join-Path $TestRoot "app-js-headers.txt"
+$UiMismatchOutput = Join-Path $TestRoot "ui-mismatch.json"
 $XmlOutput = Join-Path $TestRoot "export.xml"
 $PdfOutput = Join-Path $TestRoot "report.pdf"
 $PdfHeaders = Join-Path $TestRoot "report-headers.txt"
@@ -399,9 +404,51 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     }
 
     $Bootstrap = "http://127.0.0.1:$($runtime.port)/desktop/bootstrap?token=$($runtime.token)"
-    & curl.exe --silent --show-error --fail --location --cookie-jar $CookieFile $Bootstrap | Out-Null
+    & curl.exe --silent --show-error --fail --location `
+        --cookie-jar $CookieFile `
+        --dump-header $BootstrapHeaders `
+        --output $BootstrapHtml `
+        $Bootstrap
     if ($LASTEXITCODE -ne 0) {
         throw "Desktop-Sitzung konnte nicht initialisiert werden."
+    }
+    $BootstrapHtmlText = Get-Content -LiteralPath $BootstrapHtml -Raw
+    $BootstrapResponseHeaders = Get-Content -LiteralPath $BootstrapHeaders -Raw
+    $NoStoreHeaderCount = [regex]::Matches(
+        $BootstrapResponseHeaders,
+        '(?im)^Cache-Control:\s*no-store\s*\r?$'
+    ).Count
+    if ($NoStoreHeaderCount -ne 2) {
+        throw "Bootstrap und Startseite besitzen nicht jeweils den sicheren no-store-Cachevertrag."
+    }
+    $UiRevisionMatches = [regex]::Matches(
+        $BootstrapHtmlText,
+        'data-ui-revision="(?<revision>[0-9a-f]{64})"'
+    )
+    $UiRevisions = @($UiRevisionMatches | ForEach-Object { $_.Groups["revision"].Value } | Select-Object -Unique)
+    if ($UiRevisions.Count -ne 1) {
+        throw "Die installierte Oberfläche deklariert keine eindeutige UI-Revision."
+    }
+    $UiRevision = $UiRevisions[0]
+    foreach ($ExpectedAsset in @(
+        "/static/$UiRevision/app.js",
+        "/static/$UiRevision/styles.css"
+    )) {
+        if ($BootstrapHtmlText.IndexOf($ExpectedAsset, [StringComparison]::Ordinal) -lt 0) {
+            throw "Der installierten Oberfläche fehlt das revisionierte Asset: $ExpectedAsset"
+        }
+    }
+    & curl.exe --silent --show-error --fail `
+        --cookie $CookieFile `
+        --dump-header $JavascriptHeaders `
+        --output $JavascriptOutput `
+        "http://127.0.0.1:$($runtime.port)/static/$UiRevision/app.js"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Das revisionierte JavaScript-Asset konnte nicht geladen werden."
+    }
+    $JavascriptResponseHeaders = Get-Content -LiteralPath $JavascriptHeaders -Raw
+    if ($JavascriptResponseHeaders -notmatch '(?im)^Cache-Control:\s*public, max-age=31536000, immutable\s*\r?$') {
+        throw "Das revisionierte JavaScript-Asset besitzt keinen unveränderlichen Cachevertrag."
     }
 
     $Example = Join-Path $ProjectRoot "app\examples\cii-rechnung-demo.xml"
@@ -422,8 +469,24 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
         throw "Das Paket lieferte ein unerwartetes Analyseergebnis."
     }
 
+    $MissingUiRevisionStatus = & curl.exe --silent --show-error `
+        --cookie $CookieFile `
+        --form "file=@$Example;type=application/xml" `
+        --form "official=false" `
+        --output $UiMismatchOutput `
+        --write-out "%{http_code}" `
+        "http://127.0.0.1:$($runtime.port)/api/analyze"
+    if ($LASTEXITCODE -ne 0 -or $MissingUiRevisionStatus -ne "409") {
+        throw "Ein Browseraufruf ohne UI-Revision wurde nicht kontrolliert mit HTTP 409 abgewiesen."
+    }
+    $UiMismatch = Get-Content -LiteralPath $UiMismatchOutput -Raw | ConvertFrom-Json
+    if ($UiMismatch.type -ne "ui_version_mismatch") {
+        throw "Der Browser-Versionskonflikt lieferte nicht den erwarteten Fehlervertrag."
+    }
+
     $OfficialJson = & curl.exe --silent --show-error --fail `
         --cookie $CookieFile `
+        --header "X-Einvoice-UI-Revision: $UiRevision" `
         --form "file=@$Example;type=application/xml" `
         --form "official=true" `
         "http://127.0.0.1:$($runtime.port)/api/analyze"
@@ -439,6 +502,7 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
 
     & curl.exe --silent --show-error --fail `
         --cookie $CookieFile `
+        --header "X-Einvoice-UI-Revision: $UiRevision" `
         --form "file=@$Example;type=application/xml" `
         --output $XmlOutput `
         "http://127.0.0.1:$($runtime.port)/api/xml"

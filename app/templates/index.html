@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="E-Rechnungen im CII-, XRechnung-, ZUGFeRD-, Factur-X- und UBL-Format lokal darstellen und prüfen.">
   <title>E-Rechnungs-Viewer &amp; Prüfer</title>
-  <link rel="stylesheet" href="/static/styles.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="{{ static_url_prefix }}/styles.css">
+  <script src="{{ static_url_prefix }}/app.js" data-ui-revision="{{ ui_revision }}" defer></script>
 </head>
-<body data-kosit-configured="{{ 'true' if kosit_configured else 'false' }}">
+<body data-kosit-configured="{{ 'true' if kosit_configured else 'false' }}" data-ui-revision="{{ ui_revision }}">
   <header class="site-header">
-    <a class="brand" href="/" aria-label="Startseite">
+    <a class="brand" href="/?ui={{ ui_revision }}" aria-label="Startseite">
       <span class="brand-mark" aria-hidden="true">E</span>
       <span><strong>E‑Rechnungs‑Viewer</strong><small>Darstellen · Rechnen · Prüfen</small></span>
     </a>

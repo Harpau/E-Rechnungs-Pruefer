@@ -1,4 +1,4 @@
-E-RECHNUNGS-VIEWER & PRUEFER 2.0.1
+E-RECHNUNGS-VIEWER & PRUEFER 2.0.2
 ====================================
 
 WAS DIE ANWENDUNG MACHT

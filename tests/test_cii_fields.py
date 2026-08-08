@@ -143,6 +143,48 @@ def test_tax_point_period_and_totals_preserve_their_currency_semantics():
     assert result["totals"]["due_payable_amount_currency"] == "EUR"
 
 
+def test_xsd_date_choices_and_indicator_string_are_parsed_from_direct_children() -> None:
+    xml = f"""
+    <rsm:CrossIndustryInvoice
+        xmlns:rsm="{CII_NAMESPACE}"
+        xmlns:ram="{RAM_NAMESPACE}"
+        xmlns:udt="{UDT_NAMESPACE}"
+        xmlns:qdt="{QDT_NAMESPACE}">
+      <rsm:ExchangedDocumentContext/>
+      <rsm:ExchangedDocument>
+        <ram:ID>SYNTHETISCH-DATUM</ram:ID>
+        <ram:IssueDateTime><udt:DateTime>2026-07-15T08:30:00Z</udt:DateTime></ram:IssueDateTime>
+      </rsm:ExchangedDocument>
+      <rsm:SupplyChainTradeTransaction>
+        <ram:ApplicableHeaderTradeDelivery>
+          <ram:ActualDeliverySupplyChainEvent>
+            <ram:OccurrenceDateTime>
+              <udt:DateTimeString format="102">20260716</udt:DateTimeString>
+            </ram:OccurrenceDateTime>
+          </ram:ActualDeliverySupplyChainEvent>
+        </ram:ApplicableHeaderTradeDelivery>
+        <ram:ApplicableHeaderTradeSettlement>
+          <ram:ApplicableTradeTax>
+            <ram:TaxPointDate><udt:Date>2026-07-17</udt:Date></ram:TaxPointDate>
+          </ram:ApplicableTradeTax>
+          <ram:SpecifiedTradeAllowanceCharge>
+            <ram:ChargeIndicator><udt:IndicatorString>false</udt:IndicatorString></ram:ChargeIndicator>
+            <ram:ActualAmount>1.00</ram:ActualAmount>
+          </ram:SpecifiedTradeAllowanceCharge>
+        </ram:ApplicableHeaderTradeSettlement>
+      </rsm:SupplyChainTradeTransaction>
+    </rsm:CrossIndustryInvoice>
+    """
+
+    result = parse_cii(safe_parse_xml(xml.encode()))
+
+    assert result["document"]["issue_date"] == "2026-07-15"
+    assert result["document"]["delivery_date"] == "2026-07-16"
+    assert result["document"]["tax_point_date"] == "2026-07-17"
+    assert result["header_allowances_charges"][0]["type"] == "allowance"
+    assert result["header_allowances_charges"][0]["indicator_raw"] == "false"
+
+
 def test_references_are_separated_by_business_term_and_keep_metadata():
     result = _parse(
         """

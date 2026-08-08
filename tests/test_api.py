@@ -13,6 +13,7 @@ from pypdf import PdfReader
 
 import app.main as main_module
 from app.main import app
+from app.ui_contract import UI_REVISION, UI_STATIC_PREFIX
 
 client = TestClient(app)
 
@@ -397,6 +398,25 @@ def test_index_and_examples_are_available():
     index = client.get("/")
     assert index.status_code == 200
     assert "E‑Rechnungs‑Viewer" in index.text
+    assert index.headers["cache-control"] == "no-store"
+
+    document = html.fromstring(index.text)
+    body = document.xpath("//body")[0]
+    script = document.xpath("//script[@data-ui-revision]")[0]
+    stylesheet = document.xpath("//link[@rel='stylesheet']")[0]
+    assert body.attrib["data-ui-revision"] == UI_REVISION
+    assert script.attrib["data-ui-revision"] == UI_REVISION
+    assert script.attrib["src"] == f"{UI_STATIC_PREFIX}/app.js"
+    assert stylesheet.attrib["href"] == f"{UI_STATIC_PREFIX}/styles.css"
+
+    javascript = client.get(script.attrib["src"])
+    css = client.get(stylesheet.attrib["href"])
+    assert javascript.status_code == 200
+    assert css.status_code == 200
+    assert javascript.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert css.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert client.get("/static/app.js").status_code == 404
+    assert client.get(f"/static/{'0' * 64}/app.js").status_code == 404
 
     example = client.get("/api/examples/ubl")
     assert example.status_code == 200

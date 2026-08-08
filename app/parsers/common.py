@@ -12,7 +12,7 @@ from ..code_lists import (
     tax_category_label,
     unit_label,
 )
-from ..xml_utils import attr_value, clean_text, first_node, first_text, parse_date_value
+from ..xml_utils import attr_value, element_text, first_node, first_text, parse_date_value
 
 
 def profile_name(profile_id: str | None) -> str:
@@ -107,7 +107,7 @@ def empty_party() -> dict:
 def id_entry(node: etree._Element | None, *, scheme_attribute: str = "schemeID") -> dict | None:
     if node is None:
         return None
-    value = clean_text(node)
+    value = element_text(node)
     if not value:
         return None
     return {"value": value, "scheme": attr_value(node, scheme_attribute)}
@@ -116,7 +116,7 @@ def id_entry(node: etree._Element | None, *, scheme_attribute: str = "schemeID")
 def make_amount(node: etree._Element | None) -> dict | None:
     if node is None:
         return None
-    value = clean_text(node)
+    value = element_text(node)
     if value is None:
         return None
     return {
@@ -136,9 +136,9 @@ def parse_period(
     start_node = first_node(node, start_expr)
     end_node = first_node(node, end_expr)
     start = (
-        parse_date_value(clean_text(start_node), attr_value(start_node, "format")) if start_node is not None else None
+        parse_date_value(element_text(start_node), attr_value(start_node, "format")) if start_node is not None else None
     )
-    end = parse_date_value(clean_text(end_node), attr_value(end_node, "format")) if end_node is not None else None
+    end = parse_date_value(element_text(end_node), attr_value(end_node, "format")) if end_node is not None else None
     description = first_text(node, description_expr) if description_expr else None
     if not any((start, end, description)):
         return None

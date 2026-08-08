@@ -408,7 +408,20 @@ Nach dem Lauf:
    Zustand zählt nicht als erfolgreiche Recovery und darf nicht manuell gelöscht werden, bevor
    Diagnoseinformationen gesichert sind.
 
-## Manuelle Windows-11-Abnahme vor Veröffentlichung
+## Manuelle Windows-10-/Windows-11-Abnahme vor Veröffentlichung
+
+Windows 10 ist für Patchreleases ein eigenes Pflichtsystem. Jeweils getrennt für Desktop und Dienst werden die
+Upgradepfade 1.5.0 → Zielversion und 2.0.1 → Zielversion sowie eine Neuinstallation geprüft. Bei jedem Upgrade
+bleibt ein bereits geöffnetes Alt-Tab mit warmem Cache bestehen: Es muss kontrolliert einen UI-Versionskonflikt
+oder eine nach dem Prozessneustart abgelaufene Sitzung samt Wiederöffnungshinweis melden, während ein neu über
+Launcher beziehungsweise Öffnen-Client gestartetes Fenster die aktuelle, revisionierte Oberfläche lädt.
+Cookiegeschützte Browser-API-Aufrufe müssen die UI-Revision mitsenden;
+Bearer-authentifizierte Automatisierungen wie Node-RED bleiben davon ausgenommen.
+
+Auf Windows 10 gehören CII, UBL und Hybrid-PDF, echte KoSIT-Prüfung, Desktop- und Dienstmodus sowie der Erhalt
+von Dienstkonfiguration und API-Token zum Pflichtumfang. Die vollständige Installer-, Modusausschluss-,
+Recovery- und Reboot-Abnahme bleibt zusätzlich auf Windows 11 verbindlich; Windows Server 2022 deckt den
+automatisierten CI-Paketpfad ab.
 
 Vor einem öffentlichen Release ist das signierte Vorab-Artefakt auf einer sauberen, anschließend verworfenen
 Windows-11-x64-VM zu prüfen:

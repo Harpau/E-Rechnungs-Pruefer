@@ -11,6 +11,7 @@ from . import __version__
 from .analysis_builder import build_analysis_response
 from .parsers.cii import parse_cii
 from .parsers.common import empty_party
+from .parsers.namespaces import CII_ROOT_NAMESPACE, UBL_ROOT_NAMESPACES
 from .parsers.ubl import parse_ubl
 from .profiles import OfficialValidationCapability, resolve_profile
 from .settings import Settings, settings
@@ -27,12 +28,6 @@ from .xml_utils import (
     sha256_hex,
     technical_rows,
 )
-
-CII_ROOT_NAMESPACE = "urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100"
-UBL_ROOT_NAMESPACES = {
-    "Invoice": "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
-    "CreditNote": "urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2",
-}
 
 
 def _unknown_document(root: etree._Element) -> dict[str, Any]:
@@ -90,23 +85,6 @@ def _detect_and_parse(root: etree._Element) -> tuple[dict[str, Any], str | None]
     )
 
 
-def _namespace_rows(root: etree._Element) -> list[dict[str, str | None]]:
-    rows: list[dict[str, str | None]] = []
-    root_path = f"/{local_name(root)}[1]"
-    for prefix, uri in sorted(root.nsmap.items(), key=lambda item: item[0] or ""):
-        shown = "xmlns" if prefix is None else f"xmlns:{prefix}"
-        rows.append(
-            {
-                "kind": "namespace",
-                "path": f"{root_path}/@{shown}",
-                "name": shown,
-                "namespace": None,
-                "value": uri,
-            }
-        )
-    return rows
-
-
 def analyze_bytes(
     data: bytes,
     filename: str,
@@ -129,11 +107,18 @@ def analyze_bytes(
     if len(source.xml_bytes) > app_settings.max_upload_bytes:
         raise InvoiceInputError("Die eingebettete XML-Datei überschreitet die zulässige Größenbegrenzung.")
 
-    root = safe_parse_xml(source.xml_bytes)
+    root = safe_parse_xml(
+        source.xml_bytes,
+        max_structure_items=app_settings.max_xml_structure_items,
+    )
     parsed, syntax_error = _detect_and_parse(root)
 
-    rows, truncated = technical_rows(root, app_settings.max_technical_rows)
-    rows = _namespace_rows(root) + rows
+    technical = technical_rows(
+        root,
+        app_settings.max_technical_rows,
+        include_namespaces=True,
+        max_seconds=app_settings.max_technical_seconds,
+    )
     raw_xml = pretty_xml(root)
 
     working: dict[str, Any] = deepcopy(parsed)
@@ -151,9 +136,10 @@ def analyze_bytes(
     working["technical"] = {
         "root_element": local_name(root),
         "root_namespace": namespace_uri(root),
-        "field_count": len(rows),
-        "truncated": truncated,
-        "rows": rows,
+        "field_count": len(technical.rows),
+        "truncated": technical.truncated,
+        "limit_reason": technical.limit_reason,
+        "rows": technical.rows,
         "raw_xml": raw_xml,
         "original_xml": decode_xml_bytes(source.xml_bytes),
     }

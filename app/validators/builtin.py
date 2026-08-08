@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from decimal import ROUND_HALF_UP, Decimal
+from collections.abc import Iterator
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
 from ..document_semantics import PartyReference, derive_document_semantics
@@ -12,7 +13,7 @@ from ..document_types import (
     resolve_document_type,
 )
 from ..profiles import resolve_profile
-from ..xml_utils import clean_text, date_object, money_string, xml_decimal_value
+from ..xml_utils import InvoiceInputError, clean_text, date_object, money_string, xml_decimal_value
 
 TOLERANCE = Decimal("0.02")
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
@@ -22,6 +23,36 @@ XRECHNUNG_PROFILE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 XRECHNUNG_RECOMMENDED_DOCUMENT_TYPES = frozenset({"326", "380", "381", "384", "389", "875", "876", "877"})
+_DECIMAL_LEXICAL_PATTERN = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
+MAX_DECIMAL_DIGITS = 4_096
+MAX_DECIMAL_CONTEXT_PRECISION = (3 * MAX_DECIMAL_DIGITS) + 128
+_DECIMAL_CONTEXT_GUARD_DIGITS = 64
+_DECIMAL_TOTAL_FIELDS = (
+    "line_total",
+    "allowance_total",
+    "charge_total",
+    "tax_basis_total",
+    "tax_total",
+    "tax_total_accounting",
+    "grand_total",
+    "prepaid_amount",
+    "rounding_amount",
+    "due_payable_amount",
+)
+_DECIMAL_LINE_FIELDS = (
+    "quantity",
+    "price",
+    "base_quantity",
+    "line_total",
+    "gross_price",
+    "price_discount_amount",
+    "price_allowance",
+    "price_discount_percent",
+    "price_allowance_percent",
+    "tax_rate",
+)
+_DECIMAL_ALLOWANCE_FIELDS = ("amount", "basis_amount", "percent", "tax_rate")
+_DECIMAL_TAX_FIELDS = ("rate", "basis_amount", "tax_amount")
 
 
 def _finding(
@@ -39,6 +70,7 @@ def _finding(
     profile: str | None = None,
     semantic_reference: list[str] | None = None,
     location_label: str | None = None,
+    occurrence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     finding: dict[str, Any] = {
         "id": rule_id,
@@ -60,6 +92,8 @@ def _finding(
         finding["semantic_reference"] = semantic_reference
     if location_label is not None:
         finding["location_label"] = location_label
+    if occurrence is not None:
+        finding["occurrence"] = dict(occurrence)
     return finding
 
 
@@ -69,6 +103,74 @@ def _is_close(left: Decimal, right: Decimal, tolerance: Decimal = TOLERANCE) -> 
 
 def _rounded(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _decimal_value_span(value: Any) -> int:
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            return 0
+        parts = value.as_tuple()
+        exponent = int(parts.exponent)
+        return max(len(parts.digits), max(value.adjusted() + 1, 0) - min(exponent, 0))
+    if isinstance(value, int) and not isinstance(value, bool):
+        return len(str(abs(value)))
+    if isinstance(value, str) and _DECIMAL_LEXICAL_PATTERN.fullmatch(value.strip()) is not None:
+        return sum(character.isdigit() for character in value)
+    return 0
+
+
+def _decimal_operands(analysis: dict[str, Any]) -> Iterator[Any]:
+    totals = analysis.get("totals")
+    if isinstance(totals, dict):
+        for key in _DECIMAL_TOTAL_FIELDS:
+            yield totals.get(key)
+
+    for tax in analysis.get("taxes") or []:
+        if isinstance(tax, dict):
+            for key in _DECIMAL_TAX_FIELDS:
+                yield tax.get(key)
+
+    for line in analysis.get("lines") or []:
+        if not isinstance(line, dict):
+            continue
+        for key in _DECIMAL_LINE_FIELDS:
+            yield line.get(key)
+        for item in line.get("allowances_charges") or []:
+            if isinstance(item, dict):
+                for key in _DECIMAL_ALLOWANCE_FIELDS:
+                    yield item.get(key)
+
+    for item in analysis.get("header_allowances_charges") or []:
+        if isinstance(item, dict):
+            for key in _DECIMAL_ALLOWANCE_FIELDS:
+                yield item.get(key)
+
+    payment = analysis.get("payment")
+    if isinstance(payment, dict):
+        for term in payment.get("terms") or []:
+            if isinstance(term, dict):
+                yield term.get("partial_payment_amount")
+
+
+def _decimal_work_precision(source: dict[str, Any]) -> int:
+    """Size a hard-bounded Decimal context for exact fixed-point invoice arithmetic."""
+    max_span = 0
+    operand_count = 0
+    for value in _decimal_operands(source):
+        span = _decimal_value_span(value)
+        if span == 0:
+            continue
+        if span > MAX_DECIMAL_DIGITS:
+            raise InvoiceInputError(
+                f"Ein numerisches Rechnungsfeld überschreitet das zulässige Rechenbudget von "
+                f"{MAX_DECIMAL_DIGITS} Dezimalziffern."
+            )
+        max_span = max(max_span, span)
+        operand_count += 1
+
+    carry_digits = len(str(max(operand_count, 1)))
+    requested = (3 * max_span) + carry_digits + _DECIMAL_CONTEXT_GUARD_DIGITS
+    return min(MAX_DECIMAL_CONTEXT_PRECISION, max(64, requested))
 
 
 def _optional_decimal(value: Any, default: Decimal) -> Decimal | None:
@@ -229,6 +331,346 @@ def _require(findings: list[dict], value: Any, rule_id: str, title: str, locatio
         )
 
 
+def _occurrence_data(
+    scope: str,
+    json_pointer: str,
+    *,
+    index: int | None = None,
+    identifier: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "scope": scope,
+        "index": index,
+        "identifier": identifier,
+        "json_pointer": json_pointer,
+    }
+
+
+def _validate_date_text(
+    findings: list[dict[str, Any]],
+    value: Any,
+    *,
+    title: str,
+    location: str,
+    json_pointer: str,
+    scope: str,
+    semantic_reference: list[str] | None = None,
+    index: int | None = None,
+    identifier: str | None = None,
+) -> None:
+    text = clean_text(value)
+    if text is None or date_object(text) is not None:
+        return
+    findings.append(
+        _finding(
+            "FORMAT-DATE-001",
+            "error",
+            title,
+            "Der vorhandene Datumswert ist kein gültiges Kalenderdatum.",
+            location=location,
+            actual=text,
+            expected="gültiges Kalenderdatum im Format JJJJ-MM-TT",
+            rule_class="core_precheck",
+            semantic_reference=semantic_reference,
+            occurrence=_occurrence_data(
+                scope,
+                json_pointer,
+                index=index,
+                identifier=identifier,
+            ),
+        )
+    )
+
+
+def _validate_decimal_text(
+    findings: list[dict[str, Any]],
+    value: Any,
+    *,
+    title: str,
+    location: str,
+    json_pointer: str,
+    scope: str,
+    semantic_reference: list[str] | None = None,
+    index: int | None = None,
+    identifier: str | None = None,
+) -> None:
+    text = clean_text(value)
+    if text is None or xml_decimal_value(text) is not None:
+        return
+    findings.append(
+        _finding(
+            "FORMAT-DECIMAL-001",
+            "error",
+            title,
+            "Der vorhandene Zahlenwert entspricht keinem gültigen XML-Dezimalwert.",
+            location=location,
+            actual=text,
+            expected="endlicher XML-Schema-Decimalwert ohne Komma oder Exponent",
+            rule_class="core_precheck",
+            semantic_reference=semantic_reference,
+            occurrence=_occurrence_data(
+                scope,
+                json_pointer,
+                index=index,
+                identifier=identifier,
+            ),
+        )
+    )
+
+
+def _validate_typed_values(analysis: dict[str, Any], findings: list[dict[str, Any]]) -> None:
+    document = analysis.get("document") or {}
+    delivery = analysis.get("delivery") or {}
+    document_dates = (
+        (
+            document.get("issue_date"),
+            "Rechnungsdatum ist ungültig",
+            "BT-2",
+            "/document/issue_date",
+            "document",
+            ["BT-2"],
+        ),
+        (
+            document.get("due_date"),
+            "Fälligkeitsdatum ist ungültig",
+            "BT-9",
+            "/payment/due_date",
+            "payment",
+            ["BT-9"],
+        ),
+        (
+            document.get("tax_point_date"),
+            "Steuerzeitpunkt ist ungültig",
+            "BT-7",
+            "/document/tax_point_date",
+            "document",
+            ["BT-7"],
+        ),
+        (
+            document.get("delivery_date") or delivery.get("date"),
+            "Lieferdatum ist ungültig",
+            "BT-72",
+            "/delivery/actual_date",
+            "period",
+            ["BT-72"],
+        ),
+    )
+    for value, title, location, pointer, scope, semantic_reference in document_dates:
+        _validate_date_text(
+            findings,
+            value,
+            title=title,
+            location=location,
+            json_pointer=pointer,
+            scope=scope,
+            semantic_reference=semantic_reference,
+        )
+
+    periods = analysis.get("periods") or {}
+    invoice_period = analysis.get("invoice_period") or periods.get("invoice") or {}
+    delivery_period = periods.get("delivery") or {}
+    for period, pointer, label in (
+        (invoice_period, "/periods/invoice", "Rechnungszeitraum"),
+        (delivery_period, "/periods/delivery", "Lieferzeitraum"),
+    ):
+        if not isinstance(period, dict):
+            continue
+        for source_key, target_key, suffix in (
+            ("start", "start_date", "Beginn"),
+            ("start_date", "start_date", "Beginn"),
+            ("end", "end_date", "Ende"),
+            ("end_date", "end_date", "Ende"),
+        ):
+            if source_key not in period:
+                continue
+            _validate_date_text(
+                findings,
+                period.get(source_key),
+                title=f"{label}: {suffix} ist ungültig",
+                location=label,
+                json_pointer=f"{pointer}/{target_key}",
+                scope="period",
+            )
+
+    totals = analysis.get("totals") or {}
+    total_fields = (
+        ("line_total", "Summe der Rechnungspositionen", "BT-106", "/totals/line_net_total", "total"),
+        ("allowance_total", "Summe der Nachlässe", "BT-107", "/totals/allowance_total", "total"),
+        ("charge_total", "Summe der Zuschläge", "BT-108", "/totals/charge_total", "total"),
+        ("tax_basis_total", "Rechnungsbetrag ohne Umsatzsteuer", "BT-109", "/totals/tax_exclusive_total", "total"),
+        ("tax_total", "Umsatzsteuerbetrag", "BT-110", "/tax/totals/document_currency", "tax"),
+        (
+            "tax_total_accounting",
+            "Umsatzsteuerbetrag in Abrechnungswährung",
+            "BT-111",
+            "/tax/totals/vat_accounting_currency",
+            "tax",
+        ),
+        ("grand_total", "Rechnungsbetrag mit Umsatzsteuer", "BT-112", "/totals/tax_inclusive_total", "total"),
+        ("prepaid_amount", "Vorauszahlungsbetrag", "BT-113", "/totals/prepaid_total", "total"),
+        ("rounding_amount", "Rundungsbetrag", "BT-114", "/totals/rounding", "total"),
+        ("due_payable_amount", "Zahlbetrag", "BT-115", "/totals/payable", "total"),
+    )
+    for source_key, label, location, pointer, scope in total_fields:
+        _validate_decimal_text(
+            findings,
+            totals.get(source_key),
+            title=f"{label} ist ungültig",
+            location=location,
+            json_pointer=pointer,
+            scope=scope,
+            semantic_reference=[location],
+        )
+
+    for tax_index, tax in enumerate(analysis.get("taxes") or []):
+        if not isinstance(tax, dict):
+            continue
+        tax_identifier = clean_text(tax.get("category_code"))
+        for source_key, target_key, label in (
+            ("rate", "rate_percent", "Steuersatz"),
+            ("basis_amount", "taxable_amount", "Steuerbasis"),
+            ("tax_amount", "tax_amount", "Steuerbetrag"),
+        ):
+            _validate_decimal_text(
+                findings,
+                tax.get(source_key),
+                title=f"Steuergruppe {tax_index + 1}: {label} ist ungültig",
+                location=f"Steuergruppe {tax_index + 1}",
+                json_pointer=f"/tax/breakdown/{tax_index}/{target_key}",
+                scope="tax",
+                index=tax_index,
+                identifier=tax_identifier,
+            )
+
+    for line_index, line in enumerate(analysis.get("lines") or []):
+        if not isinstance(line, dict):
+            continue
+        line_identifier = clean_text(line.get("id"))
+        line_location = f"Position {line_identifier or line_index + 1}"
+        for value, pointer, label in (
+            (line.get("gross_price"), f"/lines/{line_index}/price/gross", "Bruttopreis"),
+            (
+                line.get("price_discount_amount") or line.get("price_allowance"),
+                f"/lines/{line_index}/price/discount/amount",
+                "Preisnachlassbetrag",
+            ),
+            (
+                line.get("price_discount_percent") or line.get("price_allowance_percent"),
+                f"/lines/{line_index}/price/discount/percentage",
+                "Preisnachlasssatz",
+            ),
+            (line.get("tax_rate"), f"/lines/{line_index}/tax_rate_percent", "Steuersatz"),
+        ):
+            _validate_decimal_text(
+                findings,
+                value,
+                title=f"{line_location}: {label} ist ungültig",
+                location=line_location,
+                json_pointer=pointer,
+                scope="line",
+                index=line_index,
+                identifier=line_identifier,
+            )
+        period = line.get("period") or {}
+        if isinstance(period, dict):
+            for source_key, target_key, suffix in (
+                ("start", "start_date", "Beginn"),
+                ("start_date", "start_date", "Beginn"),
+                ("end", "end_date", "Ende"),
+                ("end_date", "end_date", "Ende"),
+            ):
+                if source_key not in period:
+                    continue
+                _validate_date_text(
+                    findings,
+                    period.get(source_key),
+                    title=f"{line_location}: Zeitraum-{suffix} ist ungültig",
+                    location=line_location,
+                    json_pointer=f"/lines/{line_index}/period/{target_key}",
+                    scope="line",
+                    index=line_index,
+                    identifier=line_identifier,
+                )
+        for allowance_index, item in enumerate(line.get("allowances_charges") or []):
+            if not isinstance(item, dict):
+                continue
+            for source_key, target_key, label in (
+                ("amount", "amount", "Betrag"),
+                ("basis_amount", "base_amount", "Basisbetrag"),
+                ("percent", "percentage", "Prozentsatz"),
+                ("tax_rate", "tax_rate_percent", "Steuersatz"),
+            ):
+                _validate_decimal_text(
+                    findings,
+                    item.get(source_key),
+                    title=f"{line_location}: {label} des Nachlasses oder Zuschlags ist ungültig",
+                    location=line_location,
+                    json_pointer=f"/lines/{line_index}/allowances_charges/{allowance_index}/{target_key}",
+                    scope="line",
+                    index=line_index,
+                    identifier=line_identifier,
+                )
+
+    for item_index, item in enumerate(analysis.get("header_allowances_charges") or []):
+        if not isinstance(item, dict):
+            continue
+        for source_key, target_key, label in (
+            ("amount", "amount", "Betrag"),
+            ("basis_amount", "base_amount", "Basisbetrag"),
+            ("percent", "percentage", "Prozentsatz"),
+            ("tax_rate", "tax_rate_percent", "Steuersatz"),
+        ):
+            _validate_decimal_text(
+                findings,
+                item.get(source_key),
+                title=f"Nachlass oder Zuschlag {item_index + 1}: {label} ist ungültig",
+                location=f"Nachlass oder Zuschlag {item_index + 1}",
+                json_pointer=f"/allowances_charges/{item_index}/{target_key}",
+                scope="allowance-charge",
+                index=item_index,
+            )
+
+    payment = analysis.get("payment") or {}
+    for term_index, term in enumerate(payment.get("terms") or []):
+        if not isinstance(term, dict):
+            continue
+        _validate_date_text(
+            findings,
+            term.get("due_date"),
+            title=f"Zahlungsbedingung {term_index + 1}: Fälligkeitsdatum ist ungültig",
+            location=f"Zahlungsbedingung {term_index + 1}",
+            json_pointer=f"/payment/terms/{term_index}/due_date",
+            scope="payment",
+            index=term_index,
+        )
+        _validate_decimal_text(
+            findings,
+            term.get("partial_payment_amount"),
+            title=f"Zahlungsbedingung {term_index + 1}: Teilzahlungsbetrag ist ungültig",
+            location=f"Zahlungsbedingung {term_index + 1}",
+            json_pointer=f"/payment/terms/{term_index}/partial_payment",
+            scope="payment",
+            index=term_index,
+        )
+
+    references = analysis.get("references") or {}
+    preceding = references.get("preceding_invoice_documents") or []
+    for reference_index, reference in enumerate(preceding):
+        if not isinstance(reference, dict):
+            continue
+        reference_id = clean_text(reference.get("id"))
+        _validate_date_text(
+            findings,
+            reference.get("issue_date"),
+            title=f"Vorgängerrechnung {reference_index + 1}: Rechnungsdatum ist ungültig",
+            location=f"Vorgängerrechnung {reference_index + 1}",
+            json_pointer=f"/references/preceding_invoices/{reference_index}/issue_date",
+            scope="reference",
+            index=reference_index,
+            identifier=reference_id,
+        )
+
+
 def _check_date_order(
     findings: list[dict],
     earlier_value: str | None,
@@ -254,7 +696,7 @@ def _check_date_order(
         )
 
 
-def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
+def _validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     document = analysis.get("document", {})
     seller = analysis.get("seller", {})
@@ -278,6 +720,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
         "Zahlbetrag fehlt",
         "BT-115",
     )
+    _validate_typed_values(analysis, findings)
 
     type_code = clean_text(document.get("type_code"))
     root_name = clean_text((analysis.get("technical") or {}).get("root_element"))
@@ -419,9 +862,16 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
     computed_line_total = Decimal("0")
     computed_line_total_complete = True
 
-    for index, line in enumerate(lines, start=1):
-        location = f"Position {line.get('id') or index}"
-        line_id = line.get("id")
+    for line_index, line in enumerate(lines):
+        display_ordinal = line_index + 1
+        line_id = clean_text(line.get("id"))
+        location = f"Position {line_id or display_ordinal}"
+        line_occurrence = _occurrence_data(
+            "line",
+            f"/lines/{line_index}",
+            index=line_index,
+            identifier=line_id,
+        )
         if not line_id:
             findings.append(
                 _finding(
@@ -430,6 +880,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Positionsnummer fehlt",
                     "Jede Rechnungsposition benötigt eine Kennung.",
                     location=location,
+                    occurrence=line_occurrence,
                 )
             )
         elif line_id in line_ids:
@@ -441,6 +892,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Positionsnummern müssen innerhalb der Rechnung eindeutig sein.",
                     location=location,
                     actual=line_id,
+                    occurrence=line_occurrence,
                 )
             )
         else:
@@ -454,6 +906,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Artikel- oder Leistungsbezeichnung fehlt",
                     "Die Position enthält weder einen Namen noch eine Beschreibung.",
                     location=location,
+                    occurrence=line_occurrence,
                 )
             )
 
@@ -470,6 +923,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Menge fehlt oder ist ungültig",
                     "Die Positionsmenge ist nicht numerisch auswertbar.",
                     location=location,
+                    occurrence=line_occurrence,
                 )
             )
         if not line.get("unit_code"):
@@ -480,6 +934,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Mengeneinheit fehlt",
                     "Zur Positionsmenge fehlt der unitCode.",
                     location=location,
+                    occurrence=line_occurrence,
                 )
             )
         if price is None:
@@ -490,6 +945,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Nettopreis fehlt oder ist ungültig",
                     "Der Positionspreis ist nicht numerisch auswertbar.",
                     location=location,
+                    occurrence=line_occurrence,
                 )
             )
         if line_total is None:
@@ -500,6 +956,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Positionsnettobetrag fehlt oder ist ungültig",
                     "Der Positionsnettobetrag ist nicht numerisch auswertbar.",
                     location=location,
+                    occurrence=line_occurrence,
                 )
             )
             computed_line_total_complete = False
@@ -525,6 +982,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     location=location,
                     actual=line.get("base_quantity"),
                     expected="endlicher Dezimalwert ohne Komma oder Exponent",
+                    occurrence=line_occurrence,
                 )
             )
         elif base == 0:
@@ -535,6 +993,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Preisbasismenge ist null",
                     "Durch eine Preisbasismenge von null kann der Positionsbetrag nicht berechnet werden.",
                     location=location,
+                    occurrence=line_occurrence,
                 )
             )
         elif (
@@ -558,6 +1017,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                         location=location,
                         actual=money_string(line_total),
                         expected=money_string(expected),
+                        occurrence=line_occurrence,
                     )
                 )
 
@@ -570,6 +1030,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Der angegebene Preis gilt nicht für genau eine Einheit und muss bei Berechnungen entsprechend berücksichtigt werden.",
                     location=location,
                     actual=line.get("base_quantity"),
+                    occurrence=line_occurrence,
                 )
             )
 
@@ -587,6 +1048,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                         location=location,
                         actual=amount_currency,
                         expected=currency,
+                        occurrence=line_occurrence,
                     )
                 )
 
@@ -600,6 +1062,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Umsatzsteuerkategorie fehlt",
                     "Die Position enthält keine Umsatzsteuerkategorie.",
                     location=location,
+                    occurrence=line_occurrence,
                 )
             )
         if category == "S" and (rate is None or rate <= 0):
@@ -611,6 +1074,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     "Für die Steuerkategorie S wird ein positiver Steuersatz erwartet.",
                     location=location,
                     actual=line.get("tax_rate"),
+                    occurrence=line_occurrence,
                 )
             )
         if category == "O" and rate is not None:
@@ -623,6 +1087,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     location=location,
                     actual=line.get("tax_rate"),
                     expected="kein Steuersatz",
+                    occurrence=line_occurrence,
                 )
             )
         elif category in {"Z", "E", "AE", "G", "K"} and rate != Decimal("0"):
@@ -635,6 +1100,7 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
                     location=location,
                     actual=line.get("tax_rate"),
                     expected="0",
+                    occurrence=line_occurrence,
                 )
             )
 
@@ -1025,12 +1491,23 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
 
     technical = analysis.get("technical", {})
     if technical.get("truncated"):
+        time_limited = technical.get("limit_reason") == "time"
         findings.append(
             _finding(
                 "TECH-001",
                 "warning",
-                "Technische Feldliste wurde begrenzt",
-                "Das XML enthält mehr Felder als die konfigurierte Darstellungsgrenze. Das Roh-XML bleibt vollständig erhalten.",
+                (
+                    "Zeitbudget der technischen Feldliste wurde erreicht"
+                    if time_limited
+                    else "Technische Feldliste wurde an der Zeilengrenze beendet"
+                ),
+                (
+                    "Die Erzeugung der technischen Feldliste hat ihr konfiguriertes Zeitbudget ausgeschöpft. "
+                    "Das Roh-XML bleibt vollständig erhalten."
+                    if time_limited
+                    else "Das XML enthält mehr darstellbare Felder als die konfigurierte Zeilengrenze zulässt. "
+                    "Das Roh-XML bleibt vollständig erhalten."
+                ),
                 location="Technischer Anhang",
             )
         )
@@ -1060,3 +1537,10 @@ def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
             "Sie ersetzt keine vollständige XSD-/Schematron-Konformitätsprüfung."
         ),
     }
+
+
+def validate_builtin(analysis: dict[str, Any]) -> dict[str, Any]:
+    precision = _decimal_work_precision(analysis)
+    with localcontext() as context:
+        context.prec = precision
+        return _validate_builtin(analysis)

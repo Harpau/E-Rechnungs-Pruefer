@@ -5,7 +5,12 @@ from copy import deepcopy
 import pytest
 
 from app.analyzer import analyze_bytes
-from app.validators.builtin import validate_builtin
+from app.validators.builtin import (
+    MAX_DECIMAL_CONTEXT_PRECISION,
+    MAX_DECIMAL_DIGITS,
+    _decimal_work_precision,
+    validate_builtin,
+)
 from app.xml_utils import InvoiceInputError
 
 
@@ -181,6 +186,59 @@ def test_builtin_validator_reports_duplicate_line_id():
     assert result["status"] == "invalid"
     assert [finding["id"] for finding in errors] == ["LINE-002"]
     assert errors[0]["actual"] == "1"
+    assert errors[0]["occurrence"] == {
+        "scope": "line",
+        "index": 1,
+        "identifier": "1",
+        "json_pointer": "/lines/1",
+    }
+
+
+@pytest.mark.parametrize(
+    ("container", "field", "value", "missing_rule", "format_rule"),
+    [
+        ("document", "issue_date", "2026-99-99", "REQ-002", "FORMAT-DATE-001"),
+        ("totals", "due_payable_amount", "NaN", "REQ-008", "FORMAT-DECIMAL-001"),
+    ],
+)
+def test_builtin_validator_distinguishes_invalid_required_typed_values_from_missing_values(
+    container,
+    field,
+    value,
+    missing_rule,
+    format_rule,
+):
+    analysis = _valid_analysis()
+    analysis[container][field] = value
+
+    result = validate_builtin(analysis)
+    ids = {finding["id"] for finding in result["findings"]}
+
+    assert result["status"] == "invalid"
+    assert format_rule in ids
+    assert missing_rule not in ids
+    assert "CHECK-000" not in ids
+
+
+@pytest.mark.parametrize(
+    ("container", "field", "value"),
+    [
+        ("document", "due_date", "kein Datum"),
+        ("document", "delivery_date", "2026-02-30"),
+        ("totals", "allowance_total", "1e2"),
+        ("totals", "tax_total", "Infinity"),
+    ],
+)
+def test_present_invalid_optional_typed_values_never_disappear_as_clear(container, field, value):
+    analysis = _valid_analysis()
+    analysis[container][field] = value
+
+    result = validate_builtin(analysis)
+    ids = {finding["id"] for finding in result["findings"]}
+
+    assert result["status"] == "invalid"
+    assert {"FORMAT-DATE-001", "FORMAT-DECIMAL-001"} & ids
+    assert "CHECK-000" not in ids
 
 
 def test_builtin_validator_reports_amount_currency_and_bic_formats():
@@ -284,6 +342,7 @@ def test_invalid_line_allowance_does_not_cause_a_misleading_line_total_error(val
     result = validate_builtin(analysis)
     ids = {finding["id"] for finding in result["findings"]}
 
+    assert "FORMAT-DECIMAL-001" in ids
     assert "CALC-LINE-001" not in ids
 
 
@@ -314,6 +373,7 @@ def test_invalid_optional_total_does_not_cause_a_misleading_dependent_error(
     result = validate_builtin(analysis)
     ids = {finding["id"] for finding in result["findings"]}
 
+    assert "FORMAT-DECIMAL-001" in ids
     assert dependent_rule not in ids
 
 
@@ -334,4 +394,95 @@ def test_invalid_listed_header_allowance_does_not_cause_a_misleading_sum_error()
     result = validate_builtin(analysis)
     ids = {finding["id"] for finding in result["findings"]}
 
+    assert "FORMAT-DECIMAL-001" in ids
     assert "CALC-HDR-003" not in ids
+
+
+def test_builtin_calculations_keep_large_finite_decimal_values_exact() -> None:
+    analysis = _valid_analysis()
+    amount = f"{'9' * 128}.00"
+    analysis["lines"][0].update({"quantity": "1", "price": amount, "line_total": amount})
+    analysis["totals"].update(
+        {
+            "line_total": amount,
+            "tax_basis_total": amount,
+            "tax_total": "0.00",
+            "grand_total": amount,
+            "due_payable_amount": amount,
+        }
+    )
+    analysis["taxes"] = []
+
+    result = validate_builtin(analysis)
+
+    assert result["status"] == "ok"
+    assert [finding["id"] for finding in result["findings"]] == ["CHECK-000"]
+
+
+def test_decimal_context_is_hard_bounded_and_rejects_only_oversized_operands() -> None:
+    analysis = _valid_analysis()
+    repeated_line = deepcopy(analysis["lines"][0])
+    repeated_line["price"] = "9" * 128
+    analysis["lines"] = [repeated_line] * 10_000
+
+    assert _decimal_work_precision(analysis) < 512
+
+    analysis["lines"] = [repeated_line]
+    analysis["lines"][0]["price"] = "9" * MAX_DECIMAL_DIGITS
+
+    assert _decimal_work_precision(analysis) <= MAX_DECIMAL_CONTEXT_PRECISION
+
+    analysis["lines"][0]["price"] = "9" * (MAX_DECIMAL_DIGITS + 1)
+    with pytest.raises(InvoiceInputError, match=rf"{MAX_DECIMAL_DIGITS} Dezimalziffern"):
+        _decimal_work_precision(analysis)
+
+
+def test_three_wide_decimal_operands_stay_inside_the_bounded_context() -> None:
+    analysis = _valid_analysis()
+    quantity = "9" * 100
+    price = "9" * 100
+    base_quantity = f".{('0' * 99)}1"
+    analysis["lines"][0].update(
+        {
+            "quantity": quantity,
+            "price": price,
+            "base_quantity": base_quantity,
+            "line_total": "0.00",
+        }
+    )
+    analysis["totals"].update(
+        {
+            "line_total": "0.00",
+            "tax_basis_total": "0.00",
+            "tax_total": "0.00",
+            "grand_total": "0.00",
+            "due_payable_amount": "0.00",
+        }
+    )
+    analysis["taxes"] = []
+
+    result = validate_builtin(analysis)
+
+    finding = next(item for item in result["findings"] if item["id"] == "CALC-LINE-001")
+    assert finding["expected"].endswith(".00")
+    assert len(finding["expected"].partition(".")[0]) == 300
+    assert _decimal_work_precision(analysis) <= MAX_DECIMAL_CONTEXT_PRECISION
+
+
+@pytest.mark.parametrize(
+    ("limit_reason", "expected", "unexpected"),
+    [
+        ("rows", "Zeilengrenze", "Zeitbudget"),
+        ("time", "Zeitbudget", "Zeilengrenze"),
+    ],
+)
+def test_technical_finding_describes_the_actual_limit_reason(limit_reason, expected, unexpected) -> None:
+    analysis = _valid_analysis()
+    analysis["technical"] = {"truncated": True, "limit_reason": limit_reason}
+
+    result = validate_builtin(analysis)
+    finding = next(item for item in result["findings"] if item["id"] == "TECH-001")
+    shown = f"{finding['title']} {finding['message']}"
+
+    assert expected in shown
+    assert unexpected not in shown

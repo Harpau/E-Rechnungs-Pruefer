@@ -17,10 +17,14 @@ from app.desktop_security import (
     desktop_bootstrap_url,
     validate_api_token,
 )
+from app.ui_contract import UI_REVISION_HEADER
 
 
 def _desktop_client(
-    token: str | None = "test-token", port: int | None = 8765, api_token: str | None = None
+    token: str | None = "test-token",
+    port: int | None = 8765,
+    api_token: str | None = None,
+    ui_revision: str | None = None,
 ) -> TestClient:
     desktop_app = FastAPI()
 
@@ -36,7 +40,33 @@ def _desktop_client(
     async def action():
         return {"done": True}
 
-    desktop_app.add_middleware(DesktopSessionMiddleware, token=token, port=port, api_token=api_token)
+    @desktop_app.api_route("/api/analyze", methods=["GET", "POST"])
+    async def analyze():
+        return {"done": True}
+
+    @desktop_app.api_route("/api/xml", methods=["GET", "POST"])
+    async def export_xml():
+        return {"done": True}
+
+    @desktop_app.api_route("/api/report", methods=["GET", "POST"])
+    async def report():
+        return {"done": True}
+
+    @desktop_app.api_route("/api/report/pdf", methods=["GET", "POST"])
+    async def pdf_report():
+        return {"done": True}
+
+    @desktop_app.get("/api/examples/{name}")
+    async def example(name: str):
+        return {"name": name}
+
+    desktop_app.add_middleware(
+        DesktopSessionMiddleware,
+        token=token,
+        port=port,
+        api_token=api_token,
+        ui_revision=ui_revision,
+    )
     return TestClient(desktop_app, base_url=f"http://127.0.0.1:{port or 8765}")
 
 
@@ -47,9 +77,14 @@ def test_desktop_middleware_is_dormant_without_token() -> None:
     async def index():
         return {"ok": True}
 
-    app.add_middleware(DesktopSessionMiddleware)
+    @app.post("/api/analyze")
+    async def analyze():
+        return {"ok": True}
+
+    app.add_middleware(DesktopSessionMiddleware, ui_revision="a" * 64)
 
     assert TestClient(app).get("/").status_code == 200
+    assert TestClient(app).post("/api/analyze").status_code == 200
 
 
 def test_health_is_available_before_bootstrap() -> None:
@@ -57,6 +92,21 @@ def test_health_is_available_before_bootstrap() -> None:
 
     assert client.get("/api/health").status_code == 200
     assert client.get("/").status_code == 403
+
+
+def test_expired_browser_session_requires_reopening_the_application() -> None:
+    client = _desktop_client(ui_revision="a" * 64)
+    client.cookies.set(DESKTOP_COOKIE_NAME, "token-der-vorherigen-laufzeit")
+
+    response = client.post(
+        "/api/analyze",
+        headers={UI_REVISION_HEADER: "b" * 64},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["type"] == "desktop_session_error"
+    assert "schließen Sie dieses Fenster" in response.json()["detail"]
+    assert "öffnen Sie den E-Rechnungs-Prüfer erneut" in response.json()["detail"]
 
 
 def test_health_still_requires_an_allowed_host() -> None:
@@ -81,7 +131,83 @@ def test_bootstrap_sets_strict_session_cookie_and_redirects() -> None:
     assert f"{DESKTOP_COOKIE_NAME}=test-token" in cookie
     assert "HttpOnly" in cookie
     assert "SameSite=strict" in cookie
+    assert response.headers["cache-control"] == "no-store"
     assert client.get("/").status_code == 200
+
+
+def test_bootstrap_uses_revisioned_entry_url_when_configured() -> None:
+    revision = "a" * 64
+    client = _desktop_client(ui_revision=revision)
+
+    response = client.get("/desktop/bootstrap?token=test-token", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/?ui={revision}"
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/analyze"),
+        ("POST", "/api/xml"),
+        ("POST", "/api/report"),
+        ("POST", "/api/report/pdf"),
+        ("GET", "/api/examples/cii"),
+    ],
+)
+def test_browser_ui_api_requires_the_current_revision(method: str, path: str) -> None:
+    revision = "a" * 64
+    client = _desktop_client(ui_revision=revision)
+    client.get("/desktop/bootstrap?token=test-token")
+
+    missing = client.request(method, path)
+    outdated = client.request(method, path, headers={UI_REVISION_HEADER: "b" * 64})
+    accepted = client.request(method, path, headers={UI_REVISION_HEADER: revision})
+
+    expected = {
+        "detail": (
+            "Die geöffnete Oberfläche gehört zu einer anderen Anwendungsversion. "
+            "Bitte schließen Sie dieses Fenster und öffnen Sie den E-Rechnungs-Prüfer erneut."
+        ),
+        "type": "ui_version_mismatch",
+    }
+    assert missing.status_code == 409
+    assert missing.json() == expected
+    assert missing.headers[UI_REVISION_HEADER] == revision
+    assert missing.headers["cache-control"] == "no-store"
+    assert outdated.status_code == 409
+    assert outdated.json() == expected
+    assert accepted.status_code == 200
+
+
+def test_ui_revision_does_not_weaken_session_origin_or_bearer_checks() -> None:
+    revision = "a" * 64
+    api_token = "api-token-abcdefghijklmnopqrstuvwxyz"
+    client = _desktop_client(api_token=api_token, ui_revision=revision)
+    revision_header = {UI_REVISION_HEADER: revision}
+
+    unauthenticated = client.post("/api/analyze", headers=revision_header)
+    bearer = client.post(
+        "/api/analyze",
+        headers={"authorization": f"Bearer {api_token}", UI_REVISION_HEADER: "outdated"},
+    )
+    invalid_bearer = client.post(
+        "/api/analyze",
+        headers={"authorization": "Bearer falsch", **revision_header},
+    )
+
+    client.get("/desktop/bootstrap?token=test-token")
+    cross_origin = client.post(
+        "/api/analyze",
+        headers={"origin": "https://example.test", **revision_header},
+    )
+
+    assert unauthenticated.status_code == 403
+    assert bearer.status_code == 200
+    assert invalid_bearer.status_code == 403
+    assert cross_origin.status_code == 403
+    assert cross_origin.json()["type"] == "desktop_session_error"
 
 
 def test_bootstrap_rejects_invalid_token_and_host() -> None:

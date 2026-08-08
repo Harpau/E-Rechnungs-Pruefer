@@ -83,7 +83,7 @@ class SemanticReference(ContractModel):
 class FindingOccurrence(ContractModel):
     scope: OccurrenceScope
     index: int | None = Field(default=None, ge=0)
-    identifier: str | None = Field(default=None, max_length=500)
+    identifier: str | None = Field(default=None, max_length=1000)
     json_pointer: str | None = Field(default=None, max_length=2000)
 
 

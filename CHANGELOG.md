@@ -4,12 +4,60 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
-### Automatisierung
+## 2.0.2 – 2026-08-08
 
+### Windows-Oberfläche und KoSIT-Ausführung
+
+- HTML, JavaScript und CSS werden über eine aus Anwendungsversion, Analyseschema und Assetinhalt berechnete
+  UI-Revision ausgeliefert. Die Startseite ist nicht cachebar, statische Dateien besitzen inhaltsadressierte
+  Pfade, und veraltete offene Browser-Tabs werden kontrolliert mit `409 ui_version_mismatch` oder nach einem
+  Prozessneustart mit `403 desktop_session_error` samt Wiederöffnungshinweis beendet. Damit
+  kann nach einem Update kein gemischter HTML-/JavaScript-Stand mehr den bisherigen Fehler
+  `Cannot set properties of null` bei einer KoSIT-Prüfung auslösen.
+- Desktop- und Dienst-Pakettests prüfen den Revisionsvertrag, die Cache-Header, einen veralteten Browseraufruf
+  und weiterhin einen davon unabhängigen Bearer-API-Aufruf. Die verbindliche manuelle Abnahmematrix umfasst
+  Windows 10 und Windows 11, Desktop und Dienst, Neuinstallationen sowie Upgrades von 1.5.0 und 2.0.1.
+
+### Prüfung und Analyseschema 2
+
+- Vorhandene, aber unparsebare Pflichtwerte wie ein ungültiges Rechnungsdatum oder `NaN` als Zahlbetrag führen
+  nun zu expliziten Formatfehlern. Sie können beim Aufbau des öffentlichen Modells nicht mehr als `null`
+  verschwinden und gleichzeitig den internen Status `clear` erzeugen.
+- Befundvorkommen trennen den nullbasierten Arrayindex einer Rechnungsposition von ihrer fachlichen Kennung.
+  Eine Position mit der Kennung `42` verweist daher korrekt auf `/lines/0` und behält `42` separat als
+  `identifier`.
+- Rechnungswerte oberhalb der dokumentierten Feldlängen führen kontrolliert und ohne Rückgabe des Werts zu
+  HTTP 422 `invoice_input_error`; andere interne Modellfehler bleiben weiterhin sichtbar und werden nicht
+  pauschal als Eingabefehler maskiert.
+- Große Dezimalwerte innerhalb des begrenzten Verarbeitungsbudgets bleiben bei Berechnungen sowie in API-,
+  HTML- und PDF-Ausgaben exakt. Finanzielle Operanden mit mehr als 4.096 Ziffern werden kontrolliert und ohne
+  Rückgabe des Werts mit HTTP 422 abgewiesen, statt einen internen Fehler auszulösen.
+
+### XML-Sicherheit und Parser
+
+- Ein vorgeschaltetes XML-Strukturbudget begrenzt Elemente, Attribute, Namespace-Deklarationen, Kommentare und
+  Processing Instructions vor dem Aufbau des eigentlichen XML-Baums. Die technische Feldliste verwendet
+  lineare Geschwisterzähler sowie ein eigenes monotones Zeitbudget und weist Zeilen- und Zeitbegrenzungen im
+  Verarbeitungsstatus getrennt aus.
+- UBL- und CII-Parser wählen Fachfelder ausschließlich über die vorgeschriebenen Namespace-URIs aus. Korrekte,
+  frei gewählte Präfixe bleiben zulässig; gleichnamige Elemente aus fremden Child-Namespaces werden nicht mehr
+  als Rechnungsdaten interpretiert und bleiben im technischen Anhang erhalten.
+- Direkte Textwerte bleiben auch dann erhalten, wenn XML-Kommentare oder Processing Instructions den Text
+  aufteilen. Die zulässigen direkten CII-Varianten für Datums- und Indikatorwerte werden weiterhin erkannt,
+  ohne dabei gleichnamige Inhalte aus fremden Wrapper-Namespaces zu übernehmen.
+
+### Abhängigkeiten, Automatisierung und Releaseprozess
+
+- `pypdf` ist in Laufzeitdeklarationen und Windows-Release-Lock mindestens beziehungsweise exakt auf 6.15.0
+  aktualisiert. Damit enthält das neue Windows-Paket die Korrekturen für CVE-2026-71852 und CVE-2026-71870.
 - Der Node-RED-Mailflow behandelt `official=unsupported` auch bei verpflichtender offizieller Prüfung als
   qualifizierten Bericht und verarbeitet anschließend weitere Kandidaten. Der Status wird weder als offizielle
   Annahme noch als offizielle Ablehnung ausgegeben; die Behandlung von `not-requested`, `unavailable` und
-  `indeterminate` bleibt unverändert.
+  `indeterminate` bleibt unverändert. Bereits importierte Flow-Kopien müssen manuell aktualisiert oder neu
+  importiert werden.
+- Signierte Vorab-Artefakte werden 14 Tage aufbewahrt. Ein Tag-Lauf erzeugt nach allen Prüfungen ausschließlich
+  einen GitHub-Release-Draft; die exakt taggebauten und signierten Dateien müssen vor einer manuellen
+  Veröffentlichung erneut geprüft und protokolliert werden.
 
 ## 2.0.1 – 2026-08-06
 

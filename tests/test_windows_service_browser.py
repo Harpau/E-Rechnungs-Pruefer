@@ -70,6 +70,7 @@ def test_service_bootstrap_is_short_lived_single_use_and_not_the_bearer_token() 
     assert api_token not in first.headers["set-cookie"]
     assert "HttpOnly" in first.headers["set-cookie"]
     assert "SameSite=strict" in first.headers["set-cookie"]
+    assert first.headers["cache-control"] == "no-store"
     assert replay.status_code == 403
     assert client.get("/").status_code == 200
 

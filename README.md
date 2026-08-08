@@ -312,6 +312,8 @@ Umgebungsvariablen können in `.env` oder `.env.kosit` stehen. Beide Dateien wer
 | `PORT` | `8080` | HTTP-Port |
 | `MAX_UPLOAD_BYTES` | `26214400` | maximale Uploadgröße |
 | `MAX_TECHNICAL_ROWS` | `100000` | maximale tabellarische XML-Einträge |
+| `MAX_XML_STRUCTURE_ITEMS` | `100000` | harte Obergrenze für XML-Elemente, Attribute, Namespaces, Kommentare und Processing Instructions |
+| `MAX_TECHNICAL_SECONDS` | `5.0` | monotones Zeitbudget nur für die technische Tabellenbildung |
 | `KOSIT_ENABLED` | `true` | KoSIT-Anbindung aktivieren |
 | `KOSIT_JAVA_BIN` | `java` | Java-Befehl |
 | `KOSIT_VALIDATOR_JAR` | automatisch | Pfad zum Standalone-JAR |
@@ -336,11 +338,14 @@ Browser noch an JavaScript übergeben; API-Automatisierungen verwenden es weiter
 - Verarbeitung des KoSIT-Aufrufs in einem temporären Verzeichnis
 - Ablehnung von DTD- und ENTITY-Deklarationen
 - deaktivierte externe Entitäten, DTD-Nachladung und XML-Netzwerkzugriffe
-- begrenzte Upload- und Darstellungsgrößen
+- begrenzte Upload-, XML-Struktur- und Darstellungsgrößen sowie lineare technische XML-Pfade
 - bereinigte Download-Dateinamen, Sicherheitsheader und Content Security Policy
 - persistentes Bearer-Token für `/api/*` in den installierten Windows-Modi; `/api/health` bleibt die öffentliche
   Ausnahme
 - vom API-Token getrennte Browsersitzung sowie Host- und Origin-Prüfung im Windows-Desktop-Modus
+- inhaltsadressierte UI-Assets und ein Revisionsvertrag, der alte offene Tabs kontrolliert mit HTTP 409 oder
+  nach einem Prozessneustart mit HTTP 403 samt Wiederöffnungshinweis stoppt; Bearer-API-Clients bleiben davon
+  ausgenommen
 - geschützte ProgramData-DACLs, dienstspezifischer SID und einmaliger, authentifizierter
   IPC-Browserbootstrap im Windows-Dienstmodus
 - nicht privilegierter Benutzer im Docker-Image

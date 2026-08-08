@@ -172,6 +172,10 @@ Die Bezeichnung `BG-16` in Findings ist die fachliche Referenz auf die EN-16931-
 `occurrence.json_pointer` und für eine konkrete XML-Fundstelle `xml_location.path` beziehungsweise
 `xml_location.line`.
 
+Der Flow verwendet Bearer-Authentifizierung und sendet bewusst keinen `X-Einvoice-UI-Revision`-Header. Dieser
+Header koppelt ausschließlich cookiegeschützte Browser-Tabs an die ausgelieferte Oberfläche und ist kein Teil
+des Node-RED- oder allgemeinen API-Vertrags.
+
 Der HTTP-Client erhält für jeden Versuch über `msg.requestTimeout` eine Zeitgrenze von 90 Sekunden. Die
 Flow-Vorlage verlässt sich dabei bewusst nicht auf ein gleichnamiges, von aktuellen Node-RED-Versionen nicht
 ausgewertetes Editor-Feld. HTTP-Weiterleitungen sind sowohl im Request-Knoten als auch pro Nachricht

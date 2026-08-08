@@ -199,6 +199,31 @@ def test_browser_report_actions_use_explicit_scopes_and_wait_for_the_report() ->
     assert "}, 1200);" not in script
 
 
+def test_browser_ui_declares_and_sends_one_revision_contract() -> None:
+    script = _script()
+    template = _template()
+
+    assert 'data-ui-revision="{{ ui_revision }}"' in template
+    assert "{{ static_url_prefix }}/app.js" in template
+    assert "{{ static_url_prefix }}/styles.css" in template
+    assert "const UI_REVISION_HEADER = 'X-Einvoice-UI-Revision';" in script
+    assert "document.currentScript?.dataset.uiRevision" in script
+    assert script.count("fetch(") == 1
+    assert script.count("uiFetch(") == 5
+
+    required_ids_match = re.search(
+        r"const REQUIRED_UI_IDS = Object\.freeze\(\[(?P<ids>.*?)\]\);",
+        script,
+        flags=re.DOTALL,
+    )
+    assert required_ids_match is not None
+    declared_ids = set(re.findall(r"'([A-Za-z0-9_-]+)'", required_ids_match.group("ids")))
+    selected_ids = set(re.findall(r"\$\('#([A-Za-z0-9_-]+)'\)", script))
+    template_ids = set(re.findall(r'id="([A-Za-z0-9_-]+)"', template))
+    assert selected_ids <= declared_ids
+    assert declared_ids <= template_ids
+
+
 def test_direct_browser_print_shows_the_readable_report_scope() -> None:
     styles = _styles()
     print_styles = styles.split("@media print", 1)[1].split("[hidden]", 1)[0]

@@ -152,7 +152,7 @@ abgeschlossener Verarbeitung weiterhin einen erfolgreichen Berichts-Response erh
 |---|---|---|
 | `2xx` mit Syntax `CII` oder `UBL` | erfolgreich erkannte E-Rechnung | Schema prüfen und die drei Bewertungsachsen getrennt routen |
 | `2xx` mit Syntax `UNKNOWN` | terminaler Kandidatenfehler | Kandidat ist keine unterstützte E-Rechnung; weitere Kandidaten prüfen |
-| `413` oder `422` | terminaler Kandidatenfehler | Kandidat unzulässig, zu groß, unlesbar, unsicher oder ohne Rechnungs-XML; weitere Kandidaten prüfen |
+| `413` oder `422` | terminaler Kandidatenfehler | Kandidat unzulässig, strukturell oder in einem öffentlichen Feld zu groß, unlesbar, unsicher oder ohne Rechnungs-XML; weitere Kandidaten prüfen |
 | `400`, `404` oder `405` | Integrations- oder Konfigurationsfehler | nicht automatisch wiederholen; in technischen Fehlerpfad geben |
 | `401` oder `403` | Authentifizierungs- oder Berechtigungsfehler | nicht automatisch wiederholen; Zugangskonfiguration korrigieren |
 | `408`, `429` oder `5xx` | vorübergehender Betriebsfehler | begrenzt wiederholen |
@@ -162,6 +162,10 @@ abgeschlossener Verarbeitung weiterhin einen erfolgreichen Berichts-Response erh
 Bei einem zukünftigen API-Fehlerformat SOLL `detail` eine deutsche, für Menschen geeignete Beschreibung und
 `type` einen stabilen maschinenlesbaren Fehlercode enthalten. Der Flow DARF fachliche Entscheidungen nicht durch
 Textsuche in `detail` treffen.
+
+Der Browser-interne Header `X-Einvoice-UI-Revision` gehört nicht zum Automatisierungsvertrag. Ein korrekt
+Bearer-authentifizierter Node-RED-Aufruf sendet ihn nicht und bleibt damit von Browsercache- und
+Alt-Tab-Prüfungen unabhängig.
 
 ## Auswahl und Behandlung von Mailanhängen
 

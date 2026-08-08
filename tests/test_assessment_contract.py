@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
+from app.analysis_builder import _only_string_too_long_errors
 from app.api_models import (
     Address,
     AllowanceCharge,
@@ -164,6 +165,27 @@ def test_contract_models_reject_extra_fields(model: type, payload: dict) -> None
 def test_schema_version_is_literal_two() -> None:
     with pytest.raises(ValidationError):
         AnalysisResponse(schema_version=1)
+
+
+def test_finding_occurrence_identifier_matches_invoice_line_identifier_limit() -> None:
+    occurrence = FindingOccurrence(scope=OccurrenceScope.LINE, identifier="X" * 1000)
+
+    assert occurrence.identifier == "X" * 1000
+    with pytest.raises(ValidationError):
+        FindingOccurrence(scope=OccurrenceScope.LINE, identifier="X" * 1001)
+
+
+def test_only_string_too_long_errors_are_safe_to_translate_to_input_errors() -> None:
+    with pytest.raises(ValidationError) as length_error:
+        DocumentModel(id="X" * 1001)
+    with pytest.raises(ValidationError) as index_error:
+        FindingOccurrence(scope=OccurrenceScope.LINE, index=-1)
+    with pytest.raises(ValidationError) as mixed_error:
+        DocumentModel.model_validate({"id": "X" * 1001, "unexpected": True})
+
+    assert _only_string_too_long_errors(length_error.value) is True
+    assert _only_string_too_long_errors(index_error.value) is False
+    assert _only_string_too_long_errors(mixed_error.value) is False
 
 
 def test_technical_xml_representation_preserves_boundary_whitespace() -> None:

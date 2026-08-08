@@ -12,6 +12,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.types import ASGIApp
 
+from .ui_contract import UI_REVISION_HEADER, is_ui_revision_required
+
 DESKTOP_TOKEN_ENV = "EINVOICE_DESKTOP_TOKEN"
 DESKTOP_PORT_ENV = "EINVOICE_DESKTOP_PORT"
 API_TOKEN_ENV = "EINVOICE_API_TOKEN"
@@ -24,6 +26,14 @@ SERVICE_BOOTSTRAP_TTL_SECONDS = 60
 SERVICE_BROWSER_SESSION_TTL_SECONDS = 30 * 60
 MAX_PENDING_SERVICE_BOOTSTRAPS = 32
 MAX_SERVICE_BROWSER_SESSIONS = 128
+UI_REVISION_MISMATCH_MESSAGE = (
+    "Die geöffnete Oberfläche gehört zu einer anderen Anwendungsversion. "
+    "Bitte schließen Sie dieses Fenster und öffnen Sie den E-Rechnungs-Prüfer erneut."
+)
+BROWSER_SESSION_EXPIRED_MESSAGE = (
+    "Diese lokale Sitzung ist nicht mehr autorisiert. "
+    "Bitte schließen Sie dieses Fenster und öffnen Sie den E-Rechnungs-Prüfer erneut."
+)
 
 
 class OneTimeBrowserSessions:
@@ -161,12 +171,14 @@ class DesktopSessionMiddleware:
         port: int | None = None,
         api_token: str | None = None,
         browser_sessions: OneTimeBrowserSessions | None = None,
+        ui_revision: str | None = None,
     ) -> None:
         self.app = app
         self.token = token
         self.port = port
         self.api_token = api_token
         self.browser_sessions = browser_sessions
+        self.ui_revision = ui_revision
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http" or not (self.token or self.api_token or self.browser_sessions):
@@ -200,7 +212,7 @@ class DesktopSessionMiddleware:
         if self.browser_sessions is not None:
             supplied = request.cookies.get(DESKTOP_COOKIE_NAME, "")
             if not self.browser_sessions.session_is_valid(supplied):
-                return self._forbidden(request, "Diese lokale Sitzung ist nicht autorisiert.")
+                return self._forbidden(request, BROWSER_SESSION_EXPIRED_MESSAGE)
         elif not token:
             if request.url.path.startswith("/api/") and self.api_token:
                 return self._forbidden(request, "Das API-Zugriffstoken fehlt.")
@@ -210,10 +222,14 @@ class DesktopSessionMiddleware:
         else:
             supplied = request.cookies.get(DESKTOP_COOKIE_NAME, "")
             if not _tokens_match(supplied, token):
-                return self._forbidden(request, "Diese lokale Sitzung ist nicht autorisiert.")
+                return self._forbidden(request, BROWSER_SESSION_EXPIRED_MESSAGE)
 
         if request.method not in {"GET", "HEAD", "OPTIONS"} and not self._origin_is_allowed(request):
             return self._forbidden(request, "Der Ursprung der Anfrage ist nicht zulässig.")
+        if self.ui_revision is not None and is_ui_revision_required(request.url.path):
+            supplied_revision = request.headers.get(UI_REVISION_HEADER, "")
+            if not _tokens_match(supplied_revision, self.ui_revision):
+                return self._ui_revision_mismatch()
         return None
 
     def _bearer_is_allowed(self, authorization: str) -> bool:
@@ -248,7 +264,7 @@ class DesktopSessionMiddleware:
         if not _tokens_match(supplied, token):
             return self._forbidden(request, "Der Startlink ist ungültig oder abgelaufen.")
 
-        response = RedirectResponse(url="/", status_code=HTTPStatus.SEE_OTHER)
+        response = RedirectResponse(url=self._entry_path(), status_code=HTTPStatus.SEE_OTHER)
         response.set_cookie(
             DESKTOP_COOKIE_NAME,
             token,
@@ -269,7 +285,7 @@ class DesktopSessionMiddleware:
             return self._forbidden(request, "Der Startlink ist ungültig oder abgelaufen.")
         assert broker is not None
 
-        response = RedirectResponse(url="/", status_code=HTTPStatus.SEE_OTHER)
+        response = RedirectResponse(url=self._entry_path(), status_code=HTTPStatus.SEE_OTHER)
         response.set_cookie(
             DESKTOP_COOKIE_NAME,
             session,
@@ -282,6 +298,23 @@ class DesktopSessionMiddleware:
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
+
+    def _entry_path(self) -> str:
+        return f"/?ui={self.ui_revision}" if self.ui_revision is not None else "/"
+
+    def _ui_revision_mismatch(self) -> Response:
+        assert self.ui_revision is not None
+        return JSONResponse(
+            status_code=HTTPStatus.CONFLICT,
+            content={
+                "detail": UI_REVISION_MISMATCH_MESSAGE,
+                "type": "ui_version_mismatch",
+            },
+            headers={
+                "Cache-Control": "no-store",
+                UI_REVISION_HEADER: self.ui_revision,
+            },
+        )
 
     @staticmethod
     def _forbidden(request: Request, message: str) -> Response:

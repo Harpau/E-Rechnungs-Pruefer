@@ -90,7 +90,9 @@ jobs:
       - name: API, PDF, KoSIT, settings and CLI integration tests
         run: >-
           python -m pytest tests/test_api.py tests/test_pdf.py tests/test_kosit.py
-          tests/test_settings.py tests/test_cli.py tests/test_desktop_security.py tests/test_windows_launcher.py
+          tests/test_settings.py tests/test_xml_utils.py tests/test_parser_namespaces.py tests/test_validation.py
+          tests/test_analysis_schema_v2.py tests/test_assessment_contract.py tests/test_ui_contract.py
+          tests/test_frontend_schema_v2.py tests/test_cli.py tests/test_desktop_security.py tests/test_windows_launcher.py
           tests/test_windows_components.py tests/test_api_service_mode.py tests/test_windows_service_browser.py
           tests/test_windows_service_config.py tests/test_windows_service_runtime.py
           tests/test_windows_service_metadata.py
