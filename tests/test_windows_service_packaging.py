@@ -1088,17 +1088,61 @@ def test_mode_exclusion_test_proves_manual_switch_and_no_mutation_on_rejection()
     assert "[Threading.Mutex]::OpenExisting($Name)" in wait_for_setup_release
     assert "$Mutex.WaitOne($Seconds * 1000)" in wait_for_setup_release
     assert "catch [Threading.AbandonedMutexException]" in wait_for_setup_release
+    bounded_stop = script[script.index("function Stop-OwnedProcessTreeBounded") : script.index("function Invoke-Setup")]
+    for expected in (
+        "[Diagnostics.Process]$Process",
+        "[ValidateRange(1, 60)]",
+        "[int]$Seconds = 10",
+        "$Process.Refresh()",
+        "$Process.HasExited",
+        "$Process.Kill($true)",
+        "$Process.WaitForExit($Seconds * 1000)",
+        "$TreeKillRequested",
+        "$MainProcessExited",
+    ):
+        assert expected in bounded_stop
+    assert "$_" not in bounded_stop
     invoke_setup = script[script.index("function Invoke-Setup") : script.index("function Invoke-SetupExpectedFailure")]
     invoke_expected_failure = script[
-        script.index("function Invoke-SetupExpectedFailure") : script.index("function Wait-ServiceState")
+        script.index("function Invoke-SetupExpectedFailure") : script.index("function Resolve-DiagnosticProfilePath")
     ]
     assert invoke_setup.index("$Process.WaitForExit(600000)") < invoke_setup.index("Wait-SetupUninstallMutexReleased")
-    assert invoke_expected_failure.index("$Process.WaitForExit(600000)") < invoke_expected_failure.index(
+    assert invoke_expected_failure.index("$Process.WaitForExit(180000)") < invoke_expected_failure.index(
         "Wait-SetupUninstallMutexReleased"
     )
     assert "$ExitCode -eq 0" in invoke_expected_failure
     assert "Get-SanitizedInnoLogTail" in invoke_setup
     assert "Get-SanitizedInnoLogTail" in invoke_expected_failure
+    assert "Stop-OwnedProcessTreeBounded -Process $Process" in invoke_expected_failure
+    assert "Wait-SetupUninstallMutexReleased -Seconds 10" in invoke_expected_failure
+    assert "Diagnosezeitlimit von 180 Sekunden" in invoke_expected_failure
+    assert "Prozessbeendigung: $TerminationState" in invoke_expected_failure
+    assert "Installationssperre: $MutexState" in invoke_expected_failure
+    assert "Begrenzter, maskierter Inno-Logauszug" in invoke_expected_failure
+    for sensitive_diagnostic in (
+        "$Process.Id",
+        "$Process.Path",
+        "$Process.StartInfo",
+        "Write-Warning",
+        "Write-Host",
+        "$_",
+    ):
+        assert sensitive_diagnostic not in invoke_expected_failure
+    timeout_branch = invoke_expected_failure[
+        invoke_expected_failure.index("if (-not $Process.WaitForExit(180000))") : invoke_expected_failure.index(
+            "$ExitCode = [int]$Process.ExitCode"
+        )
+    ]
+    assert (
+        timeout_branch.index("Stop-OwnedProcessTreeBounded")
+        < timeout_branch.index("Wait-SetupUninstallMutexReleased -Seconds 10")
+        < timeout_branch.index("Get-SanitizedInnoLogTail -LogPath $LogPath")
+        < timeout_branch.index("throw")
+    )
+    assert "$Process.WaitForExit(600000)" not in invoke_expected_failure
+    assert script.count("Stop-OwnedProcessTreeBounded -Process") == 3
+    assert "$Process.WaitForExit()" not in script
+    assert "$DesktopProcess.WaitForExit()" not in script
 
     wait_for_desktop_cleanup = script[
         script.index("function Wait-DesktopFootprintsAbsent") : script.index("function Get-DiagnosticPathMasks")

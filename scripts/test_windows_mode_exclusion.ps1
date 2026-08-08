@@ -195,6 +195,49 @@ function Get-InnoLogPath {
     return ""
 }
 
+function Stop-OwnedProcessTreeBounded {
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [Diagnostics.Process]$Process,
+        [ValidateRange(1, 60)]
+        [int]$Seconds = 10
+    )
+    if ($null -eq $Process) {
+        return "nicht vorhanden"
+    }
+    try {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            return "Hauptprozess bereits beendet"
+        }
+    } catch {
+        # Continue with the owned process handle; diagnostics stay categorical.
+    }
+    $TreeKillRequested = $false
+    try {
+        $Process.Kill($true)
+        $TreeKillRequested = $true
+    } catch {
+        # A partial tree-kill may still terminate the main process.
+    }
+    $MainProcessExited = $false
+    try {
+        if ($Process.WaitForExit($Seconds * 1000)) {
+            $MainProcessExited = $true
+        }
+    } catch {
+        # Do not expose raw process errors or wait without a bound.
+    }
+    if ($TreeKillRequested -and $MainProcessExited) {
+        return "Prozessbaumbeendigung angefordert; Hauptprozess innerhalb der Nachfrist beendet"
+    }
+    if ($MainProcessExited) {
+        return "Prozessbaumbeendigung unbestätigt; Hauptprozess innerhalb der Nachfrist beendet"
+    }
+    return "Prozessbaumbeendigung unbestätigt; Hauptprozess nach der Nachfrist aktiv oder Status unbekannt"
+}
+
 function Invoke-Setup {
     param(
         [string]$Path,
@@ -203,13 +246,8 @@ function Invoke-Setup {
     )
     $Process = Start-Process $Path -ArgumentList $Arguments -PassThru
     if (-not $Process.WaitForExit(600000)) {
-        try {
-            $Process.Kill($true)
-            $Process.WaitForExit()
-        } catch {
-            Write-Warning "Der hängende Setup-Prozess konnte nicht beendet werden: $_"
-        }
-        throw "$Scenario überschritt das Zeitlimit."
+        $TerminationState = Stop-OwnedProcessTreeBounded -Process $Process
+        throw "$Scenario überschritt das Zeitlimit. Prozessbeendigung: $TerminationState."
     }
     $ExitCode = [int]$Process.ExitCode
     Wait-SetupUninstallMutexReleased
@@ -228,14 +266,19 @@ function Invoke-SetupExpectedFailure {
         [string]$Scenario
     )
     $Process = Start-Process $Path -ArgumentList $Arguments -PassThru
-    if (-not $Process.WaitForExit(600000)) {
+    if (-not $Process.WaitForExit(180000)) {
+        $TerminationState = Stop-OwnedProcessTreeBounded -Process $Process
+        $MutexState = "nicht rechtzeitig freigegeben"
         try {
-            $Process.Kill($true)
-            $Process.WaitForExit()
+            Wait-SetupUninstallMutexReleased -Seconds 10
+            $MutexState = "freigegeben oder nicht vorhanden"
         } catch {
-            Write-Warning "Der hängende Setup-Prozess konnte nicht beendet werden: $_"
+            $MutexState = "nicht ordnungsgemäß freigegeben"
         }
-        throw "$Scenario überschritt das Zeitlimit."
+        $LogTail = Get-SanitizedInnoLogTail -LogPath $LogPath
+        throw "$Scenario überschritt das Diagnosezeitlimit von 180 Sekunden.`n" +
+            "Prozessbeendigung: $TerminationState. Installationssperre: $MutexState.`n" +
+            "Begrenzter, maskierter Inno-Logauszug:`n$LogTail"
     }
     $ExitCode = [int]$Process.ExitCode
     Wait-SetupUninstallMutexReleased
@@ -1391,15 +1434,7 @@ try {
 } finally {
     try {
         if ($null -ne $DesktopProcess) {
-            try {
-                $DesktopProcess.Refresh()
-                if (-not $DesktopProcess.HasExited) {
-                    $DesktopProcess.Kill($true)
-                    $DesktopProcess.WaitForExit()
-                }
-            } catch {
-                Write-Warning "Der eigene Desktop-Testprozess konnte nicht bereinigt werden: $_"
-            }
+            [void](Stop-OwnedProcessTreeBounded -Process $DesktopProcess)
         }
         if (Test-Path -LiteralPath $DesktopUninstaller -PathType Leaf) {
             try {
