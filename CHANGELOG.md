@@ -17,6 +17,9 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 - Desktop- und Dienst-Pakettests prüfen den Revisionsvertrag, die Cache-Header, einen veralteten Browseraufruf
   und weiterhin einen davon unabhängigen Bearer-API-Aufruf. Die verbindliche manuelle Abnahmematrix umfasst
   Windows 10 und Windows 11, Desktop und Dienst, Neuinstallationen sowie Upgrades von 1.5.0 und 2.0.1.
+- Der schlanke Öffnen-Client des Windows-Dienstpakets lädt beim Start keine Browser-Assets mehr. Fehler vor oder
+  während seiner internen Ausführung enden kontrolliert und ohne modalen PyInstaller-Dialog, sodass ein
+  unbeaufsichtigter Installer nicht auf eine unsichtbare Fehlerbestätigung wartet.
 
 ### Prüfung und Analyseschema 2
 

@@ -7,23 +7,14 @@ from typing import Final
 
 from . import __version__
 from .component_versions import ANALYSIS_SCHEMA_VERSION
+from .ui_contract_rules import UI_REVISION_HEADER, is_ui_revision_required
 
 APP_DIR: Final = Path(__file__).resolve().parent
-UI_REVISION_HEADER: Final = "X-Einvoice-UI-Revision"
 _UI_REVISION_ASSETS: Final = (
     "templates/index.html",
     "static/app.js",
     "static/styles.css",
 )
-_UI_REVISION_PATHS: Final = frozenset(
-    {
-        "/api/analyze",
-        "/api/xml",
-        "/api/report",
-        "/api/report/pdf",
-    }
-)
-_UI_REVISION_PREFIXES: Final = ("/api/examples/",)
 
 
 def _update_digest_component(digest, label: str, value: bytes) -> None:
@@ -52,12 +43,6 @@ def calculate_ui_revision(
     for name, content in normalized_assets:
         _update_digest_component(digest, f"asset:{name}", content)
     return digest.hexdigest()
-
-
-def is_ui_revision_required(path: str) -> bool:
-    """Return whether a browser UI request is bound to the current UI revision."""
-
-    return path in _UI_REVISION_PATHS or path.startswith(_UI_REVISION_PREFIXES)
 
 
 UI_REVISION: Final = calculate_ui_revision(

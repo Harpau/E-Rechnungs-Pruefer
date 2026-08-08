@@ -60,3 +60,10 @@ def test_only_browser_ui_api_routes_require_the_ui_revision() -> None:
 
     for path in ("/", "/api/health", "/api/docs", "/api/action", "/static/app.js"):
         assert not is_ui_revision_required(path)
+
+
+def test_ui_revision_routing_rules_are_reexported_from_asset_free_module() -> None:
+    from app import ui_contract_rules
+
+    assert UI_REVISION_HEADER == ui_contract_rules.UI_REVISION_HEADER
+    assert is_ui_revision_required is ui_contract_rules.is_ui_revision_required

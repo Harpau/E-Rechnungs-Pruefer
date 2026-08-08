@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.types import ASGIApp
 
-from .ui_contract import UI_REVISION_HEADER, is_ui_revision_required
+from .ui_contract_rules import UI_REVISION_HEADER, is_ui_revision_required
 
 DESKTOP_TOKEN_ENV = "EINVOICE_DESKTOP_TOKEN"
 DESKTOP_PORT_ENV = "EINVOICE_DESKTOP_PORT"

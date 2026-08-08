@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -7,6 +11,113 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def _read(path: str) -> str:
     return (PROJECT_ROOT / path).read_text(encoding="utf-8")
+
+
+def _write_fake_open_client(package_root: Path, source: str) -> None:
+    package = package_root / "app"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "windows_open_client.py").write_text(textwrap.dedent(source), encoding="utf-8")
+
+
+def _run_open_client_entrypoint(package_root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(package_root)
+    return subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "packaging/windows/open_client_entrypoint.py"),
+            *arguments,
+        ],
+        cwd=package_root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_open_client_import_does_not_load_asset_dependent_ui_contract() -> None:
+    script = textwrap.dedent(
+        """
+        import sys
+        from pathlib import Path
+
+        original_read_bytes = Path.read_bytes
+
+        def guarded_read_bytes(path):
+            if path.name in {"index.html", "app.js", "styles.css"}:
+                raise RuntimeError("Der schlanke Öffnen-Client darf keine UI-Assets lesen.")
+            return original_read_bytes(path)
+
+        Path.read_bytes = guarded_read_bytes
+        import app.windows_open_client
+
+        assert "app.ui_contract" not in sys.modules
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_open_client_entrypoint_contains_import_failure_without_output(tmp_path: Path) -> None:
+    package_root = tmp_path / "import-failure"
+    _write_fake_open_client(
+        package_root,
+        """
+        raise RuntimeError("synthetic private startup detail")
+        """,
+    )
+
+    result = _run_open_client_entrypoint(package_root, "--assert-no-desktop-installation")
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_open_client_entrypoint_contains_main_failure_without_output(tmp_path: Path) -> None:
+    package_root = tmp_path / "main-failure"
+    _write_fake_open_client(
+        package_root,
+        """
+        def main(argv):
+            raise RuntimeError("synthetic private runtime detail")
+        """,
+    )
+
+    result = _run_open_client_entrypoint(package_root, "--preflight-machine")
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_open_client_entrypoint_preserves_main_exit_code_and_arguments(tmp_path: Path) -> None:
+    package_root = tmp_path / "success"
+    _write_fake_open_client(
+        package_root,
+        """
+        def main(argv):
+            return 12 if argv == ["--probe"] else 1
+        """,
+    )
+
+    result = _run_open_client_entrypoint(package_root, "--probe")
+
+    assert result.returncode == 12
+    assert result.stdout == ""
+    assert result.stderr == ""
 
 
 def test_desktop_installer_remains_a_separate_unprivileged_option() -> None:
@@ -799,6 +910,14 @@ def test_windows_build_signs_owned_binaries_and_both_installers() -> None:
     assert 'copy_metadata("regipy")' in open_client_spec
     assert '"regipy"' in open_client_spec
     assert '"regipy.registry"' in open_client_spec
+    for ui_asset in ("templates/index.html", "static/app.js", "static/styles.css"):
+        assert ui_asset not in open_client_spec
+    open_client_entrypoint = _read("packaging/windows/open_client_entrypoint.py")
+    assert "def _run(argv: list[str]) -> int:" in open_client_entrypoint
+    assert "except Exception:" in open_client_entrypoint
+    assert open_client_entrypoint.index("def _run") < open_client_entrypoint.index(
+        "from app.windows_open_client import main"
+    )
     service_entrypoint = _read("packaging/windows/service_entrypoint.py")
     assert "raise SystemExit(_run(sys.argv[1:]))" in service_entrypoint
     assert "if session_id is None or session_id == 0:" in service_entrypoint
