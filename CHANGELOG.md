@@ -4,6 +4,13 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Automatisierung
+
+- Der Node-RED-Mailflow behandelt `official=unsupported` auch bei verpflichtender offizieller Prüfung als
+  qualifizierten Bericht und verarbeitet anschließend weitere Kandidaten. Der Status wird weder als offizielle
+  Annahme noch als offizielle Ablehnung ausgegeben; die Behandlung von `not-requested`, `unavailable` und
+  `indeterminate` bleibt unverändert.
+
 ## 2.0.1 – 2026-08-06
 
 ### Browseroberfläche

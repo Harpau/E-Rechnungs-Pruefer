@@ -519,7 +519,7 @@ test("report filenames are unique per message, ASCII-safe and contain no invoice
   }
 });
 
-test("UNKNOWN syntax and all official assessment states follow the agreed policy", () => {
+test("UNKNOWN syntax and official availability states follow the agreed policy", () => {
   const unknown = apiResponse({
     syntax: "UNKNOWN",
     official: "not-requested",
@@ -532,14 +532,18 @@ test("UNKNOWN syntax and all official assessment states follow the agreed policy
   assert.equal(unknown.automation.reports.length, 0);
   assert.equal(unknown.automation.results[0].assessment.processing.status, "incomplete");
 
-  for (const official of ["not-requested", "unsupported", "unavailable"]) {
+  for (const official of ["not-requested", "unavailable"]) {
     const required = apiResponse({
       official,
       processing: official === "unavailable" ? "limited" : "complete",
     });
     const requiredOutput = runFunction("HTTP- und Prüfstatus klassifizieren", required).output;
+    assert.equal(requiredOutput[0], null);
+    assert.equal(requiredOutput[1], null);
     assert.equal(requiredOutput[2], required);
     assert.equal(required.automationError.class, "configuration");
+    assert.equal(required.automation.results.length, 0);
+    assert.equal(required.automation.reports.length, 0);
 
     const optional = apiResponse({
       official,
@@ -556,8 +560,13 @@ test("UNKNOWN syntax and all official assessment states follow the agreed policy
     "HTTP- und Prüfstatus klassifizieren",
     indeterminateRequired,
   ).output;
+  assert.equal(indeterminateOutput[0], null);
   assert.equal(indeterminateOutput[1], indeterminateRequired);
+  assert.equal(indeterminateOutput[2], null);
   assert.match(indeterminateRequired.automation.lastError, /technisch unbestimmt/);
+  assert.equal(indeterminateRequired.automation.results.length, 0);
+  assert.equal(indeterminateRequired.automation.reports.length, 0);
+  assert.equal("automationError" in indeterminateRequired, false);
 
   const indeterminateOptional = apiResponse({
     official: "indeterminate",
@@ -569,6 +578,160 @@ test("UNKNOWN syntax and all official assessment states follow the agreed policy
   ).output;
   assert.equal(optionalOutput[0], indeterminateOptional);
   assert.equal(indeterminateOptional.automation.results[0].outcome, "processed");
+});
+
+test("unsupported official checks remain reportable and continue with later candidates", () => {
+  const candidates = [
+    candidate("synthetische-factur-x-extended.pdf", "pdf"),
+    candidate("synthetische-zweite-rechnung.xml"),
+  ];
+  candidates[1].originalIndex = 1;
+  const state = automationState({ candidates, requireKosit: true });
+  const imap = imapContext(144);
+  const originalAttachments = candidates.map((item) => ({
+    filename: item.filename,
+    content: item.content,
+    contentType: item.contentType,
+  }));
+  const originalAttachmentCount = originalAttachments.length;
+  const msg = apiResponse({
+    syntax: "CII",
+    official: "unsupported",
+    internal: "errors",
+    processing: "complete",
+    state,
+  });
+  msg.imap = imap;
+  msg.email = {
+    topic: "Synthetische Eingangsrechnung",
+    header: { "reply-to": "eingang@example.invalid" },
+    attachments: originalAttachments,
+  };
+
+  let output = runFunction("HTTP- und Prüfstatus klassifizieren", msg).output;
+  assert.equal(output[0], msg);
+  assert.equal(output[1], null);
+  assert.equal(output[2], null);
+  assert.equal("automationError" in msg, false);
+  assert.equal(msg.automation.results.length, 1);
+  assert.equal(msg.automation.results[0].filename, candidates[0].filename);
+  assert.equal(msg.automation.results[0].outcome, "processed");
+  assert.equal(msg.automation.results[0].assessment.official.status, "unsupported");
+  assert.equal(msg.automation.results[0].assessment.internal.status, "errors");
+  assert.equal(msg.automation.results[0].assessment.processing.status, "complete");
+  assert.equal(msg.automation.reports.length, 1);
+  assert.equal(msg.automation.reports[0].sourceFilename, candidates[0].filename);
+  assert.equal(msg.automation.reports[0].assessment.official.status, "unsupported");
+  assert.deepEqual(msg.automation.reports[0].content, REPORT_ARTIFACT.body);
+
+  output = runFunction("Nächsten Kandidaten wählen", msg).output;
+  assert.equal(output[0], msg);
+  assert.equal(output[1], null);
+  assert.equal(msg.automation.candidateIndex, 1);
+
+  Object.assign(msg, {
+    payload: Buffer.from(REPORT_ARTIFACT.body),
+    statusCode: 200,
+    requestTimeout: 90000,
+    followRedirects: false,
+    headers: {
+      "content-type": REPORT_ARTIFACT.contentType,
+      "x-einvoice-analysis-schema": "2",
+      "x-einvoice-report-scope": "readable",
+      "x-einvoice-syntax": "UBL",
+      "x-einvoice-conformity-status": "accepted",
+      "x-einvoice-internal-status": "clear",
+      "x-einvoice-processing-status": "complete",
+    },
+  });
+  output = runFunction("HTTP- und Prüfstatus klassifizieren", msg).output;
+  assert.equal(output[0], msg);
+  assert.equal(msg.automation.results.length, 2);
+  assert.equal(msg.automation.results[1].filename, candidates[1].filename);
+  assert.equal(msg.automation.results[1].assessment.official.status, "accepted");
+  assert.equal(msg.automation.reports.length, 2);
+  assert.deepEqual(
+    Array.from(msg.automation.reports, (report) => report.sourceFilename),
+    candidates.map((item) => item.filename),
+  );
+
+  output = runFunction("Nächsten Kandidaten wählen", msg).output;
+  assert.equal(output[0], null);
+  assert.equal(output[1], msg);
+
+  output = runFunction("Mailergebnis abschließen", msg, {
+    EINVOICE_RESULT_TO: "result@example.invalid",
+  }).output;
+  assert.equal(output[0], msg);
+  assert.equal(output[1], null);
+  assert.equal(output[2], null);
+  assert.equal(
+    msg.email.topic,
+    "E-Rechnung: Prüfergebnis mit Einschränkung: Synthetische Eingangsrechnung",
+  );
+  assert.match(
+    msg.email.text,
+    /Offizielle Prüfung: für dieses Format oder Profil nicht unterstützt; es liegt weder eine offizielle Annahme noch eine offizielle Ablehnung vor\./,
+  );
+  assert.match(msg.email.text, /Interne Prüfung: Fehler – Handlungsbedarf\./);
+  assert.match(msg.email.text, /Verarbeitung: vollständig\./);
+  assert.match(
+    msg.email.text,
+    /Details zu den Befunden stehen im jeweils angehängten PDF-Prüfbericht/,
+  );
+  assert.match(msg.email.text, /synthetische-factur-x-extended\.pdf/);
+  assert.match(msg.email.text, /synthetische-zweite-rechnung\.xml/);
+  assert.equal(msg.email.attachments.length, originalAttachmentCount + 2);
+  assert.deepEqual(
+    msg.email.attachments.slice(0, originalAttachmentCount),
+    originalAttachments.slice(0, originalAttachmentCount),
+  );
+  assert.deepEqual(
+    msg.email.attachments.slice(originalAttachmentCount).map((item) => ({
+      contentType: item.contentType,
+      contentDisposition: item.contentDisposition,
+      signature: item.content.subarray(0, 5).toString("ascii"),
+    })),
+    [
+      {
+        contentType: "application/pdf",
+        contentDisposition: "attachment",
+        signature: "%PDF-",
+      },
+      {
+        contentType: "application/pdf",
+        contentDisposition: "attachment",
+        signature: "%PDF-",
+      },
+    ],
+  );
+  assert.strictEqual(msg.imap, imap);
+  assert.strictEqual(msg.imap.ackToken, imap.ackToken);
+
+  const mailOptions = executeSmtpMappings(msg);
+  assert.equal(mailOptions.to, "result@example.invalid");
+  assert.equal(mailOptions.subject, msg.email.topic);
+  assert.equal(mailOptions.text, msg.email.text);
+  assert.strictEqual(mailOptions.attachments, msg.email.attachments);
+});
+
+test("authoritative rejection remains a regular report result", () => {
+  const msg = apiResponse({
+    official: "rejected",
+    internal: "errors",
+    processing: "complete",
+  });
+
+  const output = runFunction("HTTP- und Prüfstatus klassifizieren", msg).output;
+
+  assert.equal(output[0], msg);
+  assert.equal(output[1], null);
+  assert.equal(output[2], null);
+  assert.equal(msg.automation.results[0].outcome, "processed");
+  assert.equal(msg.automation.results[0].assessment.official.status, "rejected");
+  assert.equal(msg.automation.reports.length, 1);
+  assert.equal(msg.automation.reports[0].assessment.official.status, "rejected");
+  assert.equal("automationError" in msg, false);
 });
 
 test("internal assessment states remain distinct and complete with not-run is rejected", () => {
@@ -615,9 +778,30 @@ test("processing assessment independently controls completion and retries", () =
     "HTTP- und Prüfstatus klassifizieren",
     incomplete,
   ).output;
+  assert.equal(incompleteOutput[0], null);
   assert.equal(incompleteOutput[1], incomplete);
+  assert.equal(incompleteOutput[2], null);
   assert.match(incomplete.automation.lastError, /processing=incomplete/);
+  assert.equal(incomplete.automation.results.length, 0);
   assert.equal(incomplete.automation.reports.length, 0);
+  assert.equal("automationError" in incomplete, false);
+
+  const unsupportedIncomplete = apiResponse({
+    official: "unsupported",
+    internal: "errors",
+    processing: "incomplete",
+  });
+  const unsupportedIncompleteOutput = runFunction(
+    "HTTP- und Prüfstatus klassifizieren",
+    unsupportedIncomplete,
+  ).output;
+  assert.equal(unsupportedIncompleteOutput[0], null);
+  assert.equal(unsupportedIncompleteOutput[1], unsupportedIncomplete);
+  assert.equal(unsupportedIncompleteOutput[2], null);
+  assert.match(unsupportedIncomplete.automation.lastError, /processing=incomplete/);
+  assert.equal(unsupportedIncomplete.automation.results.length, 0);
+  assert.equal(unsupportedIncomplete.automation.reports.length, 0);
+  assert.equal("automationError" in unsupportedIncomplete, false);
 });
 
 test("HTTP input errors are terminal while transient statuses are retried", () => {
@@ -783,6 +967,17 @@ test("multiple reports become mail attachments while IMAP ACK context survives",
   assert.match(msg.email.text, /Konformität rejected, interne Prüfung attention, Verarbeitung limited/);
   assert.match(msg.email.text, /PDF-Prüfberichte/);
   assert.match(msg.email.text, /Darstellungsgrenzen/);
+  assert.equal(msg.email.topic, "E-Rechnung: Eingangsrechnung");
+  assert.equal(
+    msg.email.text,
+    "Der E-Rechnungs-Prüfer hat 2 strukturierte Rechnung(en) erkannt.\n\n" +
+      "eins.xml: CII, Konformität accepted, interne Prüfung clear, Verarbeitung complete\n" +
+      "zwei.xml: UBL, Konformität rejected, interne Prüfung attention, Verarbeitung limited\n\n" +
+      "Die PDF-Prüfberichte sind angehängt; mögliche Darstellungsgrenzen werden im jeweiligen Bericht ausgewiesen.",
+  );
+  assert.doesNotMatch(msg.email.topic, /Prüfergebnis mit Einschränkung/);
+  assert.doesNotMatch(msg.email.text, /für dieses Format oder Profil nicht unterstützt/);
+  assert.doesNotMatch(msg.email.text, /weder eine offizielle Annahme noch/);
   assert.strictEqual(msg.imap, imap);
   assert.strictEqual(msg.imap.ackToken, imap.ackToken);
   assert.equal("requestTimeout" in msg, false);
