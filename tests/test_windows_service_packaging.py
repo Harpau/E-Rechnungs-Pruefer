@@ -957,7 +957,8 @@ def test_windows_build_is_bound_to_validated_inno_setup_7_0_2() -> None:
         install = workflow.index(r".\scripts\install_inno_setup.ps1")
         build = workflow.index(r".\scripts\build_windows.ps1")
         assert install < build
-        assert r"${{ runner.temp }}\inno-setup-7.0.2\ISCC.exe" in workflow
+        assert '"EINVOICE_INNO_SETUP_COMPILER=$compiler"' in workflow
+        assert "Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append" in workflow
         assert "-InnoSetupCompiler $env:EINVOICE_INNO_SETUP_COMPILER" in workflow
 
 
