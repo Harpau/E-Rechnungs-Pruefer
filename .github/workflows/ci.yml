@@ -72,6 +72,8 @@ jobs:
   windows-smoke:
     name: Windows package and smoke test
     runs-on: windows-2022
+    env:
+      EINVOICE_INNO_SETUP_COMPILER: ${{ runner.temp }}\inno-setup-7.0.2\ISCC.exe
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -107,9 +109,15 @@ jobs:
           key: windows-components-${{ hashFiles('packaging/windows/components.lock.json') }}
       - name: Prepare locked Java and KoSIT components
         run: python scripts/prepare_windows_components.py
+      - name: Install pinned Inno Setup
+        shell: pwsh
+        run: .\scripts\install_inno_setup.ps1
       - name: Build Windows x64 installer
         shell: pwsh
-        run: .\scripts\build_windows.ps1 -BuildElevatedRecoveryTestInstaller
+        run: >-
+          .\scripts\build_windows.ps1
+          -InnoSetupCompiler $env:EINVOICE_INNO_SETUP_COMPILER
+          -BuildElevatedRecoveryTestInstaller
       - name: Test installed Windows package
         shell: pwsh
         run: .\scripts\test_windows_package.ps1 -ConfirmIsolatedEnvironment

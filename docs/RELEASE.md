@@ -103,15 +103,19 @@ geprüften Codebasis:
 
 ```powershell
 python scripts\prepare_windows_components.py
-.\scripts\build_windows.ps1 -BuildElevatedRecoveryTestInstaller
+$InnoSetupCompiler = .\scripts\install_inno_setup.ps1
+.\scripts\build_windows.ps1 -InnoSetupCompiler $InnoSetupCompiler -BuildElevatedRecoveryTestInstaller
 .\scripts\test_windows_package.ps1 -ConfirmIsolatedEnvironment
 .\scripts\test_windows_mode_exclusion.ps1 -ConfirmIsolatedEnvironment
 .\scripts\test_windows_service_package.ps1 -ConfirmIsolatedEnvironment `
     -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
 ```
 
-Die signierten GitHub-Builds verwenden exakt CPython 3.13.14 und installieren sämtliche Laufzeit-, Test- und
-Buildabhängigkeiten ausschließlich aus `packaging/windows/requirements-release.txt`. Dort sind alle Pakete samt
+Die CI- und signierten GitHub-Builds installieren zusätzlich den offiziellen Inno-Setup-7.0.2-x64-Compiler aus
+seinem unveränderlichen Releaseasset, prüfen Installer und Compiler gegen die festgeschriebenen SHA-256-Werte
+und übergeben ausschließlich diesen Compilerpfad an den Windows-Build. Die signierten GitHub-Builds verwenden
+außerdem exakt CPython 3.13.14 und installieren sämtliche Laufzeit-, Test- und Buildabhängigkeiten ausschließlich
+aus `packaging/windows/requirements-release.txt`. Dort sind alle Pakete samt
 transitiven Abhängigkeiten auf die ausgewählten Windows-x64-Wheels und deren SHA-256-Hashes festgelegt. Dadurch
 verwenden manueller Probelauf und späterer Tag-Lauf dieselbe Python-Abhängigkeitsbasis. Der allgemeinere
 Kompatibilitätstest in `ci.yml` prüft weiterhin die unterstützten Python-Versionen und zulässigen

@@ -282,8 +282,8 @@ werden. Anschließend sind mindestens eine Annahme und eine Ablehnung real mit K
 
 ## Lokaler Build auf Windows
 
-Voraussetzungen sind Windows-x64-Python 3.13, Inno Setup 6 oder 7 und Netzwerkzugriff beim Vorbereiten der
-gesperrten Komponenten:
+Voraussetzungen sind Windows-x64-Python 3.13 und Netzwerkzugriff beim Vorbereiten der gesperrten Komponenten und
+des auf Inno Setup 7.0.2 x64 festgeschriebenen Installercompilers:
 
 ```powershell
 py -3.13 -m venv .venv
@@ -291,7 +291,8 @@ py -3.13 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -e . -r packaging\windows\requirements-build.txt
 python scripts\prepare_windows_components.py
-.\scripts\build_windows.ps1
+$InnoSetupCompiler = .\scripts\install_inno_setup.ps1
+.\scripts\build_windows.ps1 -InnoSetupCompiler $InnoSetupCompiler
 ```
 
 Für signierte GitHub-Builds gilt stattdessen der vollständige, gehashte Windows-x64-Lock
@@ -326,7 +327,8 @@ laufen. `-ConfirmIsolatedEnvironment` bestätigt diese Voraussetzung, hebt die V
 Insbesondere dürfen keine unvollständigen v1.4.0-Migrations- oder Alttransaktionszustände vorhanden sein.
 
 ```powershell
-.\scripts\build_windows.ps1 -BuildElevatedRecoveryTestInstaller
+$InnoSetupCompiler = .\scripts\install_inno_setup.ps1
+.\scripts\build_windows.ps1 -InnoSetupCompiler $InnoSetupCompiler -BuildElevatedRecoveryTestInstaller
 .\scripts\test_windows_package.ps1 -ConfirmIsolatedEnvironment
 .\scripts\test_windows_mode_exclusion.ps1 -ConfirmIsolatedEnvironment
 .\scripts\test_windows_service_package.ps1 `

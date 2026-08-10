@@ -866,8 +866,6 @@ def test_windows_build_signs_owned_binaries_and_both_installers() -> None:
         "function Test-PublishedWindowsArtifacts",
         "Expand-Archive -LiteralPath $Archive -DestinationPath $VerificationRoot",
         "publish-verification-$([guid]::NewGuid().ToString('N'))",
-        r"$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-        r"$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
     ):
         assert expected in script
 
@@ -922,6 +920,45 @@ def test_windows_build_signs_owned_binaries_and_both_installers() -> None:
     assert "raise SystemExit(_run(sys.argv[1:]))" in service_entrypoint
     assert "if session_id is None or session_id == 0:" in service_entrypoint
     assert "E-Rechnungs-Pruefer-Oeffnen.exe" in service_entrypoint
+
+
+def test_windows_build_is_bound_to_validated_inno_setup_7_0_2() -> None:
+    install_script = _read("scripts/install_inno_setup.ps1")
+    build_script = _read("scripts/build_windows.ps1")
+    workflows = (
+        _read(".github/workflows/ci.yml"),
+        _read(".github/workflows/release.yml"),
+    )
+
+    for expected in (
+        'InnoSetupVersion = "7.0.2"',
+        'InstallerFileName = "innosetup-$InnoSetupVersion-x64.exe"',
+        "https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/",
+        "5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1",
+        "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d",
+        'Join-Path $env:RUNNER_TEMP "inno-setup-$InnoSetupVersion"',
+        '"/CURRENTUSER"',
+        "Assert-CompilerHash",
+    ):
+        assert expected in install_script
+
+    for expected in (
+        "[Parameter(Mandatory = $true)]",
+        "[string]$InnoSetupCompiler",
+        "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d",
+        "Get-FileHash -LiteralPath $Iscc -Algorithm SHA256",
+        "festgeschriebenen Inno Setup 7.0.2 x64",
+    ):
+        assert expected in build_script
+    assert 'Get-Command "ISCC.exe"' not in build_script
+    assert "Inno Setup 6" not in build_script
+
+    for workflow in workflows:
+        install = workflow.index(r".\scripts\install_inno_setup.ps1")
+        build = workflow.index(r".\scripts\build_windows.ps1")
+        assert install < build
+        assert r"${{ runner.temp }}\inno-setup-7.0.2\ISCC.exe" in workflow
+        assert "-InnoSetupCompiler $env:EINVOICE_INNO_SETUP_COMPILER" in workflow
 
 
 def test_offline_profile_inventory_is_read_only_bounded_and_version_pinned() -> None:

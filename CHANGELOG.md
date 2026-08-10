@@ -61,6 +61,9 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 - Signierte Vorab-Artefakte werden 14 Tage aufbewahrt. Ein Tag-Lauf erzeugt nach allen Prüfungen ausschließlich
   einen GitHub-Release-Draft; die exakt taggebauten und signierten Dateien müssen vor einer manuellen
   Veröffentlichung erneut geprüft und protokolliert werden.
+- Windows-Installer werden ausschließlich mit dem festgeschriebenen Inno Setup 7.0.2 x64 gebaut. Dadurch können
+  auch enthaltene XSD-Dateien installiert werden, deren vollständiger Zielpfad die klassische 260-Zeichen-Grenze
+  erreicht; ein abweichender oder ungeprüfter Installercompiler wird vom Build abgewiesen.
 
 ## 2.0.1 – 2026-08-06
 
