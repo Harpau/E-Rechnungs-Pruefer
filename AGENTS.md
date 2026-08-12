@@ -48,6 +48,15 @@ python -m pytest --cov=app --cov-report=term-missing
 
 Use `make format` to apply Python formatting. Do not reformat HTML, CSS, or JavaScript wholesale unless the task requires it.
 
+## Autonome Abnahme und Befundübergabe
+
+- Führe alle technisch möglichen Abnahmeschritte innerhalb des freigegebenen Scopes selbst aus. Dazu gehören insbesondere Host- und Gastbefehle, Read-only-Inventuren, Harness- und Testläufe, Evidence-Prüfungen sowie ausdrücklich autorisierte VM-Schritte. Fordere den Nutzer nur für eine UAC-Bestätigung, eine erforderliche PIN- oder Passworteingabe oder eine tatsächlich menschliche visuelle Prüfung an; Zugangsdaten niemals erfragen, speichern oder umgehen.
+- Verwende für jeden Abnahmekontext, dessen Fortsetzung auf UAC, PIN, Passwort oder eine echte manuelle Sichtprüfung wartet, eine Gültigkeit von 120 Minuten. Binde diese Frist ausdrücklich in Generator, Kontext, Laufzeitprüfung und Regressionstests. Rein autonome Kontexte dürfen enger begrenzt bleiben. Eine längere Frist lockert keine Bindung an VM, Snapshot, Identität, Artefakte, Hashes oder Kollisionsfreiheit.
+- Handle fail-closed. Prüfe vor Produkt- oder VM-Aktionen die exakten Ziele, Hash- und Kontextbindungen, Kollisionsfreiheit und erforderlichen Receipts. Führe bei fehlenden, veralteten oder widersprüchlichen Bindungen keine Mutation aus. Führe VM-Aktionen nur in der autorisierten Reihenfolge und ausschließlich gegen die gebundene VM beziehungsweise den gebundenen Snapshot aus; verifiziere den Zustand nach jedem Schritt erneut.
+- Unterbrich bei einem Abnahmebefund zunächst den betroffenen mutierenden Schritt, Wiederholungen sowie Cleanup- oder Restore-Aktionen. Bewahre beziehungsweise prüfe die vorgesehene Evidence, trenne bestätigte Fakten klar von offenen Aussagen und klassifiziere den Befund, bevor du fortfährst.
+- Diagnose und behebe Harness-, Evidence-, Controller-, Umgebungs- und andere innerhalb des Abnahmelaufs sicher korrigierbare Testfehler im selben Chat. Bewahre frühere Revisionen und Evidence unverändert, verwende für Korrekturen eine getrennte, eindeutig versionierte Harness-Revision, prüfe sie unabhängig und setze anschließend die Abnahme fort.
+- Stoppe die weitere Abnahme und erstelle einen direkt nutzbaren Übergabe-Prompt und/oder eine kurze Befunddokumentation für einen separaten Chat nur bei einem bestätigten Produktfehler, der innerhalb des Abnahmelaufs nicht sicher behebbar ist und einen neuen Release-Kandidaten erfordert. Nenne darin mindestens die exakten Artefakt- und Evidence-Pfade, Hash- und Versionsbindungen, den beobachteten Fehler, Reproduktionsschritte, erwartetes und tatsächliches Verhalten, den erhaltenen Systemzustand sowie ausdrücklich erlaubte und verbotene Folgeaktionen.
+
 ## Behavioral invariants
 
 1. Uploaded invoices are not persisted by the application.
