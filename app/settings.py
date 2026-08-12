@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,28 @@ def _bool_env(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    try:
+        value = default if raw_value is None else int(raw_value.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} muss eine positive ganze Zahl sein.") from exc
+    if value <= 0:
+        raise ValueError(f"{name} muss eine positive ganze Zahl sein.")
+    return value
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    try:
+        value = default if raw_value is None else float(raw_value.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} muss eine positive endliche Zahl sein.") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} muss eine positive endliche Zahl sein.")
+    return value
 
 
 def _discover_java_bin() -> str:
@@ -101,8 +124,10 @@ _DEFAULT_SCENARIOS = _split_paths(_SCENARIOS_FROM_ENV) if _SCENARIOS_FROM_ENV el
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    max_upload_bytes: int = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
-    max_technical_rows: int = int(os.getenv("MAX_TECHNICAL_ROWS", "100000"))
+    max_upload_bytes: int = _positive_int_env("MAX_UPLOAD_BYTES", 25 * 1024 * 1024)
+    max_technical_rows: int = _positive_int_env("MAX_TECHNICAL_ROWS", 100_000)
+    max_xml_structure_items: int = _positive_int_env("MAX_XML_STRUCTURE_ITEMS", 100_000)
+    max_technical_seconds: float = _positive_float_env("MAX_TECHNICAL_SECONDS", 5.0)
     kosit_enabled: bool = _bool_env("KOSIT_ENABLED", True)
     kosit_java_bin: str = os.getenv("KOSIT_JAVA_BIN", _discover_java_bin())
     kosit_validator_jar: Path | None = _resolve_path(_JAR_FROM_ENV) if _JAR_FROM_ENV else _discover_validator_jar()

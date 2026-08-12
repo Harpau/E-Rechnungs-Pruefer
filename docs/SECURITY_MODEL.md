@@ -38,7 +38,13 @@ Kennwortgeschützte PDFs werden abgelehnt. Verschlüsselte PDFs, die sich mit ei
 
 ### Ressourcenverbrauch
 
-Uploadgröße, technische Zeilenanzahl und KoSIT-Laufzeit sind begrenzt. Bei Hybrid-PDFs gilt `MAX_UPLOAD_BYTES` sowohl für die ausgewählte Rechnungs-XML als auch für die Summe der dekodierten Anhänge; zusätzlich werden höchstens 100 eingebettete Dateien verarbeitet. Das Dekompressionslimit von pypdf 6 bildet eine weitere Obergrenze. Da solche Prüfungen nicht jede Speicherallokation vor dem Dekodieren verhindern können, sind für den Netzwerkbetrieb weiterhin Prozess-, Speicher- und Parallelitätslimits notwendig.
+Uploadgröße, XML-Strukturposten, technische Zeilenanzahl, technische Tabellenzeit und KoSIT-Laufzeit sind
+begrenzt. Der XML-Preflight greift vor dem vollständigen Baumaufbau; die technische Pfadbildung arbeitet linear,
+und Namespacezeilen teilen sich dasselbe Zeilenbudget. Bei Hybrid-PDFs gilt `MAX_UPLOAD_BYTES` sowohl für die
+ausgewählte Rechnungs-XML als auch für die Summe der dekodierten Anhänge; zusätzlich werden höchstens 100
+eingebettete Dateien verarbeitet. Das Dekompressionslimit von pypdf 6 bildet eine weitere Obergrenze. Da solche
+Prüfungen nicht jede Speicherallokation vor dem ersten Parsercallback verhindern können, sind für den
+Netzwerkbetrieb weiterhin Prozess-, Speicher- und Parallelitätslimits notwendig.
 
 ### Cross-Site Scripting
 
@@ -72,11 +78,17 @@ verstanden werden.
 
 ### Strikte Syntax- und Decimal-Behandlung
 
-Die Syntaxerkennung verlangt unterstütztes Wurzelelement und exakten Namespace. Ein ähnlicher Name in einem
-anderen Namespace wird nicht als CII oder UBL hochgestuft. Die XML-Decimal-Konvertierung akzeptiert nur endliche
+Die Syntaxerkennung verlangt unterstütztes Wurzelelement und exakten Namespace. Auch fachliche Kindelemente
+werden URI-qualifiziert ausgewählt; fremde, vertauschte oder nur lokal gleichnamige Elemente werden nicht als
+UBL-/CII-Werte interpretiert. Legitime Erweiterungen bleiben im technischen Anhang und Originalexport erhalten.
+Die XML-Decimal-Konvertierung akzeptiert nur endliche
 Werte im vorgesehenen Dezimalraum; insbesondere werden `NaN`, Unendlichkeiten, Exponenten, Dezimalkomma und
 freie Texte nicht in Rechenwerte umgedeutet. Dadurch entstehen aus untrusted Eingaben weder nichtendliche
-Rechenoperationen noch irreführende Folgefehler auf Basis erfundener Ersatzwerte.
+Rechenoperationen noch irreführende Folgefehler auf Basis erfundener Ersatzwerte. Pro Rechenoperand gelten
+höchstens 4.096 Dezimalziffern. Die Arbeitspräzision wird aus maximaler Operandenspanne, Operationsbreite und
+Anzahl der Operanden abgeleitet, bleibt aber hart begrenzt; größere Werte enden kontrolliert und ohne Echo des
+Rohwerts mit `422 invoice_input_error`. Damit kann eine nichtterminierende Division den Decimal-Kontext nicht aus
+der Summe vieler Eingabefelder auf Millionen Stellen vergrößern.
 
 ### Lokale Windows-Webserver
 
@@ -129,6 +141,13 @@ Freigabetests beginnen deshalb auf einer sauberen Wegwerf-VM ohne solche Altzust
 Der Desktop-Launcher erzeugt pro Prozess ein zufälliges Browser-Sitzungstoken. Ein Startlink setzt ein
 `HttpOnly`-/`SameSite=Strict`-Cookie und entfernt das Token durch Weiterleitung aus der sichtbaren URL. Weitere
 Browseranfragen benötigen dieses Cookie; Host und bei schreibenden Browseranfragen der Origin werden geprüft.
+Die Startseite ist `no-store`; HTML, JavaScript und CSS sind über eine gemeinsame Inhaltsrevision gekoppelt.
+Cookieauthentifizierte UI-API-Aufrufe mit fehlender oder veralteter Revision enden erst nach erfolgreicher
+Authentifizierung und Originprüfung mit einem kontrollierten `409`, damit ein offenes Alt-Tab keine neue
+Serverantwort in ein inkompatibles DOM rendert. Bearer-authentifizierte Automatisierungen sind ausgenommen.
+Wurde der Prozess neu gestartet, ist das alte Sitzungscookie absichtlich nicht mehr gültig; dieser Fall endet
+bereits mit `403 desktop_session_error` und demselben Wiederöffnungshinweis. Die UI-Prüfung schwächt die
+Authentifizierungsreihenfolge damit nicht ab.
 Die Laufzeitdatei unter `%LOCALAPPDATA%` enthält Port, Prozess-ID und das kurzlebige Browser-Token, ist durch die
 Rechte des angemeldeten Windows-Kontos geschützt und wird beim normalen Beenden beziehungsweise bei der
 Deinstallation entfernt.

@@ -9,11 +9,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   source-release:
     name: Source release artefacts
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload_source.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -40,15 +46,20 @@ jobs:
           ./scripts/check.sh
       - name: Build release artefacts
         run: python scripts/build_release.py
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - id: upload_source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: source-release-${{ github.run_id }}
+          name: source-release-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: error
           path: dist/*
 
   windows-release:
     name: Windows x64 installer
     runs-on: windows-2022
     environment: release
+    outputs:
+      artifact-id: ${{ steps.upload_windows.outputs.artifact-id }}
     permissions:
       contents: read
       id-token: write
@@ -105,7 +116,7 @@ jobs:
         shell: pwsh
         run: |
           python scripts/verify_version.py
-          python -m pytest tests/test_api.py tests/test_pdf.py tests/test_kosit.py tests/test_settings.py tests/test_cli.py tests/test_desktop_security.py tests/test_windows_launcher.py tests/test_windows_components.py tests/test_api_service_mode.py tests/test_windows_service_browser.py tests/test_windows_service_config.py tests/test_windows_service_runtime.py tests/test_windows_service_metadata.py tests/test_windows_service_packaging.py tests/test_windows_acl.py tests/test_windows_install_conflicts.py tests/test_windows_install_transaction.py tests/test_windows_install_recovery.py tests/test_windows_install_reconcile.py tests/test_windows_open_client_transaction.py tests/test_windows_native_adapters.py
+          python -m pytest tests/test_api.py tests/test_pdf.py tests/test_kosit.py tests/test_settings.py tests/test_xml_utils.py tests/test_parser_namespaces.py tests/test_validation.py tests/test_analysis_schema_v2.py tests/test_assessment_contract.py tests/test_ui_contract.py tests/test_frontend_schema_v2.py tests/test_cli.py tests/test_desktop_security.py tests/test_windows_launcher.py tests/test_windows_components.py tests/test_api_service_mode.py tests/test_windows_service_browser.py tests/test_windows_service_config.py tests/test_windows_service_runtime.py tests/test_windows_service_metadata.py tests/test_windows_service_packaging.py tests/test_windows_acl.py tests/test_windows_install_conflicts.py tests/test_windows_install_transaction.py tests/test_windows_install_recovery.py tests/test_windows_install_reconcile.py tests/test_windows_open_client_transaction.py tests/test_windows_native_adapters.py
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .cache/windows-components
@@ -128,9 +139,18 @@ jobs:
           }
           $tool = Join-Path $toolDirectory "AzureSignTool.exe"
           "EINVOICE_AZURE_SIGN_TOOL=$tool" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install pinned Inno Setup
+        shell: pwsh
+        run: |
+          $compiler = .\scripts\install_inno_setup.ps1
+          "EINVOICE_INNO_SETUP_COMPILER=$compiler" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build Windows x64 installer
         shell: pwsh
-        run: .\scripts\build_windows.ps1 -BuildElevatedRecoveryTestInstaller
+        run: >-
+          .\scripts\build_windows.ps1
+          -InnoSetupCompiler $env:EINVOICE_INNO_SETUP_COMPILER
+          -BuildElevatedRecoveryTestInstaller
       - name: Test installed Windows package
         shell: pwsh
         run: .\scripts\test_windows_package.ps1 -RequireSignature -ConfirmIsolatedEnvironment
@@ -168,10 +188,12 @@ jobs:
             "internal_test_installer=$internalTestInstaller" |
               Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - id: upload_windows
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: windows-release-${{ github.run_id }}
-          retention-days: 3
+          name: windows-release-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: error
           path: |
             dist/*-Windows-x64-Setup.exe
             dist/*-Windows-x64-Dienst-Setup.exe
@@ -187,7 +209,7 @@ jobs:
           path: ${{ steps.inspect_signatures.outputs.internal_test_installer }}
 
   publish:
-    name: Publish GitHub release
+    name: Stage draft GitHub release
     needs: [source-release, windows-release]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -199,22 +221,55 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: source-release-${{ github.run_id }}
+          artifact-ids: ${{ needs.source-release.outputs.artifact-id }}
           path: release-dist
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: windows-release-${{ github.run_id }}
+          artifact-ids: ${{ needs.windows-release.outputs.artifact-id }}
           path: release-dist
-      - name: Create GitHub release
+      - name: Stage retry-safe draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --draft \
-            --verify-tag \
-            --title "E-Rechnungs-Pruefer ${GITHUB_REF_NAME#v}" \
-            --generate-notes \
-            --notes "**Breaking Change seit 2.0.0:** Der bestehende Analyseendpunkt verwendet ausschließlich Analyseschema 2; es gibt keinen Legacy-Adapter. [Migrationsanleitung für Analyseschema 2](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/API_MIGRATION_V2.md) · [Vollständige kuratierte Änderungsübersicht](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)"
-          gh release upload "${GITHUB_REF_NAME}" release-dist/*
-          gh release edit "${GITHUB_REF_NAME}" --draft=false
+          if release_state="$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [ "${release_state}" != "true" ]; then
+              echo "Für ${GITHUB_REF_NAME} existiert bereits ein veröffentlichtes Release." >&2
+              exit 1
+            fi
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --draft \
+              --verify-tag \
+              --title "E-Rechnungs-Pruefer ${GITHUB_REF_NAME#v}" \
+              --generate-notes \
+              --notes "**Breaking Change seit 2.0.0:** Der bestehende Analyseendpunkt verwendet ausschließlich Analyseschema 2; es gibt keinen Legacy-Adapter. [Migrationsanleitung für Analyseschema 2](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/API_MIGRATION_V2.md) · [Vollständige kuratierte Änderungsübersicht](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)"
+          fi
+
+          shopt -s nullglob
+          local_assets=(release-dist/*)
+          if [ "${#local_assets[@]}" -eq 0 ]; then
+            echo "Es wurden keine Release-Dateien heruntergeladen." >&2
+            exit 1
+          fi
+          existing_assets="$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name')"
+          while IFS= read -r existing_name; do
+            if [ -n "${existing_name}" ] && [ ! -f "release-dist/${existing_name}" ]; then
+              echo "Der vorhandene Draft enthält eine unerwartete Datei: ${existing_name}" >&2
+              exit 1
+            fi
+          done <<< "${existing_assets}"
+
+          for asset in "${local_assets[@]}"; do
+            asset_name="${asset##*/}"
+            if grep -Fqx "${asset_name}" <<< "${existing_assets}"; then
+              comparison_dir="$(mktemp -d)"
+              gh release download "${GITHUB_REF_NAME}" --pattern "${asset_name}" --dir "${comparison_dir}"
+              if ! cmp -s "${asset}" "${comparison_dir}/${asset_name}"; then
+                echo "Die vorhandene Draft-Datei weicht vom aktuellen Tag-Build ab: ${asset_name}" >&2
+                exit 1
+              fi
+            else
+              gh release upload "${GITHUB_REF_NAME}" "${asset}"
+            fi
+          done

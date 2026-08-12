@@ -24,7 +24,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_ROOT = PROJECT_ROOT / "vendor" / "kosit"
 DEFAULT_LOCK_FILE = PROJECT_ROOT / "packaging" / "kosit" / "components.lock.json"
-USER_AGENT = "e-rechnung-pruefer-kosit-installer/2.0.1"
+USER_AGENT = "e-rechnung-pruefer-kosit-installer/2.0.2"
 
 
 class InstallError(RuntimeError):

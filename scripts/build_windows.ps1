@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Python = "python",
+    [Parameter(Mandatory = $true)]
+    [string]$InnoSetupCompiler,
     [string]$SignTool = "",
     [string]$CertificateSha1 = $env:EINVOICE_SIGN_CERT_SHA1,
     [string]$AzureSignTool = $env:EINVOICE_AZURE_SIGN_TOOL,
@@ -285,23 +287,16 @@ if ($SigningEnabled) {
     Write-Warning "Keine Signierkonfiguration gesetzt; die Pakete werden für Tests unsigniert gebaut."
 }
 
-$IsccCandidates = @(
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-    "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
-    "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe"
-)
-$IsccCommand = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
-if ($IsccCommand) {
-    $Iscc = $IsccCommand.Source
-} else {
-    $Iscc = $IsccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$ExpectedIsccSha256 = "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d"
+$Iscc = [System.IO.Path]::GetFullPath($InnoSetupCompiler)
+if (-not (Test-Path -LiteralPath $Iscc -PathType Leaf)) {
+    throw "Der festgeschriebene Inno-Setup-7.0.2-Compiler wurde nicht gefunden: $Iscc"
 }
-if (-not $Iscc) {
-    throw "ISCC.exe wurde nicht gefunden. Bitte Inno Setup 6 oder 7 installieren."
+$ActualIsccSha256 = (Get-FileHash -LiteralPath $Iscc -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($ActualIsccSha256 -ne $ExpectedIsccSha256) {
+    throw "Der angegebene Compiler entspricht nicht dem festgeschriebenen Inno Setup 7.0.2 x64: $Iscc"
 }
+Write-Host "Inno Setup 7.0.2 x64: $Iscc (SHA-256 $ActualIsccSha256)"
 
 & $Iscc `
     "/DAppVersion=$Version" `

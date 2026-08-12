@@ -26,11 +26,21 @@ dann auf `not-run`; `assessment.processing` steht mit `SYNTAX-001` auf `incomple
 DTD-/ENTITY-Deklarationen und nicht sicher extrahierbare PDF-Inhalte werden bereits als Eingabefehler
 zurückgewiesen.
 
+Nach der Root-Erkennung werden auch alle fachlichen Kindelemente ausschließlich über die für UBL beziehungsweise
+CII festgelegten Namespace-URIs gelesen. XML-Präfixe sind frei wählbar; ein gleichnamiges Element aus einem
+fremden oder vertauschten Namespace bleibt technisch sichtbar, darf aber kein normalisiertes Fachfeld liefern.
+
 Rechenwerte werden mit `Decimal` verarbeitet. Für XML-Decimal-Felder akzeptiert die Anwendung nur endliche
 Dezimaldarstellungen ohne Exponent. `NaN`, `Infinity`, `-Infinity`, Dezimalkomma, Exponentialschreibweise und
 freie Texte werden nicht stillschweigend konvertiert. Ein ungültiger Ausgangswert erzeugt den zuständigen
 internen Befund; abhängige Rechenregeln werden nicht mit erfundenen Ersatzwerten fortgesetzt. Die
-Berechnungstoleranz beträgt zwei Cent.
+Berechnungstoleranz beträgt zwei Cent. Ein einzelner Decimal-Operand darf höchstens 4.096 Ziffern enthalten.
+Diese weit oberhalb üblicher Rechnungsbeträge liegende Ressourcengrenze hält den Rechenkontext auch bei
+nichtterminierenden Divisionen beschränkt; eine Überschreitung endet wertfrei mit `422 invoice_input_error`.
+
+Fehlend und vorhanden-aber-ungültig bleiben getrennt: Für ein ungültiges Rechnungsdatum oder einen ungültigen
+Zahlbetrag wird kein Pflichtfeld-„fehlt“-Befund erzeugt. Der normalisierte Wert bleibt `null`, der Rohwert bleibt
+im technischen Anhang, `assessment.internal.status` steht auf `errors` und `CHECK-000` wird nicht ausgegeben.
 
 Fachlich verschiedene Angaben bleiben auch dann getrennt, wenn eine Syntax sie räumlich zusammenfasst:
 `delivery.actual_date` enthält den tatsächlichen Liefertermin (BT-72), `delivery.location` den Lieferort
@@ -123,12 +133,14 @@ Jeder Schema-2-Befund enthält:
 - `rule_class` und `severity`;
 - `rule` mit stabiler ID, Titel, Nachricht, Quelle, Referenz, optionalem Profil und Version;
 - `semantic_references` für fachliche BG-/BT-Bezüge;
-- `occurrence` für Scope, Vorkommensindex und optionalen JSON-Pointer;
+- `occurrence` für Scope, nullbasierten Arrayindex, fachliche Kennung und optionalen JSON-Pointer;
 - `xml_location` nur für einen tatsächlich bekannten XML-Pfad beziehungsweise Zeile/Spalte;
 - optional `actual` und `expected` als Evidenz.
 
 `BG-16` bedeutet fachlich „Zahlungsanweisungen“. Es ist weder ein Ort im Bericht noch ein JSON- oder XML-Pfad.
 Consumer müssen für das Analyseobjekt `occurrence.json_pointer` und für die XML-Quelle `xml_location` verwenden.
+Die Zahl in einer menschenlesbaren Bezeichnung wie „Position 42“ ist keine Arrayposition; die erste Position mit
+der fachlichen ID `42` hat `occurrence.index = 0`, `identifier = "42"` und `/lines/0`.
 
 Regel-IDs werden nach Veröffentlichung nicht für eine andere Bedeutung wiederverwendet. Wichtige Präfixe:
 
@@ -137,7 +149,7 @@ Regel-IDs werden nach Veröffentlichung nicht für eine andere Bedeutung wiederv
 | `REQ`, `PROFILE` | Pflichtangaben und Profilkennung |
 | `BR`, `XRECHNUNG-BR` | transparente Vorprüfung benannter EN-/XRechnung-Regeln |
 | `CODE`, `CURR`, `ADDR` | Codes, Währungen und Adressen |
-| `DATE`, `LINE`, `CALC` | Datumslogik, Positionen und Berechnungen |
+| `FORMAT`, `DATE`, `LINE`, `CALC` | lexikalische Werte, Datumslogik, Positionen und Berechnungen |
 | `TAX`, `PAY` | Steuer- und Zahlungsplausibilität |
 | `TECH`, `SYNTAX`, `KOSIT` | technische Verarbeitung und offizielle Anbindung |
 

@@ -1,5 +1,60 @@
 'use strict';
 
+const UI_REVISION_HEADER = 'X-Einvoice-UI-Revision';
+const uiRevision = document.currentScript?.dataset.uiRevision || '';
+const REQUIRED_UI_IDS = Object.freeze([
+  'additional-parties-section',
+  'builtin-scope',
+  'buyer-card',
+  'copy-xml-button',
+  'document-facts',
+  'document-subtitle',
+  'document-title',
+  'document-type-summary',
+  'download-complete-html-button',
+  'download-html-button',
+  'download-json-button',
+  'download-xml-button',
+  'drop-zone',
+  'due-date-summary',
+  'error-box',
+  'file-input',
+  'findings-list',
+  'header-adjustments-card',
+  'header-adjustments-section',
+  'line-count',
+  'line-items-body',
+  'line-tax-breakdown-notices',
+  'new-file-button',
+  'notes-section',
+  'official-checkbox',
+  'official-report-details',
+  'official-report-raw',
+  'official-state',
+  'payable-total',
+  'payment-section',
+  'print-button',
+  'progress',
+  'raw-xml',
+  'references-section',
+  'result-view',
+  'seller-card',
+  'source-section',
+  'status-badge',
+  'summary-counts',
+  'tax-section',
+  'technical-body',
+  'technical-next',
+  'technical-page-info',
+  'technical-prev',
+  'technical-search',
+  'technical-summary',
+  'totals-section',
+  'upload-view',
+  'validation-assessment',
+  'validation-tab-count',
+]);
+
 const state = {
   file: null,
   analysis: null,
@@ -10,6 +65,43 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+
+function uiFetch(input, options = {}) {
+  return fetch(input, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      [UI_REVISION_HEADER]: uiRevision,
+    },
+  });
+}
+
+function showUiCompatibilityError(message) {
+  const alert = document.createElement('main');
+  alert.setAttribute('role', 'alert');
+  alert.className = 'compatibility-error';
+  alert.textContent = message;
+  document.body.replaceChildren(alert);
+}
+
+function uiContractIsUsable() {
+  const revisionPattern = /^[0-9a-f]{64}$/;
+  if (!revisionPattern.test(uiRevision) || document.body?.dataset.uiRevision !== uiRevision) {
+    showUiCompatibilityError(
+      'Die geöffnete Oberfläche gehört zu einer anderen Anwendungsversion. Bitte schließen Sie dieses Fenster und öffnen Sie den E-Rechnungs-Prüfer erneut.',
+    );
+    return false;
+  }
+
+  const missingIds = REQUIRED_UI_IDS.filter((id) => document.getElementById(id) === null);
+  if (missingIds.length > 0 || document.querySelector('.upload-card') === null) {
+    showUiCompatibilityError(
+      'Die Oberfläche wurde nicht vollständig geladen. Bitte schließen Sie dieses Fenster und öffnen Sie den E-Rechnungs-Prüfer erneut.',
+    );
+    return false;
+  }
+  return true;
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -1165,7 +1257,7 @@ async function analyzeFile(file) {
     const form = new FormData();
     form.append('file', file, file.name);
     form.append('official', officialValidationRequested() ? 'true' : 'false');
-    const response = await fetch('/api/analyze', { method: 'POST', body: form });
+    const response = await uiFetch('/api/analyze', { method: 'POST', body: form });
     if (!response.ok) throw new Error(await parseError(response));
     const data = await response.json();
     if (data.schema_version !== 2) {
@@ -1211,7 +1303,7 @@ async function downloadXml() {
   try {
     const form = new FormData();
     form.append('file', state.file, state.file.name);
-    const response = await fetch('/api/xml', { method: 'POST', body: form });
+    const response = await uiFetch('/api/xml', { method: 'POST', body: form });
     if (!response.ok) throw new Error(await parseError(response));
     const blob = await response.blob();
     const disposition = response.headers.get('content-disposition') || '';
@@ -1229,7 +1321,7 @@ async function fetchHtmlReport(scope = 'readable') {
   form.append('file', state.file, state.file.name);
   form.append('official', officialValidationRequested() ? 'true' : 'false');
   form.append('scope', scope);
-  const response = await fetch('/api/report', { method: 'POST', body: form });
+  const response = await uiFetch('/api/report', { method: 'POST', body: form });
   if (!response.ok) throw new Error(await parseError(response));
   return response.blob();
 }
@@ -1302,7 +1394,7 @@ async function loadExample(name) {
   $('#error-box').hidden = true;
   setLoading(true);
   try {
-    const response = await fetch(`/api/examples/${encodeURIComponent(name)}`);
+    const response = await uiFetch(`/api/examples/${encodeURIComponent(name)}`);
     if (!response.ok) throw new Error('Das Beispiel konnte nicht geladen werden.');
     const blob = await response.blob();
     const disposition = response.headers.get('content-disposition') || '';
@@ -1327,6 +1419,8 @@ function resetView() {
 }
 
 function initialise() {
+  if (!uiContractIsUsable()) return;
+
   const dropZone = $('#drop-zone');
   const fileInput = $('#file-input');
 

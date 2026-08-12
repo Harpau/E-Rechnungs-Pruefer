@@ -217,8 +217,7 @@ def _format_number(value: Any, digits: int | None = None) -> str:
         if "." in raw:
             raw = raw.rstrip("0").rstrip(".")
     else:
-        number = number.quantize(Decimal(1).scaleb(-digits))
-        raw = f"{number:.{digits}f}"
+        raw = format(number, f".{digits}f")
     integer, separator, fraction = raw.partition(".")
     sign = ""
     if integer.startswith("-"):

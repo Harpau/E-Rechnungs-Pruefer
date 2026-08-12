@@ -282,8 +282,8 @@ werden. Anschließend sind mindestens eine Annahme und eine Ablehnung real mit K
 
 ## Lokaler Build auf Windows
 
-Voraussetzungen sind Windows-x64-Python 3.13, Inno Setup 6 oder 7 und Netzwerkzugriff beim Vorbereiten der
-gesperrten Komponenten:
+Voraussetzungen sind Windows-x64-Python 3.13 und Netzwerkzugriff beim Vorbereiten der gesperrten Komponenten und
+des auf Inno Setup 7.0.2 x64 festgeschriebenen Installercompilers:
 
 ```powershell
 py -3.13 -m venv .venv
@@ -291,7 +291,8 @@ py -3.13 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -e . -r packaging\windows\requirements-build.txt
 python scripts\prepare_windows_components.py
-.\scripts\build_windows.ps1
+$InnoSetupCompiler = .\scripts\install_inno_setup.ps1
+.\scripts\build_windows.ps1 -InnoSetupCompiler $InnoSetupCompiler
 ```
 
 Für signierte GitHub-Builds gilt stattdessen der vollständige, gehashte Windows-x64-Lock
@@ -326,7 +327,8 @@ laufen. `-ConfirmIsolatedEnvironment` bestätigt diese Voraussetzung, hebt die V
 Insbesondere dürfen keine unvollständigen v1.4.0-Migrations- oder Alttransaktionszustände vorhanden sein.
 
 ```powershell
-.\scripts\build_windows.ps1 -BuildElevatedRecoveryTestInstaller
+$InnoSetupCompiler = .\scripts\install_inno_setup.ps1
+.\scripts\build_windows.ps1 -InnoSetupCompiler $InnoSetupCompiler -BuildElevatedRecoveryTestInstaller
 .\scripts\test_windows_package.ps1 -ConfirmIsolatedEnvironment
 .\scripts\test_windows_mode_exclusion.ps1 -ConfirmIsolatedEnvironment
 .\scripts\test_windows_service_package.ps1 `
@@ -408,7 +410,20 @@ Nach dem Lauf:
    Zustand zählt nicht als erfolgreiche Recovery und darf nicht manuell gelöscht werden, bevor
    Diagnoseinformationen gesichert sind.
 
-## Manuelle Windows-11-Abnahme vor Veröffentlichung
+## Manuelle Windows-10-/Windows-11-Abnahme vor Veröffentlichung
+
+Windows 10 ist für Patchreleases ein eigenes Pflichtsystem. Jeweils getrennt für Desktop und Dienst werden die
+Upgradepfade 1.5.0 → Zielversion und 2.0.1 → Zielversion sowie eine Neuinstallation geprüft. Bei jedem Upgrade
+bleibt ein bereits geöffnetes Alt-Tab mit warmem Cache bestehen: Es muss kontrolliert einen UI-Versionskonflikt
+oder eine nach dem Prozessneustart abgelaufene Sitzung samt Wiederöffnungshinweis melden, während ein neu über
+Launcher beziehungsweise Öffnen-Client gestartetes Fenster die aktuelle, revisionierte Oberfläche lädt.
+Cookiegeschützte Browser-API-Aufrufe müssen die UI-Revision mitsenden;
+Bearer-authentifizierte Automatisierungen wie Node-RED bleiben davon ausgenommen.
+
+Auf Windows 10 gehören CII, UBL und Hybrid-PDF, echte KoSIT-Prüfung, Desktop- und Dienstmodus sowie der Erhalt
+von Dienstkonfiguration und API-Token zum Pflichtumfang. Die vollständige Installer-, Modusausschluss-,
+Recovery- und Reboot-Abnahme bleibt zusätzlich auf Windows 11 verbindlich; Windows Server 2022 deckt den
+automatisierten CI-Paketpfad ab.
 
 Vor einem öffentlichen Release ist das signierte Vorab-Artefakt auf einer sauberen, anschließend verworfenen
 Windows-11-x64-VM zu prüfen:

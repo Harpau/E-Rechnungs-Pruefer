@@ -237,6 +237,13 @@ Ein Befund besitzt in Schema 2 unter anderem:
 `semantic_references` und sind weder JSON- noch XML-Orte. Für eine Stelle im Analyseobjekt ist
 `occurrence.json_pointer` maßgeblich; eine konkrete XML-Fundstelle darf nur aus `xml_location.path`, `.line` und
 `.column` gelesen werden. Ein fehlendes `xml_location` darf nicht durch einen BG-/BT-Code ersetzt werden.
+`occurrence.index` ist immer der nullbasierte Index im veröffentlichten Array; eine fachliche Positionskennung
+steht separat in `occurrence.identifier`. Zahlen aus einer menschenlesbaren Ortsbezeichnung dürfen nicht als
+Index interpretiert werden.
+
+Überschreitet ein untrusted Rechnungswert eine feste Maximallänge des öffentlichen Vertrags, antworten Analyse-,
+HTML- und PDF-Endpunkt kontrolliert mit `422 invoice_input_error` statt mit `500`. Werte werden nicht still
+gekürzt; der Fehlertext enthält weder den Rohwert noch interne Pydantic-Details.
 
 ## Berichtheader
 

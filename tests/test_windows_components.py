@@ -12,6 +12,8 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "prepare_windows_components.py"
@@ -120,10 +122,16 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
     assert "persist-credentials: false" in workflow
     draft_create = workflow.index('gh release create "${GITHUB_REF_NAME}"')
     asset_upload = workflow.index('gh release upload "${GITHUB_REF_NAME}"')
-    draft_publish = workflow.index('gh release edit "${GITHUB_REF_NAME}" --draft=false')
-    assert draft_create < asset_upload < draft_publish
+    assert draft_create < asset_upload
     assert "--draft" in workflow[draft_create:asset_upload]
     assert "--verify-tag" in workflow[draft_create:asset_upload]
+    assert 'gh release edit "${GITHUB_REF_NAME}" --draft=false' not in workflow
+    assert "artifact-ids: ${{ needs.source-release.outputs.artifact-id }}" in workflow
+    assert "artifact-ids: ${{ needs.windows-release.outputs.artifact-id }}" in workflow
+    assert 'release_state="$(gh release view' in workflow
+    assert "cmp -s" in workflow
+    assert "unerwartete Datei" in workflow
+    assert "--clobber" not in workflow
 
     for expected in (
         "EINVOICE_AZURE_SIGN_TOOL",
@@ -143,7 +151,9 @@ def test_manual_release_preview_uploads_internal_recovery_installer_separately()
     release_docs = (PROJECT_ROOT / "docs/RELEASE.md").read_text(encoding="utf-8")
 
     inspect_start = workflow.index("      - name: Inspect all owned executable signatures")
-    production_upload = workflow.index("          name: windows-release-${{ github.run_id }}", inspect_start)
+    production_upload = workflow.index(
+        "          name: windows-release-${{ github.run_id }}-${{ github.run_attempt }}", inspect_start
+    )
     internal_upload = workflow.index("      - name: Upload signed internal recovery test installer")
     publish_start = workflow.index("\n  publish:")
     inspect_block = workflow[inspect_start:production_upload]
@@ -171,9 +181,19 @@ def test_manual_release_preview_uploads_internal_recovery_installer_separately()
     assert inspect_start < production_upload < internal_upload < publish_start
 
     assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publish_block
-    assert "name: windows-release-${{ github.run_id }}" in publish_block
+    assert "artifact-ids: ${{ needs.windows-release.outputs.artifact-id }}" in publish_block
+    assert "artifact-ids: ${{ needs.source-release.outputs.artifact-id }}" in publish_block
+    assert "name: Stage draft GitHub release" in publish_block
+    assert "Stage retry-safe draft GitHub release" in publish_block
+    assert 'gh release edit "${GITHUB_REF_NAME}" --draft=false' not in publish_block
     assert "INTERNAL-TEST-windows-recovery" not in publish_block
     assert "test-installer" not in publish_block
+
+    source_upload = workflow[workflow.index("  source-release:") : workflow.index("  windows-release:")]
+    assert "name: source-release-${{ github.run_id }}-${{ github.run_attempt }}" in source_upload
+    for product_block in (source_upload, production_block):
+        assert "retention-days: 14" in product_block
+        assert "if-no-files-found: error" in product_block
 
     for expected in (
         "INTERNAL-TEST-windows-recovery-",
@@ -186,6 +206,11 @@ def test_manual_release_preview_uploads_internal_recovery_installer_separately()
         r"build\windows\bundle\E-Rechnungs-Pruefer\E-Rechnungs-Pruefer.exe",
         r"dist\E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe",
         "niemals von Tag-Läufen",
+        "Windows 10 x64",
+        "1.5.0 → Zielversion",
+        "2.0.1 → Zielversion",
+        "taggenauen Artefakte",
+        "veröffentlicht diesen Draft ausdrücklich nicht automatisch",
     ):
         assert expected in release_docs
 
@@ -222,6 +247,65 @@ def test_windows_release_dependencies_are_exactly_pinned_and_hashed() -> None:
 
     for expected in ("pip", "pytest", "httpx", "httpx2", "setuptools", "wheel"):
         assert expected in locked
+
+
+def test_pypdf_runtime_and_windows_lock_require_patched_version() -> None:
+    minimum = Version("6.15.0")
+    project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requirement_files = [
+        Requirement(value) for value in project["project"]["dependencies"] if Requirement(value).name.lower() == "pypdf"
+    ]
+    requirement_files.extend(
+        Requirement(line)
+        for line in (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#") and Requirement(line).name.lower() == "pypdf"
+    )
+
+    assert len(requirement_files) == 2
+    assert all(minimum in requirement.specifier for requirement in requirement_files)
+    assert all(Version("7.0.0") not in requirement.specifier for requirement in requirement_files)
+
+    lock = (PROJECT_ROOT / "packaging/windows/requirements-release.txt").read_text(encoding="utf-8")
+    match = re.search(
+        r"^pypdf==(?P<version>[^\s]+) --hash=sha256:(?P<digest>[0-9a-f]{64})$",
+        lock,
+        flags=re.MULTILINE,
+    )
+    assert match is not None
+    assert Version(match.group("version")) >= minimum
+    assert match.group("digest") == "14e001d6504822cb1ca9c7ed9a69bccb320f59b320730f55af804361abe4d5ee"
+
+
+def test_windows_desktop_package_covers_ui_revision_contract() -> None:
+    package_test = (PROJECT_ROOT / "scripts/test_windows_package.ps1").read_text(encoding="utf-8")
+
+    assert 'data-ui-revision="(?<revision>[0-9a-f]{64})"' in package_test
+    assert "X-Einvoice-UI-Revision: $UiRevision" in package_test
+    assert '"ui_version_mismatch"' in package_test
+    assert "Bootstrap und Startseite besitzen nicht jeweils den sicheren no-store-Cachevertrag." in package_test
+    assert "$NoStoreHeaderCount -ne 2" in package_test
+    assert "public, max-age=31536000, immutable" in package_test
+    asset_headers = package_test.index("--dump-header $JavascriptHeaders")
+    asset_start = package_test.rfind("& curl.exe", 0, asset_headers)
+    asset_end = package_test.index('"http://127.0.0.1:$($runtime.port)/static/$UiRevision/app.js"', asset_start)
+    assert "--cookie $CookieFile" in package_test[asset_start:asset_end]
+    bearer_start = package_test.index("Authorization: Bearer $ApiToken")
+    bearer_end = package_test.index('"http://127.0.0.1:$($runtime.port)/api/analyze"', bearer_start)
+    assert "X-Einvoice-UI-Revision" not in package_test[bearer_start:bearer_end]
+
+
+def test_windows_service_package_covers_ui_revision_contract() -> None:
+    package_test = (PROJECT_ROOT / "scripts/test_windows_service_package.ps1").read_text(encoding="utf-8")
+
+    assert "from app.windows_service_ipc import request_browser_url" in package_test
+    assert 'data-ui-revision="(?<revision>[0-9a-f]{64})"' in package_test
+    assert "$NoStoreHeaderCount -ne 2" in package_test
+    assert "public, max-age=31536000, immutable" in package_test
+    assert '"http://127.0.0.1:$Port/api/examples/cii"' in package_test
+    assert '$MissingBrowserRevisionStatus -ne "409"' in package_test
+    assert "ui_version_mismatch" in package_test
+    assert "X-Einvoice-UI-Revision: $BrowserRevision" in package_test
+    assert "Remove-Item -LiteralPath $BrowserSecretPath" in package_test
 
 
 def test_windows_installer_offers_removable_per_user_autostart() -> None:

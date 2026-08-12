@@ -30,6 +30,8 @@ Nachweis für den Inhalt des späteren Tag-Builds.
 ```sh
 ./scripts/check.sh
 python -m pip_audit --strict .
+python -m pip_audit --strict --disable-pip --require-hashes \
+  -r packaging/windows/requirements-release.txt
 ```
 
 Der Projektmodus prüft die in `pyproject.toml` deklarierten Fremdabhängigkeiten, ohne das lokal editierbar
@@ -101,15 +103,19 @@ geprüften Codebasis:
 
 ```powershell
 python scripts\prepare_windows_components.py
-.\scripts\build_windows.ps1 -BuildElevatedRecoveryTestInstaller
+$InnoSetupCompiler = .\scripts\install_inno_setup.ps1
+.\scripts\build_windows.ps1 -InnoSetupCompiler $InnoSetupCompiler -BuildElevatedRecoveryTestInstaller
 .\scripts\test_windows_package.ps1 -ConfirmIsolatedEnvironment
 .\scripts\test_windows_mode_exclusion.ps1 -ConfirmIsolatedEnvironment
 .\scripts\test_windows_service_package.ps1 -ConfirmIsolatedEnvironment `
     -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
 ```
 
-Die signierten GitHub-Builds verwenden exakt CPython 3.13.14 und installieren sämtliche Laufzeit-, Test- und
-Buildabhängigkeiten ausschließlich aus `packaging/windows/requirements-release.txt`. Dort sind alle Pakete samt
+Die CI- und signierten GitHub-Builds installieren zusätzlich den offiziellen Inno-Setup-7.0.2-x64-Compiler aus
+seinem unveränderlichen Releaseasset, prüfen Installer und Compiler gegen die festgeschriebenen SHA-256-Werte
+und übergeben ausschließlich diesen Compilerpfad an den Windows-Build. Die signierten GitHub-Builds verwenden
+außerdem exakt CPython 3.13.14 und installieren sämtliche Laufzeit-, Test- und Buildabhängigkeiten ausschließlich
+aus `packaging/windows/requirements-release.txt`. Dort sind alle Pakete samt
 transitiven Abhängigkeiten auf die ausgewählten Windows-x64-Wheels und deren SHA-256-Hashes festgelegt. Dadurch
 verwenden manueller Probelauf und späterer Tag-Lauf dieselbe Python-Abhängigkeitsbasis. Der allgemeinere
 Kompatibilitätstest in `ci.yml` prüft weiterhin die unterstützten Python-Versionen und zulässigen
@@ -190,7 +196,8 @@ python -m venv /tmp/einvoice-release-test
 
 Vor einem öffentlichen Tag wird der Workflow `Release` manuell auf `main` gestartet. Dieser Lauf verwendet die
 geschützte Umgebung `release`, signiert alle eigenen Windows-EXEs und beide Installer über Azure Key Vault und
-stellt die Produktionsdateien für drei Tage als Actions-Artefakt `windows-release-<Run-ID>` bereit. Zusätzlich
+stellt die Produktionsdateien für 14 Tage als Actions-Artefakt
+`windows-release-<Run-ID>-<Versuch>` bereit. Zusätzlich
 enthält ausschließlich dieser manuelle Lauf das separate Artefakt
 `INTERNAL-TEST-windows-recovery-<Run-ID>-<Versuch>` mit dem signierten internen Recovery-Testinstaller; es wird
 nur einen Tag aufbewahrt. Das interne Artefakt wird niemals von Tag-Läufen hochgeladen oder an einen GitHub
@@ -212,8 +219,27 @@ gleichnamige Test-EXE muss dagegen ausschließlich unter
 Trennung ist fail-closed in den Testskripten verankert. Vor der Verwendung sind bei beiden Installern
 Authenticode-Status und Zeitstempel erneut zu prüfen.
 
-Das signierte Artefakt ist anschließend auf einer sauberen, nach dem Test verworfenen Windows-11-x64-VM zu
-prüfen. Neben den automatisierten Paket-, Modusausschluss- und Recoverytests umfasst die manuelle Abnahme:
+Das signierte Vorab-Artefakt ist anschließend anhand der folgenden verbindlichen Matrix zu prüfen. Jeder Lauf
+beginnt auf einem dokumentierten, sauberen VM-Snapshot; ein offenes Alt-Tab bleibt bei den Upgradefällen bewusst
+über das Update hinweg geöffnet.
+
+| System | Betriebsart | Ausgangsstand | Pflichtschwerpunkt |
+|---|---|---|---|
+| Windows 10 x64 | Desktop | 1.5.0 → Zielversion | warmer Browsercache, offenes Alt-Tab, CII/UBL mit KoSIT |
+| Windows 10 x64 | Desktop | 2.0.1 → Zielversion | realer Patch-Upgradepfad und UI-Revisionskonflikt |
+| Windows 10 x64 | Dienst | 1.5.0 → Zielversion | warmer Cache, Öffnen-Client, CII/UBL mit KoSIT |
+| Windows 10 x64 | Dienst | 2.0.1 → Zielversion | Erhalt von Dienstkonfiguration und API-Token |
+| Windows 10 x64 | Desktop und Dienst getrennt | Neuinstallation | CII, UBL und Hybrid-PDF |
+| Windows 11 x64 | Desktop und Dienst | Zielversion | vollständige Installer-, Ausschluss- und Recoveryabnahme |
+| Windows Server 2022 | CI | Zielversion | automatisierter Paket- und Integrationstest |
+
+Ein altes Tab muss eine kontrollierte Aufforderung zum Schließen und erneuten Öffnen anzeigen: nach einem
+Prozessneustart als `403 desktop_session_error` wegen der absichtlich ungültigen alten Sitzung, innerhalb einer
+noch gültigen Sitzung mit abweichender Oberfläche als `409 ui_version_mismatch`. Ein neues, über Launcher oder
+Öffnen-Client gestartetes Fenster muss unmittelbar die aktuelle Oberfläche laden. Ein JavaScript-Stackfehler
+wie `Cannot set properties of null` ist ein Releaseblocker.
+
+Neben den automatisierten Paket-, Modusausschluss- und Recoverytests umfasst die manuelle Abnahme:
 
 1. Bundle-ZIP entpacken und Signaturen sowie SHA-256-Prüfsummen aller fünf eigenen Dateien und des ZIPs prüfen;
 2. Desktopstart, Tray, Standardbrowser und HKCU-Autostart, danach reguläre Desktopdeinstallation;
@@ -246,8 +272,9 @@ prüfen. Neben den automatisierten Paket-, Modusausschluss- und Recoverytests um
 11. bei gefordertem Betrieb vor Anmeldung auch den vollständigen Node-RED-Ablauf, wobei Node-RED selbst als
    Dienst unter der vorgesehenen Identität laufen muss.
 
-Erst nach dokumentiert bestandenem Vorab-Probelauf, manueller Windows-Abnahme und ausdrücklicher Freigabe
-dürfen Tag und öffentliches Release erzeugt werden.
+Erst nach dokumentiert bestandenem Vorab-Probelauf, manueller Windows-Abnahme und ausdrücklicher Freigabe darf
+der Tag erzeugt werden. Das öffentliche Release bleibt bis zur nachfolgenden Prüfung der taggenauen Artefakte
+gesperrt.
 
 ## 5. Tag und GitHub Release
 
@@ -256,12 +283,23 @@ git tag -a vX.Y.Z -m "E-Rechnungs-Pruefer X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-Der Release-Workflow wiederholt Check und Build, verifiziert die Tag-Version und veröffentlicht die Dateien aus
-`dist/`. Beide Windows-Installer werden nur dann an den öffentlichen GitHub Release angehängt, wenn alle
-vorgesehenen Authenticode-Signaturen gültig sind und die Windows-Paketprüfungen bestanden wurden. Fehlen
-Azure-Anmeldung, Key-Vault-Konfiguration, gültige Signatur oder eines der erwarteten Artefakte, schlägt der
-Release fehl. Der Publish-Job legt zunächst einen Draft an, lädt den vollständigen Artefaktsatz hoch und
-veröffentlicht den Draft erst danach; damit ist der Ablauf mit unveränderlichen GitHub Releases kompatibel.
+Der Release-Workflow wiederholt Check und Build, verifiziert die Tag-Version und lädt die exakt in diesem
+Tag-Lauf erzeugten Dateien in einen **Draft**. Er veröffentlicht diesen Draft ausdrücklich nicht automatisch.
+Fehlen Azure-Anmeldung, Key-Vault-Konfiguration, gültige Signatur oder eines der erwarteten Artefakte, schlägt
+der Lauf fehl. Vor der manuellen Veröffentlichung werden genau die Dateien des Drafts heruntergeladen und
+mindestens fokussiert auf Windows 10 geprüft. Vorab- und Tag-Build können wegen Build- und
+Signaturzeitstempeln trotz identischem Commit verschiedene Bytes haben; ein bestandener Vorabtest ersetzt daher
+nicht diese letzte Prüfung.
+
+Zu protokollieren sind Tag, Commit-SHA, Workflow-Run-ID und -Versuch, Installer-SHA-256, Windows-Build,
+Edge-Version und Testergebnis. Erst danach darf der bestehende Draft manuell veröffentlicht werden. Dateien
+werden unter einem einmal veröffentlichten Release niemals ersetzt.
+
+Artefakte werden zwischen den Jobs über ihre unveränderlichen GitHub-Artefakt-IDs übergeben, sodass auch ein
+partieller Rerun erfolgreiche Dateien aus dem vorherigen Versuch eindeutig weiterverwendet. Existiert nach
+einem unterbrochenen Publish-Job bereits ein Draft, akzeptiert der Folgelauf vorhandene Dateien nur
+byteidentisch, ergänzt ausschließlich fehlende Dateien und bricht bei abweichenden oder unerwarteten Assets
+geschlossen ab. Ein bereits veröffentlichtes Release wird niemals durch den Workflow verändert.
 
 ## Rücknahme
 

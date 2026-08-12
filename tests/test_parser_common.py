@@ -12,6 +12,7 @@ from app.xml_utils import (
     decode_xml_bytes,
     money_string,
     parse_date_value,
+    parse_xsd_date_value,
     technical_rows,
 )
 
@@ -129,6 +130,31 @@ def test_parse_period_preserves_partial_periods_and_omits_empty_ones():
 )
 def test_parse_date_value_normalizes_supported_formats_and_preserves_unknown_values(value, format_code, expected):
     assert parse_date_value(value, format_code) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        (" ", None),
+        ("2024-01-31", "2024-01-31"),
+        ("2024-01-31Z", "2024-01-31"),
+        ("2024-01-31+14:00", "2024-01-31"),
+        ("2024-01-31-05:30", "2024-01-31"),
+        ("20240131", "20240131"),
+        ("2024-01-31T23:59:00Z", "2024-01-31T23:59:00Z"),
+        ("2024-02-30", "2024-02-30"),
+        ("2024-01-31+14:01", "2024-01-31+14:01"),
+        ("2024-01-31+15:00", "2024-01-31+15:00"),
+    ],
+)
+def test_parse_xsd_date_value_accepts_only_the_xsd_date_lexical_space(value, expected):
+    assert parse_xsd_date_value(value) == expected
+
+
+def test_compact_date_parsing_remains_available_for_cii_only() -> None:
+    assert parse_date_value("20240131", "102") == "2024-01-31"
+    assert parse_xsd_date_value("20240131") == "20240131"
 
 
 @pytest.mark.parametrize(

@@ -1,10 +1,60 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
 
 from app import settings as settings_module
+
+
+def test_resource_limit_defaults_are_positive() -> None:
+    assert settings_module.settings.max_xml_structure_items == 100_000
+    assert settings_module.settings.max_technical_seconds == 5.0
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, 7), (" 11 ", 11)])
+def test_positive_int_env_accepts_defaults_and_positive_values(
+    raw: str | None,
+    expected: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if raw is None:
+        monkeypatch.delenv("TEST_POSITIVE_INT", raising=False)
+    else:
+        monkeypatch.setenv("TEST_POSITIVE_INT", raw)
+
+    assert settings_module._positive_int_env("TEST_POSITIVE_INT", 7) == expected
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "kein-wert"])
+def test_positive_int_env_rejects_invalid_values(raw: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_POSITIVE_INT", raw)
+
+    with pytest.raises(ValueError, match="TEST_POSITIVE_INT"):
+        settings_module._positive_int_env("TEST_POSITIVE_INT", 7)
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, 1.5), (" 2.25 ", 2.25)])
+def test_positive_float_env_accepts_defaults_and_positive_finite_values(
+    raw: str | None,
+    expected: float,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if raw is None:
+        monkeypatch.delenv("TEST_POSITIVE_FLOAT", raising=False)
+    else:
+        monkeypatch.setenv("TEST_POSITIVE_FLOAT", raw)
+
+    assert math.isclose(settings_module._positive_float_env("TEST_POSITIVE_FLOAT", 1.5), expected)
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "nan", "inf", "kein-wert"])
+def test_positive_float_env_rejects_invalid_values(raw: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_POSITIVE_FLOAT", raw)
+
+    with pytest.raises(ValueError, match="TEST_POSITIVE_FLOAT"):
+        settings_module._positive_float_env("TEST_POSITIVE_FLOAT", 1.5)
 
 
 def test_load_env_file_ignores_noise_unquotes_values_and_preserves_environment(

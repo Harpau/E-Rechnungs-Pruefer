@@ -39,7 +39,13 @@ Eine PDF ohne eingebettete XML löst einen Eingabefehler aus. Es gibt absichtlic
 
 ### Sichere XML-Verarbeitung
 
-`app/xml_utils.py` weist DTD- und ENTITY-Deklarationen bereits vor dem Parsen ab. lxml wird mit deaktivierter Entitätsauflösung, deaktiviertem DTD-Laden und deaktiviertem Netzwerkzugriff verwendet. Die von `app/source.py` extrahierte Rechnungs-XML bleibt als unveränderte `bytes` getrennt vom geparsten Baum erhalten. Nur diese Bytes sind die Grundlage des bytegetreuen Exports über `/api/xml`; Pretty-Printing dient ausschließlich der Anzeige.
+`app/xml_utils.py` weist DTD- und ENTITY-Deklarationen bereits vor dem Parsen ab. lxml wird mit deaktivierter
+Entitätsauflösung, deaktiviertem DTD-Laden und deaktiviertem Netzwerkzugriff verwendet. Ein nicht baumbildender
+Preflight zählt vor dem eigentlichen Baumaufbau Elemente, Attribute, Namespace-Deklarationen, Kommentare und
+Processing Instructions linear und bricht oberhalb von `MAX_XML_STRUCTURE_ITEMS` kontrolliert ab. Die von
+`app/source.py` extrahierte Rechnungs-XML bleibt als unveränderte `bytes` getrennt vom geparsten Baum erhalten.
+Nur diese Bytes sind die Grundlage des bytegetreuen Exports über `/api/xml`; Pretty-Printing dient ausschließlich
+der Anzeige.
 
 ### Technische XML-Darstellungen
 
@@ -52,8 +58,10 @@ Die Anwendung stellt dieselbe Rechnungs-XML für unterschiedliche Zwecke in vier
   sich in Formatierung und XML-Deklaration von der Quelle unterscheiden.
 - `technical.fields` ist eine navigierbare Tabelle aus nichtleerem direktem Elementtext und Attributen mit Pfad
   und Namespace-URI. Die Namespace-Deklarationen des Wurzelelements werden als zusätzliche Felder aufgenommen.
-  Element- und Attributfelder sind durch `MAX_TECHNICAL_ROWS` begrenzt; `technical.truncated` zeigt eine Kürzung
-  an und `assessment.processing.limitations` benennt den betroffenen JSON-Pointer.
+  Namespace-, Element- und Attributfelder teilen sich `MAX_TECHNICAL_ROWS`; `technical.truncated` zeigt eine
+  Kürzung an und `assessment.processing.limitations` unterscheidet Zeilen- und Zeitbudget. Die Pfade werden in
+  einem iterativen linearen Durchlauf mit Geschwisterzählern gebildet. `MAX_TECHNICAL_SECONDS` begrenzt nur diese
+  Darstellung und ist kein präemptives Zeitlimit der gesamten Analyse.
 
 Die Tabelle ist keine verlustfreie XML-Repräsentation: Leere Elemente, Kommentare, Processing Instructions und lokal deklarierte Namespace-Bindungen erscheinen nicht zwingend als eigene Zeilen. Für die vollständige Quelle und den bytegetreuen Export bleiben die unveränderten XML-Bytes maßgeblich.
 
@@ -71,7 +79,10 @@ Dictionary-Struktur. Gemeinsame Bezeichnungen und Hilfsfunktionen liegen in `app
 Die Parser sollen keine fachliche Gültigkeit behaupten. Fehlende oder unbekannte Elemente werden möglichst als `None` belassen. Nicht normalisierte Daten bleiben über die XML-Textansichten und den bytegetreuen Export zugänglich; die technische Tabelle bietet dafür eine strukturierte, gegebenenfalls gekürzte Navigation.
 
 Die Syntaxerkennung in `app/analyzer.py` verlangt die unterstützte Kombination aus Wurzelelement und exakt
-passendem Namespace. Ein wohlgeformtes XML mit anderem Root oder Namespace wird als `UNKNOWN` ausgewiesen:
+passendem Namespace. Auch sämtliche fachlich ausgewerteten UBL-/CII-Kindelemente werden nach ihrer exakten
+Namespace-URI ausgewählt; beliebige Eingabepräfixe bleiben zulässig, fremde oder vertauschte Namespaces liefern
+keine normalisierten Werte. UBL-Erweiterungen und sonstige unbekannte XML-Daten bleiben im technischen Anhang
+erhalten. Ein wohlgeformtes XML mit anderem Root oder Namespace wird als `UNKNOWN` ausgewiesen:
 Interne Prüfungen laufen dann nicht, und `assessment.processing` enthält `SYNTAX-001` mit Status `incomplete`.
 
 ### Öffentliches Analyseschema 2
@@ -178,6 +189,14 @@ angeforderten KoSIT-Prüfung läuft außerhalb des Event-Loops und wird pro Proz
 begrenzt, sodass Healthchecks und weitere lokale Requests während längerer Prüfungen beantwortbar bleiben. Sind
 beide Plätze belegt, antwortet die API sofort mit `503` und einem begrenzten `Retry-After`, statt weitere Arbeit
 hinter möglicherweise bereits abgebrochenen Clientanfragen aufzustauen.
+
+`app/ui_contract.py` bildet aus Anwendungsversion, Analyseschema und den Bytes von HTML, JavaScript und CSS eine
+SHA-256-Revision. Die Startseite ist nicht cachebar und referenziert ausschließlich revisionierte, unveränderlich
+cachebare Assets. Cookieauthentifizierte UI-Aufrufe senden die Revision als
+`X-Einvoice-UI-Revision`; ein fehlender oder veralteter Wert endet kontrolliert mit `409 ui_version_mismatch`.
+Nach einem Prozessneustart ist eine alte Browsersitzung bereits ungültig und endet deshalb sicherheitsbedingt
+zuvor mit `403 desktop_session_error`; beide Antworten fordern zum Schließen und erneuten Öffnen auf. Gültig
+bearer-authentifizierte API-/Node-RED-Aufrufe sind von diesem reinen Browservertrag ausgenommen.
 
 Kartennummern werden an der öffentlichen Vertragsgrenze maskiert; technische Feld- und XML-Textansichten werden
 um erkannte rohe Kartenwerte bereinigt. Browser-, HTML- und PDF-Renderer behandeln die Maskierung zusätzlich

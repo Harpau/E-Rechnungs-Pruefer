@@ -880,6 +880,14 @@ $CommitRecoveryLog = Join-Path $TestRoot "update-commit-recovery.log"
 $PdfOutput = Join-Path $TestRoot "report.pdf"
 $PdfHeaders = Join-Path $TestRoot "report-headers.txt"
 $XmlOutput = Join-Path $TestRoot "export.xml"
+$BrowserCookieFile = Join-Path $TestRoot "browser-cookies.txt"
+$BrowserHtml = Join-Path $TestRoot "browser-index.html"
+$BrowserHeaders = Join-Path $TestRoot "browser-headers.txt"
+$BrowserJavascript = Join-Path $TestRoot "browser-app.js"
+$BrowserJavascriptHeaders = Join-Path $TestRoot "browser-app-js-headers.txt"
+$BrowserMismatch = Join-Path $TestRoot "browser-ui-mismatch.json"
+$BrowserMismatchHeaders = Join-Path $TestRoot "browser-ui-mismatch-headers.txt"
+$BrowserExample = Join-Path $TestRoot "browser-example.xml"
 New-Item $TestRoot -ItemType Directory | Out-Null
 Assert-ValidSignature $Setup
 $JunctionTarget = Join-Path $TestRoot "programdata-junction-target"
@@ -1003,6 +1011,114 @@ if ($Listeners.Count -eq 0 -or @($Listeners | Where-Object LocalAddress -ne "127
 }
 $Health = Invoke-RestMethod "http://127.0.0.1:$Port/api/health" -TimeoutSec 5
 if ($Health.status -ne "ok") { throw "Dienst-Healthcheck fehlgeschlagen." }
+$BrowserBootstrapOutput = & python -c `
+    'from app.windows_service_ipc import request_browser_url; print(request_browser_url())'
+if ($LASTEXITCODE -ne 0) {
+    throw "Für den installierten Dienst konnte kein zweiter Browserbootstrap angefordert werden."
+}
+$BrowserBootstrap = ($BrowserBootstrapOutput | Out-String).Trim()
+$BrowserBootstrapOutput = $null
+$BrowserBootstrapUri = [Uri]$BrowserBootstrap
+if ($BrowserBootstrapUri.Scheme -ne "http" -or
+    $BrowserBootstrapUri.Host -ne "127.0.0.1" -or
+    $BrowserBootstrapUri.Port -ne $Port -or
+    $BrowserBootstrapUri.AbsolutePath -ne "/desktop/bootstrap") {
+    throw "Der Dienst lieferte keine zulässige lokale Browserbootstrap-Adresse."
+}
+try {
+    $BrowserEffectiveUrl = (& curl.exe --silent --show-error --fail --location --max-time 20 `
+        --cookie-jar $BrowserCookieFile `
+        --dump-header $BrowserHeaders `
+        --output $BrowserHtml `
+        --write-out "%{url_effective}" `
+        $BrowserBootstrap).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Die Browseroberfläche des installierten Dienstes konnte nicht initialisiert werden."
+    }
+    $BrowserHtmlText = Get-Content -LiteralPath $BrowserHtml -Raw
+    $BrowserResponseHeaders = Get-Content -LiteralPath $BrowserHeaders -Raw
+    $NoStoreHeaderCount = [regex]::Matches(
+        $BrowserResponseHeaders,
+        '(?im)^Cache-Control:\s*no-store\s*\r?$'
+    ).Count
+    if ($NoStoreHeaderCount -ne 2) {
+        throw "Bootstrap und Startseite des Dienstes besitzen nicht jeweils den sicheren no-store-Cachevertrag."
+    }
+    $BrowserRevisionMatches = [regex]::Matches(
+        $BrowserHtmlText,
+        'data-ui-revision="(?<revision>[0-9a-f]{64})"'
+    )
+    $BrowserRevisions = @(
+        $BrowserRevisionMatches |
+            ForEach-Object { $_.Groups["revision"].Value } |
+            Select-Object -Unique
+    )
+    if ($BrowserRevisions.Count -ne 1) {
+        throw "Die Dienstoberfläche deklariert keine eindeutige UI-Revision."
+    }
+    $BrowserRevision = $BrowserRevisions[0]
+    if ($BrowserEffectiveUrl -ne "http://127.0.0.1:$Port/?ui=$BrowserRevision") {
+        throw "Der Browserbootstrap des Dienstes leitete nicht auf die revisionierte Startseite weiter."
+    }
+    foreach ($ExpectedAsset in @(
+        "/static/$BrowserRevision/app.js",
+        "/static/$BrowserRevision/styles.css"
+    )) {
+        if ($BrowserHtmlText.IndexOf($ExpectedAsset, [StringComparison]::Ordinal) -lt 0) {
+            throw "Der Dienstoberfläche fehlt das revisionierte Asset: $ExpectedAsset"
+        }
+    }
+    & curl.exe --silent --show-error --fail --max-time 20 `
+        --cookie $BrowserCookieFile `
+        --dump-header $BrowserJavascriptHeaders `
+        --output $BrowserJavascript `
+        "http://127.0.0.1:$Port/static/$BrowserRevision/app.js"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Das revisionierte JavaScript-Asset des Dienstes konnte nicht geladen werden."
+    }
+    $BrowserJavascriptResponseHeaders = Get-Content -LiteralPath $BrowserJavascriptHeaders -Raw
+    if ($BrowserJavascriptResponseHeaders -notmatch `
+        '(?im)^Cache-Control:\s*public, max-age=31536000, immutable\s*\r?$') {
+        throw "Das revisionierte JavaScript-Asset des Dienstes besitzt keinen unveränderlichen Cachevertrag."
+    }
+
+    $MissingBrowserRevisionStatus = & curl.exe --silent --show-error --max-time 20 `
+        --cookie $BrowserCookieFile `
+        --dump-header $BrowserMismatchHeaders `
+        --output $BrowserMismatch `
+        --write-out "%{http_code}" `
+        "http://127.0.0.1:$Port/api/examples/cii"
+    if ($LASTEXITCODE -ne 0 -or $MissingBrowserRevisionStatus -ne "409") {
+        throw "Ein Dienst-Browseraufruf ohne UI-Revision wurde nicht kontrolliert mit HTTP 409 abgewiesen."
+    }
+    $BrowserMismatchPayload = Get-Content -LiteralPath $BrowserMismatch -Raw | ConvertFrom-Json
+    $BrowserMismatchResponseHeaders = Get-Content -LiteralPath $BrowserMismatchHeaders -Raw
+    if ($BrowserMismatchPayload.type -ne "ui_version_mismatch" -or
+        $BrowserMismatchResponseHeaders -notmatch `
+            "(?im)^X-Einvoice-UI-Revision:\s*$BrowserRevision\s*\r?$") {
+        throw "Der Dienst-Browser-Versionskonflikt lieferte nicht den erwarteten Fehlervertrag."
+    }
+
+    & curl.exe --silent --show-error --fail --max-time 20 `
+        --cookie $BrowserCookieFile `
+        --header "X-Einvoice-UI-Revision: $BrowserRevision" `
+        --output $BrowserExample `
+        "http://127.0.0.1:$Port/api/examples/cii"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Die Dienstoberfläche konnte mit passender UI-Revision kein Beispiel laden."
+    }
+    [xml]$BrowserExampleXml = Get-Content -LiteralPath $BrowserExample -Raw
+    if ($BrowserExampleXml.DocumentElement.LocalName -ne "CrossIndustryInvoice") {
+        throw "Die Dienstoberfläche lieferte mit passender UI-Revision kein CII-Beispiel."
+    }
+} finally {
+    $BrowserBootstrap = $null
+    $BrowserBootstrapUri = $null
+    $BrowserResponseHeaders = $null
+    foreach ($BrowserSecretPath in @($BrowserCookieFile, $BrowserHeaders, $BrowserMismatchHeaders)) {
+        Remove-Item -LiteralPath $BrowserSecretPath -Force -ErrorAction SilentlyContinue
+    }
+}
 $Token = (Get-Content $TokenFile -Raw).Trim()
 $Example = Join-Path $ProjectRoot "app\examples\cii-rechnung-demo.xml"
 $RejectedExample = Join-Path $ProjectRoot "tests\fixtures\cii-category-o.xml"

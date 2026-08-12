@@ -31,6 +31,7 @@ from .pdf_report import render_pdf_report
 from .report_presentation import ReportPresentation, ReportScope, build_report_presentation
 from .settings import settings
 from .source import extract_source
+from .ui_contract import UI_REVISION, UI_STATIC_PREFIX
 from .validators.kosit import KositValidator
 from .xml_utils import InvoiceInputError
 
@@ -105,8 +106,9 @@ app.add_middleware(
     port=int(_desktop_port) if _desktop_port else None,
     api_token=_configured_api_token,
     browser_sessions=get_service_browser_sessions() if os.getenv(SERVICE_MODE_ENV) == "1" else None,
+    ui_revision=UI_REVISION,
 )
-app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
+app.mount(UI_STATIC_PREFIX, StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=APP_DIR / "templates")
 _analysis_slots = threading.BoundedSemaphore(2)
 _pdf_render_slots = threading.BoundedSemaphore(2)
@@ -165,8 +167,7 @@ def _format_number(value: Any, digits: int | None = None) -> str:
     except (InvalidOperation, ValueError):
         return str(value)
     if digits is not None:
-        number = number.quantize(Decimal(1).scaleb(-digits))
-        raw = f"{number:.{digits}f}"
+        raw = format(number, f".{digits}f")
     else:
         raw = format(number, "f")
         if "." in raw:
@@ -265,6 +266,8 @@ async def security_headers(request: Request, call_next):
     )
     if request.url.path.startswith("/api/"):
         response.headers.setdefault("Cache-Control", "no-store")
+    elif request.url.path.startswith(f"{UI_STATIC_PREFIX}/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
     return response
 
 
@@ -306,16 +309,20 @@ async def analysis_capacity_handler(request: Request, exc: _AnalysisCapacityErro
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     kosit_state = KositValidator(settings).configuration_state()
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
             "version": __version__,
+            "ui_revision": UI_REVISION,
+            "static_url_prefix": UI_STATIC_PREFIX,
             "max_upload_mb": settings.max_upload_bytes // (1024 * 1024),
             "kosit_configured": kosit_state["configured"],
             "kosit_problem": " ".join(kosit_state.get("problems") or []),
         },
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/health")

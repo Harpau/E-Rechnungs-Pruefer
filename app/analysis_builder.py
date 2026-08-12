@@ -5,6 +5,8 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+from pydantic import ValidationError
+
 from .api_models import (
     Address,
     AllowanceCharge,
@@ -102,7 +104,7 @@ from .findings import (
 )
 from .profiles import OfficialValidationCapability as ProfileOfficialValidationCapability
 from .profiles import resolve_profile
-from .xml_utils import xml_decimal_value
+from .xml_utils import InvoiceInputError, date_object, xml_decimal_value
 
 SEMANTIC_LABELS = {
     "BG-4": "Verkäufer",
@@ -157,10 +159,7 @@ def _date_value(value: Any) -> date | None:
         return value
     if not isinstance(value, str) or not value:
         return None
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return None
+    return date_object(value)
 
 
 def _amount(value: Any, currency: Any = None) -> Amount | None:
@@ -625,21 +624,23 @@ def _finding_semantic_references(source: dict[str, Any], location: Any) -> list[
     return references
 
 
-def _occurrence(location: Any, finding_id: str) -> FindingOccurrence | None:
+def _legacy_occurrence(location: Any, finding_id: str) -> FindingOccurrence | None:
     if not isinstance(location, str) or not location:
         return None
     scope = OccurrenceScope.DOCUMENT
     pointer: str | None = None
     lowered = location.casefold()
     index_match = re.search(
-        r"(?:Position|Rechnungsposition|Steuergruppe|Zahlungsweg|Zahlungsanweisung)\s+(\d+)",
+        r"(?:Steuergruppe|Zahlungsweg|Zahlungsanweisung)\s+(\d+)",
         location,
         flags=re.IGNORECASE,
     )
-    index = int(index_match.group(1)) - 1 if index_match else None
+    ordinal = int(index_match.group(1)) if index_match else None
+    index = ordinal - 1 if ordinal is not None and ordinal >= 1 else None
     if "position" in lowered or finding_id.startswith("LINE") or finding_id.startswith("CALC-LINE"):
         scope = OccurrenceScope.LINE
-        pointer = f"/lines/{index}" if index is not None else "/lines"
+        index = None
+        pointer = "/lines"
     elif "steuergruppe" in lowered or finding_id.startswith("TAX"):
         scope = OccurrenceScope.TAX
         pointer = f"/tax/breakdown/{index}" if index is not None else "/tax"
@@ -650,6 +651,17 @@ def _occurrence(location: Any, finding_id: str) -> FindingOccurrence | None:
         scope = OccurrenceScope.TECHNICAL
         pointer = "/technical"
     return FindingOccurrence(scope=scope, index=index, json_pointer=pointer)
+
+
+def _finding_occurrence(
+    source: dict[str, Any],
+    location: Any,
+    finding_id: str,
+) -> FindingOccurrence | None:
+    explicit = source.get("occurrence")
+    if isinstance(explicit, dict):
+        return FindingOccurrence.model_validate(explicit)
+    return _legacy_occurrence(location, finding_id)
 
 
 def _rule_class(finding_id: str, origin: FindingOrigin) -> FindingRuleClass:
@@ -703,7 +715,7 @@ def _finding(
             version=source.get("version"),
         ),
         semantic_references=_finding_semantic_references(source, location),
-        occurrence=_occurrence(location, finding_id),
+        occurrence=_finding_occurrence(source, location, finding_id),
         xml_location=(
             XmlLocation(
                 path=str(xml_path)[:4000] if xml_path else None,
@@ -839,15 +851,27 @@ def _processing_assessment(
     *,
     syntax_error: str | None,
     technical_truncated: bool,
+    technical_limit_reason: str | None,
     official: OfficialAssessment,
     findings: list[Finding],
 ) -> ProcessingAssessment:
     limitations: list[ProcessingLimitation] = []
     if technical_truncated:
+        code, message = (
+            (
+                "TECHNICAL-TIME-BUDGET-EXCEEDED",
+                "Die technische Feldliste wurde beendet, weil das Zeitbudget für ihre Erzeugung ausgeschöpft war.",
+            )
+            if technical_limit_reason == "time"
+            else (
+                "TECHNICAL-FIELDS-TRUNCATED",
+                "Die technische Feldliste wurde an der konfigurierten Zeilengrenze beendet.",
+            )
+        )
         limitations.append(
             ProcessingLimitation(
-                code="TECHNICAL-FIELDS-TRUNCATED",
-                message="Die technische Feldliste wurde an der konfigurierten Grenze beendet.",
+                code=code,
+                message=message,
                 affected_json_pointer="/technical/fields",
             )
         )
@@ -1097,7 +1121,7 @@ def _technical(source: dict[str, Any], card_values: list[str]) -> TechnicalModel
     )
 
 
-def build_analysis_response(
+def _build_analysis_response(
     parsed: dict[str, Any],
     *,
     builtin: dict[str, Any] | None,
@@ -1173,6 +1197,9 @@ def build_analysis_response(
     processing = _processing_assessment(
         syntax_error=syntax_error,
         technical_truncated=bool(technical_source.get("truncated")),
+        technical_limit_reason=(
+            str(technical_source["limit_reason"]) if technical_source.get("limit_reason") is not None else None
+        ),
         official=official_assessment,
         findings=processing_findings,
     )
@@ -1399,6 +1426,39 @@ def build_analysis_response(
         ),
     )
     return _redact_public_response(response, card_values)
+
+
+def _only_string_too_long_errors(exc: ValidationError) -> bool:
+    errors = exc.errors(include_url=False, include_input=False)
+    return bool(errors) and all(item.get("type") == "string_too_long" for item in errors)
+
+
+def build_analysis_response(
+    parsed: dict[str, Any],
+    *,
+    builtin: dict[str, Any] | None,
+    official: dict[str, Any],
+    official_requested: bool,
+    syntax_error: str | None,
+    duration_ms: Decimal,
+    application_version: str,
+) -> AnalysisResponse:
+    try:
+        return _build_analysis_response(
+            parsed,
+            builtin=builtin,
+            official=official,
+            official_requested=official_requested,
+            syntax_error=syntax_error,
+            duration_ms=duration_ms,
+            application_version=application_version,
+        )
+    except ValidationError as exc:
+        if _only_string_too_long_errors(exc):
+            raise InvoiceInputError(
+                "Mindestens ein Rechnungsfeld überschreitet die für das Analyseschema zulässige Länge."
+            ) from None
+        raise
 
 
 __all__ = ["build_analysis_response"]

@@ -9,9 +9,16 @@ const templateUrl = new URL('../../app/templates/index.html', import.meta.url);
 const templateSource = fs.readFileSync(templateUrl, 'utf8');
 const stylesUrl = new URL('../../app/static/styles.css', import.meta.url);
 const stylesSource = fs.readFileSync(stylesUrl, 'utf8');
+const TEST_UI_REVISION = 'a'.repeat(64);
 
-function rendererContext() {
+function rendererContext({
+  scriptRevision = TEST_UI_REVISION,
+  bodyRevision = TEST_UI_REVISION,
+  missingIds = [],
+} = {}) {
   const elements = new Map();
+  const missing = new Set(missingIds);
+  let boundElementListeners = 0;
   const makeElement = (className = '') => {
     const attributes = new Map();
     const node = {
@@ -22,8 +29,9 @@ function rendererContext() {
       value: '',
       checked: false,
       disabled: false,
+      dataset: {},
       previousElementSibling: null,
-      addEventListener() {},
+      addEventListener() { boundElementListeners += 1; },
       setAttribute(name, value) { attributes.set(name, String(value)); },
       getAttribute(name) { return attributes.get(name) ?? null; },
     };
@@ -61,17 +69,36 @@ function rendererContext() {
     return elements.get(selector);
   };
   element('#payable-total').previousElementSibling = makeElement();
+  const body = element('body');
+  body.dataset.uiRevision = bodyRevision;
+  body.children = [];
+  body.appendChild = (child) => { body.children.push(child); };
+  body.replaceChildren = (...children) => { body.children = children; };
+  const documentListeners = new Map();
 
   const document = {
+    body,
+    currentScript: { dataset: { uiRevision: scriptRevision } },
     querySelector: element,
     querySelectorAll(selector) {
       return selector === '.example-button' ? exampleButtons : [];
     },
-    addEventListener() {},
+    getElementById(id) {
+      return missing.has(id) ? null : element(`#${id}`);
+    },
+    createElement() { return makeElement(); },
+    addEventListener(name, callback) { documentListeners.set(name, callback); },
   };
   const context = vm.createContext({ document });
   vm.runInContext(scriptSource, context, { filename: scriptUrl.pathname });
-  return { context, element, exampleButtons };
+  return {
+    context,
+    element,
+    exampleButtons,
+    body,
+    documentListeners,
+    boundElementListeners: () => boundElementListeners,
+  };
 }
 
 function schemaTwoPayload() {
@@ -317,6 +344,50 @@ test('Analysefehler räumt den Ladezustand im finally-Block auf', async () => {
   assert.equal(element('#file-input').disabled, false);
   assert.equal(element('.upload-card').classList.contains('is-loading'), false);
   assert.equal(exampleButtons.every((button) => !button.disabled), true);
+});
+
+test('UI-Requests senden die im Script deklarierte Revision', async () => {
+  const { context } = rendererContext();
+  const requests = [];
+  context.FormData = class {
+    append() {}
+  };
+  context.window = { scrollTo() {} };
+  context.fetch = async (url, options) => {
+    requests.push([url, options]);
+    if (url === '/api/analyze') {
+      return { ok: true, json: async () => schemaTwoPayload() };
+    }
+    return { ok: true, blob: async () => ({ report: true }) };
+  };
+
+  await context.analyzeFile({ name: 'synthetic.xml' });
+  await vm.runInContext("fetchHtmlReport('complete')", context);
+
+  assert.deepEqual(requests.map(([url]) => url), ['/api/analyze', '/api/report']);
+  for (const [, options] of requests) {
+    assert.equal(options.headers['X-Einvoice-UI-Revision'], TEST_UI_REVISION);
+  }
+});
+
+test('UI-Initialisierung stoppt kontrolliert bei gemischten Revisionen', () => {
+  const renderer = rendererContext({ bodyRevision: 'b'.repeat(64) });
+
+  renderer.context.initialise();
+
+  assert.equal(renderer.boundElementListeners(), 0);
+  assert.equal(renderer.body.children.length, 1);
+  assert.match(renderer.body.children[0].textContent, /anderen Anwendungsversion/);
+});
+
+test('UI-Initialisierung stoppt kontrolliert bei unvollständigem DOM', () => {
+  const renderer = rendererContext({ missingIds: ['download-complete-html-button'] });
+
+  renderer.context.initialise();
+
+  assert.equal(renderer.boundElementListeners(), 0);
+  assert.equal(renderer.body.children.length, 1);
+  assert.match(renderer.body.children[0].textContent, /nicht vollständig geladen/);
 });
 
 test('Schema-2 payload renders axes, semantic references and masked cards', () => {

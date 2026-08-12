@@ -49,7 +49,7 @@ Enthaltene Workflows:
 - `codeql.yml`: statische Sicherheitsanalyse für Python und JavaScript
 - `dependency-audit.yml`: regelmäßige Prüfung der Python-Abhängigkeiten
 - `release.yml`: Tagprüfung, Quellartefakte, beide signierten Windows-x64-Installer, Windows-Binaries-ZIP,
-  Prüfsummen und GitHub Release
+  Prüfsummen und einen bewusst unveröffentlicht bleibenden GitHub-Release-Draft
 
 Für Releases benötigt der Workflow Schreibrechte auf `contents`. Diese werden nur im Release-Job angefordert.
 
@@ -66,7 +66,7 @@ Die Entra-Anwendung benötigt eine federierte GitHub-Identität für genau diese
 
 Die Windows-Installer werden nur mit gültiger Authenticode-Signatur veröffentlicht. Der Workflow speichert weder
 PFX-Datei noch Client-Secret und bricht bei fehlender oder ungültiger Signatur ab. Ein manueller Workflow-Start
-auf `main` erzeugt ein signiertes, für drei Tage aufbewahrtes Vorab-Artefakt sowie ein getrenntes, nur einen Tag
+auf `main` erzeugt ein signiertes, für 14 Tage aufbewahrtes Vorab-Artefakt sowie ein getrenntes, nur einen Tag
 verfügbares internes Recovery-Testartefakt, veröffentlicht aber keinen GitHub Release. Das interne Artefakt wird
 von Tag-Läufen und dem Publish-Job ausgeschlossen und darf wegen seines erhöhten Testkontexts ausschließlich auf
 einer isolierten Wegwerf-VM verwendet werden. In einem öffentlichen Repository sind diese Actions-Artefakte
@@ -93,7 +93,7 @@ Für `main`:
 
 ## Releases
 
-Ein signierter oder annotierter Tag löst den Release-Workflow aus:
+Ein annotierter Tag löst den Release-Workflow aus:
 
 ```sh
 git tag -a vX.Y.Z -m "E-Rechnungs-Pruefer X.Y.Z"
@@ -104,5 +104,15 @@ Vor dem ersten Tag kann der Workflow unter **Actions → Release → Run workflo
 werden. Nach Freigabe der Umgebung `release` werden beide signierten Installer, das Windows-Binaries-ZIP und die
 Prüfsummen als kurzlebiges Actions-Artefakt bereitgestellt, ohne einen öffentlichen Release anzulegen. Das
 getrennte interne Recovery-Testartefakt bleibt ausschließlich für die isolierte Abnahme bestimmt.
+
+Ein Tag-Lauf legt nach erfolgreichen Prüfungen nur einen Draft an und lädt die taggenau erzeugten Artefakte
+hoch. Der Workflow veröffentlicht den Draft nicht. Vor der manuellen Veröffentlichung müssen genau diese
+Draft-Dateien mindestens auf Windows 10 fokussiert geprüft und mit Tag, Commit, Workflowlauf, Prüfsummen und
+Windows-/Edge-Stand protokolliert werden. Ein zuvor getestetes Preview-Artefakt ist wegen möglicher Build- und
+Signaturzeitstempel kein byteidentischer Ersatz.
+
+Partielle Reruns beziehen die erfolgreichen Vorjob-Artefakte über ihre unveränderlichen IDs. Ein bereits
+angelegter Draft wird nur fortgesetzt, wenn vorhandene Assets byteidentisch sind; fremde oder abweichende
+Dateien und ein bereits veröffentlichtes Release blockieren den Workflow.
 
 Vorher müssen `VERSION`, `pyproject.toml`, `app/__init__.py`, KoSIT-Installer und Changelog synchron sein. Details stehen in `docs/RELEASE.md`.
