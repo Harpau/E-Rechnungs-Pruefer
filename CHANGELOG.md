@@ -4,7 +4,7 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
-## 2.0.2 – 2026-08-08
+## 2.0.2 – 2026-08-12
 
 ### Windows-Oberfläche und KoSIT-Ausführung
 
