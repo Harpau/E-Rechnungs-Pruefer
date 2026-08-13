@@ -107,9 +107,12 @@ getrennte interne Recovery-Testartefakt bleibt ausschließlich für die isoliert
 
 Ein Tag-Lauf legt nach erfolgreichen Prüfungen nur einen Draft an und lädt die taggenau erzeugten Artefakte
 hoch. Der Workflow veröffentlicht den Draft nicht. Vor der manuellen Veröffentlichung müssen genau diese
-Draft-Dateien mindestens auf Windows 10 fokussiert geprüft und mit Tag, Commit, Workflowlauf, Prüfsummen und
-Windows-/Edge-Stand protokolliert werden. Ein zuvor getestetes Preview-Artefakt ist wegen möglicher Build- und
-Signaturzeitstempel kein byteidentischer Ersatz.
+Draft-Dateien gegen Inventar, Prüfsummen und Signaturen geprüft werden; ein internes Recovery-Testartefakt darf
+nicht enthalten sein. In einer fokussierten Windows-11-x64-Desktop-Neuinstallation müssen aktuelle Oberfläche,
+Health-Zielversion, ein einfacher synthetischer Analyseaufruf und die vollständige Deinstallation nachgewiesen
+werden. Tag, Commit, Workflowlauf, Prüfsummen und Windows-/Edge-Stand werden protokolliert. Ein Fehler sperrt die
+Veröffentlichung. Ein zuvor getestetes Preview-Artefakt ist wegen möglicher Build- und Signaturzeitstempel kein
+byteidentischer Ersatz.
 
 Partielle Reruns beziehen die erfolgreichen Vorjob-Artefakte über ihre unveränderlichen IDs. Ein bereits
 angelegter Draft wird nur fortgesetzt, wenn vorhandene Assets byteidentisch sind; fremde oder abweichende

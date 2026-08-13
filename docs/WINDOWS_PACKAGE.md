@@ -384,6 +384,10 @@ Endabnahme.
 
 ### Reboot-Abnahme der persistenten Recovery
 
+Diese zweistufige Prüfung ist nicht bei jedem Release auszuführen. Sie wird nur durch die in
+[`RELEASE.md`](RELEASE.md#risikobasierte-manuelle-windows-abnahme) genannten Recovery- oder
+Installertransaktionsänderungen beziehungsweise einen ungeklärten Immediate-Recovery-Befund ausgelöst.
+
 Ein realer Stromverlust oder Hypervisor-Reset wird bewusst nicht aus einem Testskript ausgelöst. Für die
 zweistufige VM-Abnahme hält der Hard-Kill-Helfer mit `LeaveForReboot` den exakt verifizierten persistenten
 Zustand fest und beendet sich anschließend absichtlich mit Exitcode `194`, also nicht als bestandener Gesamttest:
@@ -410,46 +414,39 @@ Nach dem Lauf:
    Zustand zählt nicht als erfolgreiche Recovery und darf nicht manuell gelöscht werden, bevor
    Diagnoseinformationen gesichert sind.
 
-## Manuelle Windows-10-/Windows-11-Abnahme vor Veröffentlichung
+## Risikobasierte manuelle Windows-Abnahme vor Veröffentlichung
 
-Windows 10 ist für Patchreleases ein eigenes Pflichtsystem. Jeweils getrennt für Desktop und Dienst werden die
-Upgradepfade 1.5.0 → Zielversion und 2.0.1 → Zielversion sowie eine Neuinstallation geprüft. Bei jedem Upgrade
-bleibt ein bereits geöffnetes Alt-Tab mit warmem Cache bestehen: Es muss kontrolliert einen UI-Versionskonflikt
-oder eine nach dem Prozessneustart abgelaufene Sitzung samt Wiederöffnungshinweis melden, während ein neu über
-Launcher beziehungsweise Öffnen-Client gestartetes Fenster die aktuelle, revisionierte Oberfläche lädt.
-Cookiegeschützte Browser-API-Aufrufe müssen die UI-Revision mitsenden;
-Bearer-authentifizierte Automatisierungen wie Node-RED bleiben davon ausgenommen.
+Die vollständige verbindliche Matrix und ihre Releaseblocker stehen in
+[`RELEASE.md`](RELEASE.md#risikobasierte-manuelle-windows-abnahme). Die Paket-Harnesses auf Windows Server 2022
+decken mit dem Produktions-Desktopinstaller, dem Produktions-Dienstinstaller im Modusausschlusstest und dem
+getrennten internen Recovery-Testinstaller die technischen API-, Update-, Rollback-, Preserve/Purge- und
+Immediate-Recoveryfälle ab. Diese Prüfungen werden nicht auf jedem Clientsystem manuell dupliziert.
 
-Auf Windows 10 gehören CII, UBL und Hybrid-PDF, echte KoSIT-Prüfung, Desktop- und Dienstmodus sowie der Erhalt
-von Dienstkonfiguration und API-Token zum Pflichtumfang. Die vollständige Installer-, Modusausschluss-,
-Recovery- und Reboot-Abnahme bleibt zusätzlich auf Windows 11 verbindlich; Windows Server 2022 deckt den
-automatisierten CI-Paketpfad ab.
+Windows 10 22H2 x64 im Home/Pro-Kanal wird nach Ende des regulären Microsoft-Supports nur als
+Best-Effort-Kompatibilität geprüft:
 
-Vor einem öffentlichen Release ist das signierte Vorab-Artefakt auf einer sauberen, anschließend verworfenen
-Windows-11-x64-VM zu prüfen:
+1. signierte Desktop-Neuinstallation in einen Zielpfad, bei dem eine enthaltene KoSIT-XSD nachweislich mehr als
+   260 Zeichen erreicht, anschließend Start, eine CII-KoSIT-Prüfung und reguläre Deinstallation;
+2. nach Snapshot-Rückkehr signierte Dienst-Neuinstallation im Standardpfad, `Running`, Healthcheck,
+   sichtbarer Öffnen-Client und reguläre Deinstallation.
 
-1. Bundle-ZIP entpacken und Signaturen sowie SHA-256-Datei aller fünf eigenen Dateien und des ZIPs prüfen.
-2. Desktopmodus einschließlich Tray, Standardbrowser und optionalem HKCU-Autostart prüfen und anschließend
-   regulär deinstallieren.
-3. Unter einer echten zweiten lokalen Testidentität die signierte v1.3.0-Desktopversion in einem
-   benutzerdefinierten Zielordner mit Autostart installieren, diese Identität abmelden und bestätigen, dass ihr
-   Benutzerhive nicht mehr unter `HKEY_USERS` geladen ist. Aus der administrativen Testidentität muss das
-   Dienstsetup mit Fehlercode abbrechen und Installationsbaum, Hive-Datei, Token und Autostart des abgemeldeten
-   Profils unverändert lassen. Danach den Desktopmodus unter der zweiten Identität regulär entfernen und wieder
-   abmelden.
-4. Den Dienst mit verzögertem Systemstart installieren und Windows tatsächlich neu starten.
-5. Vor der ersten Benutzeranmeldung über Dienststatus und technische Logs nachweisen, dass der Dienst erfolgreich
-   gestartet und nur an `127.0.0.1` gebunden ist.
-6. Nach Anmeldung den Öffnen-Client, API-Authentifizierung, PDF/XML und echte KoSIT-Annahme und -Ablehnung prüfen.
-7. In Microsoft Edge über eine RDP-Sitzung auf einer ressourcenarmen VM die offiziellen CII- und
-   UBL-Beispielprüfungen mit dem unveränderten Standardtimeout von 60 Sekunden ausführen. Als API-only-Kontrolle
-   dieselben Prüfungen ohne geöffnete Browseroberfläche ausführen und die Laufzeiten gegenüberstellen. Der Browser
-   darf während des sichtbaren Ladezustands die CPU nicht dauerhaft sättigen; eine kurzzeitig hohe CPU-Nutzung des
-   Java-Prozesses während der KoSIT-Ausführung ist dagegen erwartet.
-8. Falls der gesamte Node-RED-Ablauf vor Anmeldung gefordert ist, auch Node-RED unter der vorgesehenen
-   Dienstidentität betreiben und den vollständigen Mailflow vor einer interaktiven Anmeldung abnehmen.
-9. Gegenseitigen Installationsausschluss, Update, service-only Hard-Kill-/Reboot-Recovery und beide
-   Deinstallationsvarianten sowie Defender/SmartScreen kontrollieren.
+Upgrades, Alt-Tabs, Formatmatrizen, Konfigurations-/Tokenerhalt, Modusausschluss, Recovery und Reboot werden auf
+Windows 10 nicht wiederholt. LTSC-Ausgaben sind durch den 22H2-Kompatibilitätslauf nicht abgedeckt.
+
+Auf Windows 11 x64 verbleiben nur das Desktop- und Dienst-Upgrade von der unmittelbar vorher veröffentlichten
+Patchversion derselben Release-Linie; für 2.0.2 dienen die signierten 2.0.1-Produktinstaller als Baseline. Der
+Desktopfall prüft ein warmes Alt-Tab, den kontrollierten `403 desktop_session_error`/`409 ui_version_mismatch`,
+die aktuelle Oberfläche in einem neuen Fenster und einen sichtbaren UBL-KoSIT-Lauf. Der Dienstfall vergleicht
+Konfiguration und API-Token hashgebunden und prüft danach Dienst, Healthcheck und Öffnen-Client.
+
+Upgrade von der ältesten unterstützten Ausgangsversion und echter Neustart vor Anmeldung sind bei einschlägigen
+Änderungen sowie für eine neue Minor-Version erforderlich. Persistente `LeaveForReboot`-Recovery, zweite
+Testidentität, RDP-/Edge-Performance und ein realer Node-RED-Mailflow werden ausschließlich durch die in
+`RELEASE.md` genannten fachlichen Änderungen oder Befunde ausgelöst. Defender-/SmartScreen-Beobachtungen sind
+informativ und kein deterministischer Releaseblocker.
+
+Je Release genügt für diese Auslöser eine protokollierte `ja/nein`-Entscheidung mit kurzer Begründung. Ist kein
+Auslöser erfüllt, werden diese Prüfungen nicht ausgeführt.
 
 ## Drittkomponenten
 

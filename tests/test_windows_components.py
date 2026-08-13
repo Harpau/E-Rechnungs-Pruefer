@@ -206,13 +206,22 @@ def test_manual_release_preview_uploads_internal_recovery_installer_separately()
         r"build\windows\bundle\E-Rechnungs-Pruefer\E-Rechnungs-Pruefer.exe",
         r"dist\E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe",
         "niemals von Tag-Läufen",
-        "Windows 10 x64",
-        "1.5.0 → Zielversion",
-        "2.0.1 → Zielversion",
+        "Windows 10 22H2 x64",
+        "Best-Effort-Kompatibilität",
+        "mehr als 260 Zeichen",
+        "Windows 11 x64",
+        "vorherige Patchversion → Zielversion",
+        "Für 2.0.2 sind das",
+        "nur bei den jeweils genannten Auslösern",
+        "ja/nein",
         "taggenauen Artefakte",
+        "einfacher synthetischer Analyseaufruf",
+        "Ein Fehler sperrt die Veröffentlichung des Drafts",
         "veröffentlicht diesen Draft ausdrücklich nicht automatisch",
     ):
         assert expected in release_docs
+    assert "Windows 10 ist für Patchreleases ein eigenes Pflichtsystem" not in release_docs
+    assert "| Windows 10 x64 | Desktop | 1.5.0 → Zielversion" not in release_docs
 
 
 def test_windows_release_dependencies_are_exactly_pinned_and_hashed() -> None:

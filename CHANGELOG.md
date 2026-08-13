@@ -4,7 +4,7 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
-## 2.0.2 – 2026-08-13
+## 2.0.2 – 2026-08-17
 
 ### Windows-Oberfläche und KoSIT-Ausführung
 
@@ -15,8 +15,10 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   kann nach einem Update kein gemischter HTML-/JavaScript-Stand mehr den bisherigen Fehler
   `Cannot set properties of null` bei einer KoSIT-Prüfung auslösen.
 - Desktop- und Dienst-Pakettests prüfen den Revisionsvertrag, die Cache-Header, einen veralteten Browseraufruf
-  und weiterhin einen davon unabhängigen Bearer-API-Aufruf. Die verbindliche manuelle Abnahmematrix umfasst
-  Windows 10 und Windows 11, Desktop und Dienst, Neuinstallationen sowie Upgrades von 1.5.0 und 2.0.1.
+  und weiterhin einen davon unabhängigen Bearer-API-Aufruf. Die manuelle Abnahme ist risikobasiert reduziert:
+  Windows 10 22H2 erhält einen Best-Effort-Neuinstallations-/Lauffähigkeits-Smoke einschließlich des langen
+  XSD-Zielpfads; unter Windows 11 verbleiben die fokussierten Desktop- und Dienst-Upgrades von 2.0.1. Historische
+  Upgrades, Reboot-/Recovery-, Identitäts- und Performanceprüfungen sind nur noch anlassbezogen verpflichtend.
 - Der schlanke Öffnen-Client des Windows-Dienstpakets lädt beim Start keine Browser-Assets mehr. Fehler vor oder
   während seiner internen Ausführung enden kontrolliert und ohne modalen PyInstaller-Dialog, sodass ein
   unbeaufsichtigter Installer nicht auf eine unsichtbare Fehlerbestätigung wartet.
