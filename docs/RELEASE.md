@@ -37,7 +37,12 @@ python -m pip_audit --strict --disable-pip --require-hashes \
 Der Projektmodus prüft die in `pyproject.toml` deklarierten Fremdabhängigkeiten, ohne das lokal editierbar
 installierte und nicht auf PyPI veröffentlichte Projekt selbst als externe Distribution zu behandeln.
 
-Zusätzlich die Anwendung mit den anonymisierten CII-/UBL-Beispielen und einer Hybrid-PDF manuell öffnen. Bei KoSIT-Änderungen mindestens einen Annahme-, Ablehnungs- und Startfehlerfall prüfen.
+Die anonymisierten CII-/UBL-Beispiele und die Hybrid-PDF sind durch die Regressionstests abgedeckt. Eine
+zusätzliche manuelle Sichtprüfung ist nur erforderlich, wenn eine Änderung ein visuelles Verhalten einführt,
+das nicht sinnvoll automatisiert prüfbar ist, oder wenn ein konkreter automatisierter Befund eine Sichtprüfung
+erfordert. Reine Parser- und Renderingänderungen mit ausreichenden Regressionstests lösen keine pauschale
+Drei-Formate-Sichtprüfung aus. Dasselbe gilt für KoSIT-Annahme, -Ablehnung und technische Startfehler: Die
+automatisierten Fälle genügen, solange keine neue, nur visuell beurteilbare Darstellung betroffen ist.
 
 ### Analyseschema-2-Gate
 
@@ -219,58 +224,92 @@ gleichnamige Test-EXE muss dagegen ausschließlich unter
 Trennung ist fail-closed in den Testskripten verankert. Vor der Verwendung sind bei beiden Installern
 Authenticode-Status und Zeitstempel erneut zu prüfen.
 
-Das signierte Vorab-Artefakt ist anschließend anhand der folgenden verbindlichen Matrix zu prüfen. Jeder Lauf
-beginnt auf einem dokumentierten, sauberen VM-Snapshot; ein offenes Alt-Tab bleibt bei den Upgradefällen bewusst
-über das Update hinweg geöffnet.
+### Risikobasierte manuelle Windows-Abnahme
 
-| System | Betriebsart | Ausgangsstand | Pflichtschwerpunkt |
+Der signierte Vorab-Probelauf auf Windows Server 2022 prüft mit dem Produktions-Desktopinstaller den vollständigen
+Desktop-Paketpfad und mit dem Produktions-Dienstinstaller Signatur, Inventar und Modusausschluss. Der vollständige
+Dienst-, Update-, Rollback- und Immediate-Recovery-Harness verwendet dagegen bewusst den getrennten internen
+Recovery-Testinstaller. Zusammen decken diese Läufe Neuinstallation und Update, API/PDF/XML und KoSIT, Cache-
+und UI-Revisionsvertrag, Modusausschluss, Rollback, Preserve/Purge sowie die unmittelbare Hard-Kill-Recovery ab.
+Diese technischen Fälle werden auf den Clientbetriebssystemen nicht manuell wiederholt. Dort verbleiben nur
+Client-OS-, echte Browser- und historische Upgrade-Risiken, die der GitHub-Runner nicht überzeugend abdeckt.
+
+Windows 10 22H2 x64 im Home/Pro-Kanal hat laut
+[Microsoft-Lifecycle](https://learn.microsoft.com/de-de/lifecycle/products/windows-10-home-and-pro) das Ende
+des regulären Supports erreicht und wird nur noch als **Best-Effort-Kompatibilität** geprüft, nicht als
+vollständig abgenommene Freigabeplattform. LTSC- und ESU-Konstellationen besitzen eigene Lebenszyklen und sind
+durch diesen Kompatibilitätslauf nicht abgedeckt.
+
+Die verbindliche Matrix lautet:
+
+| System | Betriebsart | Ausgangsstand | Pflichtnachweis |
 |---|---|---|---|
-| Windows 10 x64 | Desktop | 1.5.0 → Zielversion | warmer Browsercache, offenes Alt-Tab, CII/UBL mit KoSIT |
-| Windows 10 x64 | Desktop | 2.0.1 → Zielversion | realer Patch-Upgradepfad und UI-Revisionskonflikt |
-| Windows 10 x64 | Dienst | 1.5.0 → Zielversion | warmer Cache, Öffnen-Client, CII/UBL mit KoSIT |
-| Windows 10 x64 | Dienst | 2.0.1 → Zielversion | Erhalt von Dienstkonfiguration und API-Token |
-| Windows 10 x64 | Desktop und Dienst getrennt | Neuinstallation | CII, UBL und Hybrid-PDF |
-| Windows 11 x64 | Desktop und Dienst | Zielversion | vollständige Installer-, Ausschluss- und Recoveryabnahme |
-| Windows Server 2022 | CI | Zielversion | automatisierter Paket- und Integrationstest |
+| Windows Server 2022 | automatisierte Paketpfade | Zielversion | Produktions-Desktop, Produktions-Dienst-Modusausschluss und vollständiger interner Dienst-/Immediate-Recovery-Harness |
+| Windows 10 22H2 x64 | Desktop und Dienst, durch Snapshot getrennt | Neuinstallation | Desktop-Long-Path-, Start- und KoSIT-Smoke; Dienst-Installations-, Health- und Öffnen-Client-Smoke |
+| Windows 11 x64 | Desktop | vorherige Patchversion → Zielversion | warmer Browsercache, offenes Alt-Tab, kontrollierter UI-Revisionswechsel und ein sichtbarer UBL-KoSIT-Lauf |
+| Windows 11 x64 | Dienst | vorherige Patchversion → Zielversion | Erhalt von Dienstkonfiguration und API-Token, laufender Dienst und sichtbarer Öffnen-Client |
 
-Ein altes Tab muss eine kontrollierte Aufforderung zum Schließen und erneuten Öffnen anzeigen: nach einem
-Prozessneustart als `403 desktop_session_error` wegen der absichtlich ungültigen alten Sitzung, innerhalb einer
-noch gültigen Sitzung mit abweichender Oberfläche als `409 ui_version_mismatch`. Ein neues, über Launcher oder
-Öffnen-Client gestartetes Fenster muss unmittelbar die aktuelle Oberfläche laden. Ein JavaScript-Stackfehler
-wie `Cannot set properties of null` ist ein Releaseblocker.
+Jeder manuelle Lauf beginnt auf einem dokumentierten, sauberen VM-Snapshot. Vor der ersten Produktmutation sind
+Commit, Workflow-Run und -Versuch sowie SHA-256 und Authenticode-Signatur des verwendeten Installers an die
+Abnahmeevidenz zu binden.
 
-Neben den automatisierten Paket-, Modusausschluss- und Recoverytests umfasst die manuelle Abnahme:
+Der Windows-10-Kompatibilitätslauf bleibt bewusst klein:
 
-1. Bundle-ZIP entpacken und Signaturen sowie SHA-256-Prüfsummen aller fünf eigenen Dateien und des ZIPs prüfen;
-2. Desktopstart, Tray, Standardbrowser und HKCU-Autostart, danach reguläre Desktopdeinstallation;
-3. auf einer echten zweiten lokalen Testidentität die signierte v1.3.0-Desktopversion in einem benutzerdefinierten
-   Zielordner mit Autostart installieren, die Identität abmelden und bestätigen, dass ihr Benutzerhive nicht mehr
-   unter `HKEY_USERS` geladen ist; das aus der administrativen Testidentität gestartete Dienstsetup muss
-   fail-closed abbrechen und Desktopinstallation, Hive-Datei, Token und Autostart im abgemeldeten Profil
-   unverändert lassen. Danach den Desktop unter der zweiten Identität regulär deinstallieren und wieder abmelden;
-4. Dienstkonto, Service-SID, DACLs, Starttyp, Recovery und Öffnen-Client;
-5. tatsächlichen Windows-Neustart und erfolgreichen verzögerten Dienststart vor der ersten Benutzeranmeldung;
-6. API ohne, mit falschem und mit richtigem Token, `schema_version == 2`, alle sechs neuen Berichtsheader,
-   `scope=readable|complete`, PDF-Bericht, bytegetreuen XML-Export sowie echte KoSIT-Annahme und -Ablehnung; die
-   früheren Header
-   `X-Einvoice-Validation-Status` und `X-Einvoice-Official-Status` dürfen nicht erscheinen;
-7. In Microsoft Edge über eine RDP-Sitzung auf einer ressourcenarmen VM die offiziellen CII- und
-   UBL-Beispielprüfungen mit dem unveränderten Standardtimeout von 60 Sekunden ausführen. Als API-only-Kontrolle
-   dieselben Prüfungen ohne geöffnete Browseroberfläche ausführen und die Laufzeiten gegenüberstellen. Der Browser
-   darf während des sichtbaren Ladezustands die CPU nicht dauerhaft sättigen; eine kurzzeitig hohe CPU-Nutzung des
-   Java-Prozesses während der KoSIT-Ausführung ist dagegen erwartet.
-8. Update eines laufenden und eines gestoppten Dienstes, automatisierten Fehler-Rollback, tatsächlichen
-   Recovery-Neustart sowie Deinstallation mit erhaltenem Maschinenzustand und mit ausdrücklicher vollständiger
-   Löschung;
-9. den gegenseitigen Installationsausschluss sowie den Preserve-Fall prüfen: Dienst ohne Datenlöschung
-   deinstallieren, Desktopmodus bei unverändertem ProgramData installieren und entfernen, danach den Dienst mit
-   demselben Maschinentoken erneut installieren;
-10. auf einem sauberen Snapshot die persistente service-only Installer-Recovery mit
-   `-CommitHardKillRecovery LeaveForReboot` vorbereiten, Exitcode `194` als absichtlich unvollständigen Lauf
-   dokumentieren, die VM hart neu starten und denselben Testinstaller erneut ausführen; anschließend Roll-forward
-   sowie die vollständige Marker- und Bundlebereinigung nachweisen;
-11. bei gefordertem Betrieb vor Anmeldung auch den vollständigen Node-RED-Ablauf, wobei Node-RED selbst als
-   Dienst unter der vorgesehenen Identität laufen muss.
+1. Auf dem Desktop-Snapshot bleibt `LongPathsEnabled=0`; der Zustand wird protokolliert. Der signierte
+   Desktopinstaller wird mit einem benutzerdefinierten `/DIR`-Ziel installiert, bei dem der vollständige Pfad von
+   `_internal\vendor\kosit\xrechnung\resources\cii\16b\xsd\CrossIndustryInvoice_ReusableAggregateBusinessInformationEntity_100pD16B.xsd`
+   nachweislich mehr als 260 Zeichen besitzt. Zielpfad und gemessene Länge werden protokolliert; die Datei muss
+   lesbar und zu der Datei im veröffentlichten Binaries-ZIP hashidentisch sein.
+2. Die Desktopanwendung muss starten und genau eine synthetische CII-Beispielrechnung mit KoSIT erfolgreich
+   prüfen. Die reguläre Deinstallation muss anschließend auch den langen Installationspfad entfernen.
+3. Nach Rückkehr zum sauberen Snapshot wird ausschließlich der Produktions-Dienstinstaller im Standardpfad
+   installiert. Es genügt der Nachweis `Running`, ein Healthcheck mit Zielversion, `status=ok` und
+   betriebsbereitem KoSIT sowie das sichtbare Öffnen der Oberfläche über den Öffnen-Client; anschließend wird
+   regulär deinstalliert.
+
+Unter Windows 10 entfallen Upgrades, Alt-Tab-/Cachetests, die vollständige Dokumentformatmatrix,
+Konfigurations-/Tokenerhalt, Modusausschluss, Rollback, Recovery, Reboot und Performanceprüfungen. Ein
+reproduzierbarer produktbedingter Fehler bei Installation, langem XSD-Zielpfad, Start, KoSIT-Smoke oder
+Dienst-Lauffähigkeit bleibt ein Releaseblocker. Nur ein nachweislich betriebssystem- oder umgebungsbedingter
+Befund kann durch dokumentierte Einzelentscheidung als nicht blockierend eingestuft werden; aus der
+Best-Effort-Kompatibilität entsteht keine vollständige Supportzusage.
+
+Unter Windows 11 verbleiben zwei fokussierte Upgrades von der unmittelbar vorher veröffentlichten Patchversion
+derselben Release-Linie. Für 2.0.2 sind das die unveränderten, veröffentlichten und signierten
+2.0.1-Produktinstaller als Baseline auf zwei getrennten Snapshots:
+
+1. Beim Desktop-Upgrade bleibt ein Alt-Tab mit warmem Cache geöffnet. Es muss kontrolliert mit
+   `403 desktop_session_error` oder `409 ui_version_mismatch` samt Wiederöffnungshinweis enden. Ein neues
+   Launcher-Fenster muss unmittelbar die aktuelle Oberfläche laden; ein JavaScript-Stackfehler wie
+   `Cannot set properties of null` ist ein Releaseblocker. Genau eine sichtbare UBL-Beispielprüfung mit KoSIT
+   genügt.
+2. Beim Upgrade des laufenden Dienstes werden Konfigurationsdatei und API-Token vorher und nachher
+   hashgebunden verglichen. Danach müssen Dienst und Healthcheck erfolgreich sein und der Öffnen-Client sichtbar
+   die aktuelle Oberfläche laden.
+
+Folgende Prüfungen sind **nur bei den jeweils genannten Auslösern** verpflichtend. Eine Zielversion `X.Y.0` löst
+nur die ausdrücklich mit „neue Minor-Version“ markierten Punkte aus:
+
+- Upgrade von der ältesten noch unterstützten Ausgangsversion bei Änderungen an Migration,
+  Altzustandserkennung oder unterstützten Upgradepfaden sowie für eine neue Minor-Version; für 2.0.2 wäre die
+  historische Ausgangsversion 1.5.0, der Lauf wird aber nicht ausgelöst;
+- tatsächlicher Windows-Neustart und Dienststart vor Anmeldung bei Änderungen an SCM-, Dienststart- oder
+  Dienstinstallerlogik sowie für eine neue Minor-Version;
+- persistente `-CommitHardKillRecovery LeaveForReboot`-Abnahme bei Änderungen an Installertransaktionen,
+  Markern oder Recovery beziehungsweise nach einem ungeklärten Immediate-Recovery-Befund;
+- echte zweite lokale Testidentität und Offline-Hive bei Änderungen an Profilinventur oder Modusausschluss;
+- Edge-/RDP-CPU-Vergleich bei Änderungen an Polling, Ladeanimation oder DOM-Aktualisierung während einer
+  KoSIT-Ausführung sowie nach einem konkreten Performancebefund;
+- vollständiger Node-RED-Mailflow vor Anmeldung nur, wenn dieser konkrete Betriebsfall Teil der Freigabe ist.
+
+Für jeden Release wird zu diesen Auslösern lediglich `ja/nein` mit einer kurzen Begründung protokolliert. Ist
+kein Auslöser erfüllt, entfallen die betreffenden Läufe vollständig.
+
+Defender-/SmartScreen-Beobachtungen werden protokolliert, sind wegen externer Reputationsentscheidungen aber kein
+deterministischer Releaseblocker. Negative Tokenfälle, Schema- und Berichtsheader, PDF/XML, KoSIT-Annahme und
+-Ablehnung, Updates laufender und gestoppter Dienste, Fehler-Rollback, beide Deinstallationsvarianten,
+Modusausschluss und Immediate-Recovery werden durch den Produktions-Desktop-, den Modusausschluss- und den
+internen Dienst-Harness nachgewiesen und nicht zusätzlich manuell wiederholt.
 
 Erst nach dokumentiert bestandenem Vorab-Probelauf, manueller Windows-Abnahme und ausdrücklicher Freigabe darf
 der Tag erzeugt werden. Das öffentliche Release bleibt bis zur nachfolgenden Prüfung der taggenauen Artefakte
@@ -286,8 +325,12 @@ git push origin vX.Y.Z
 Der Release-Workflow wiederholt Check und Build, verifiziert die Tag-Version und lädt die exakt in diesem
 Tag-Lauf erzeugten Dateien in einen **Draft**. Er veröffentlicht diesen Draft ausdrücklich nicht automatisch.
 Fehlen Azure-Anmeldung, Key-Vault-Konfiguration, gültige Signatur oder eines der erwarteten Artefakte, schlägt
-der Lauf fehl. Vor der manuellen Veröffentlichung werden genau die Dateien des Drafts heruntergeladen und
-mindestens fokussiert auf Windows 10 geprüft. Vorab- und Tag-Build können wegen Build- und
+der Lauf fehl. Vor der manuellen Veröffentlichung werden genau die Dateien des Drafts heruntergeladen,
+vollständig gegen Inventar, Prüfsummen und Signaturen geprüft; das interne Recovery-Testartefakt darf im Draft
+nicht enthalten sein. Der Desktopinstaller wird auf einem sauberen Windows-11-x64-Snapshot frisch installiert.
+Bestehenskriterien sind eine sichtbare aktuelle Oberfläche, ein Healthcheck mit Zielversion und `status=ok`, ein
+einfacher synthetischer Analyseaufruf sowie eine erfolgreiche Deinstallation ohne verbliebenen Programmbaum.
+Ein Fehler sperrt die Veröffentlichung des Drafts. Vorab- und Tag-Build können wegen Build- und
 Signaturzeitstempeln trotz identischem Commit verschiedene Bytes haben; ein bestandener Vorabtest ersetzt daher
 nicht diese letzte Prüfung.
 
