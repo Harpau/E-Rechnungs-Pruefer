@@ -192,14 +192,12 @@ def test_open_existing_instance_times_out_for_stale_record(tmp_path: Path, monke
     assert windows_launcher._open_existing_instance(path, timeout=0.01) is False
 
 
-def test_windows_mutex_creation_and_close(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_windows_process_lifetime_mutex_has_no_explicit_close(monkeypatch: pytest.MonkeyPatch) -> None:
     create_mutex = Mock(return_value=123456)
     get_last_error = Mock(return_value=windows_launcher.ERROR_ALREADY_EXISTS)
-    close_handle = Mock(return_value=True)
     kernel32 = SimpleNamespace(
         CreateMutexW=create_mutex,
         GetLastError=get_last_error,
-        CloseHandle=close_handle,
     )
     monkeypatch.setattr(windows_launcher.ctypes, "CDLL", Mock(return_value=kernel32))
 
@@ -208,9 +206,7 @@ def test_windows_mutex_creation_and_close(monkeypatch: pytest.MonkeyPatch) -> No
     assert mutex.handle == 123456
     assert mutex.already_exists is True
     create_mutex.assert_called_once_with(None, False, windows_launcher.WINDOWS_MUTEX_NAME)
-    mutex.close()
-    assert mutex.handle == 0
-    close_handle.assert_called_once()
+    assert not hasattr(mutex, "close")
 
 
 def test_windows_mutex_creation_reports_win32_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -459,7 +455,7 @@ def test_main_reopens_existing_windows_instance(tmp_path: Path, monkeypatch: pyt
     windows_launcher.main([])
 
     open_existing.assert_called_once_with(runtime_file)
-    mutex.close.assert_called_once_with()
+    mutex.close.assert_not_called()
 
 
 def test_background_start_does_not_open_existing_windows_instance(
@@ -476,7 +472,7 @@ def test_background_start_does_not_open_existing_windows_instance(
     windows_launcher.main(["--background"])
 
     open_existing.assert_not_called()
-    mutex.close.assert_called_once_with()
+    mutex.close.assert_not_called()
 
 
 def test_main_starts_and_stops_first_windows_instance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -510,7 +506,7 @@ def test_main_starts_and_stops_first_windows_instance(tmp_path: Path, monkeypatc
     server.stop.assert_called_once_with()
     shutdown_event.close.assert_called_once_with()
     backend_mutex.close.assert_called_once_with()
-    mutex.close.assert_called_once_with()
+    mutex.close.assert_not_called()
 
 
 def test_main_starts_first_windows_instance_in_background(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -539,10 +535,10 @@ def test_main_starts_first_windows_instance_in_background(tmp_path: Path, monkey
     server.stop.assert_called_once_with()
     shutdown_event.close.assert_called_once_with()
     backend_mutex.close.assert_called_once_with()
-    mutex.close.assert_called_once_with()
+    mutex.close.assert_not_called()
 
 
-def test_main_releases_all_handles_when_server_stop_fails(
+def test_main_releases_non_lifetime_handles_when_server_stop_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -574,11 +570,11 @@ def test_main_releases_all_handles_when_server_stop_fails(
     server.stop.assert_called_once_with()
     shutdown_event.close.assert_called_once_with()
     backend_mutex.close.assert_called_once_with()
-    mutex.close.assert_called_once_with()
+    mutex.close.assert_not_called()
     assert "RuntimeError: Webserver hängt" in startup_error_file.read_text(encoding="utf-8")
 
 
-def test_main_stops_server_and_releases_handles_when_kosit_cancellation_fails(
+def test_main_stops_server_and_releases_non_lifetime_handles_when_kosit_cancellation_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -610,7 +606,7 @@ def test_main_stops_server_and_releases_handles_when_kosit_cancellation_fails(
     server.stop.assert_called_once_with()
     shutdown_event.close.assert_called_once_with()
     backend_mutex.close.assert_called_once_with()
-    mutex.close.assert_called_once_with()
+    mutex.close.assert_not_called()
 
 
 def test_main_records_settings_load_error_after_windows_start(
@@ -642,7 +638,7 @@ def test_main_records_settings_load_error_after_windows_start(
     )
     shutdown_event.close.assert_called_once_with()
     backend_mutex.close.assert_called_once_with()
-    mutex.close.assert_called_once_with()
+    mutex.close.assert_not_called()
 
 
 def test_main_reports_windows_start_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -678,7 +674,7 @@ def test_main_returns_failure_when_service_owns_global_backend_mutex(
     assert windows_launcher.main(["--background"]) == 1
     assert "andere Betriebsart" in (tmp_path / "startup-error.log").read_text(encoding="utf-8")
     backend_mutex.close.assert_called_once_with()
-    mutex.close.assert_called_once_with()
+    mutex.close.assert_not_called()
 
 
 def test_main_rejects_non_windows_platform(monkeypatch: pytest.MonkeyPatch) -> None:

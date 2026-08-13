@@ -19,6 +19,10 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   Windows 10 22H2 erhält einen Best-Effort-Neuinstallations-/Lauffähigkeits-Smoke einschließlich des langen
   XSD-Zielpfads; unter Windows 11 verbleiben die fokussierten Desktop- und Dienst-Upgrades von 2.0.1. Historische
   Upgrades, Reboot-/Recovery-, Identitäts- und Performanceprüfungen sind nur noch anlassbezogen verpflichtend.
+- Der Desktop-Lebenszeit-Mutex bleibt bis zum betriebssystemseitigen Prozessende geöffnet. Installer und
+  Uninstaller beginnen dadurch erst nach dem Abbau des Python-Interpreters und geladener nativer Module mit dem
+  Dateiaustausch. Der Windows-Pakettest verlangt nach der regulären Deinstallation den vollständig entfernten
+  Installationsbaum und erhält bei Resten Uninstall-Log sowie ein maschinenlesbares Inventar.
 - Der schlanke Öffnen-Client des Windows-Dienstpakets lädt beim Start keine Browser-Assets mehr. Fehler vor oder
   während seiner internen Ausführung enden kontrolliert und ohne modalen PyInstaller-Dialog, sodass ein
   unbeaufsichtigter Installer nicht auf eine unsichtbare Fehlerbestätigung wartet.

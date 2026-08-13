@@ -50,6 +50,12 @@ Für Automatisierungen erzeugt der Launcher ein davon getrenntes persistentes Be
 bleibt als lokaler Healthcheck tokenfrei. Das Token erscheint weder in der Browser-URL noch in `runtime.json`.
 Der Parameter `--background` startet Server und Infobereich ohne automatisches Browserfenster.
 
+Der benutzerbezogene Desktop-Mutex ist zugleich der Lebenszeit-Sentinel für Installer und Uninstaller. Der
+Launcher schließt seinen Handle bewusst nicht im Python-Cleanup; Windows entfernt ihn erst beim
+betriebssystemseitigen Prozessende nach dem Interpreter- und DLL-Abbau. Erst danach darf der Installer Dateien
+ersetzen oder entfernen. Dieses kleine, pro Prozess genau einmal belegte Kernel-Handle wird bei jedem
+Prozessende automatisch freigegeben.
+
 Die optionale, standardmäßig abgewählte Installeraufgabe **Bei Windows-Anmeldung automatisch starten** legt für
 den aktuellen Benutzer einen exakten Eintrag unter
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` mit `--background` an. Sie bleibt nicht privilegiert, ist
@@ -343,7 +349,10 @@ Release-Artefakte aufgenommen. Beim signierten Vorab-Probelauf wird jedem Testsk
 `-RequireSignature` übergeben.
 
 Der Desktoptest deckt Installation, Browser-/API-Authentifizierung, PDF, bytegetreuen XML-Export, KoSIT,
-HKCU-Autostart, laufendes Update und Deinstallation ab. Der Diensttest prüft unter anderem Dienstkonto, ImagePath,
+HKCU-Autostart, laufendes Update und Deinstallation ab. Vor der Deinstallation weist er die beiden nativen
+Servermodule aus dem gebundenen Installationsbaum im laufenden Prozess nach. Erfolg verlangt anschließend das
+vollständige Verschwinden des benutzerdefinierten Installationsbaums; bei Resten bleiben Uninstall-Log und ein
+JSON-Inventar im Testverzeichnis erhalten. Der Diensttest prüft unter anderem Dienstkonto, ImagePath,
 Starttyp, konfigurierte und durch erzwungenen Prozessabbruch ausgelöste Recovery, SCM-Zustände, reine
 Loopback-Bindung, geschützte DACLs samt effektiven Rechten, Browser-IPC, den Global-Mutex, API-Tokenfälle,
 Tokenpersistenz über Stop/Start und Update, einen absichtlich fehlgeschlagenen Update-Rollback sowie den
