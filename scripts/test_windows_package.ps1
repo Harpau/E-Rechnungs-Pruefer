@@ -31,6 +31,140 @@ function Stop-OwnedProcess {
     }
 }
 
+function Wait-SetupUninstallMutexReleased {
+    param(
+        [string]$Name = "Global\E-Rechnungs-Pruefer-Setup-Uninstall",
+        [ValidateRange(1, 600)]
+        [int]$Seconds = 60
+    )
+
+    # Inno's first-phase process can exit before its temporary second phase has
+    # completed DeinitializeUninstall. The shared native mutex binds this wait
+    # to that exact mutating lifetime instead of relying on a fixed delay.
+    $Mutex = $null
+    try {
+        try {
+            $Mutex = [Threading.Mutex]::OpenExisting($Name)
+        } catch [Threading.WaitHandleCannotBeOpenedException] {
+            return
+        }
+
+        $Owned = $false
+        $Abandoned = $false
+        try {
+            try {
+                $Owned = $Mutex.WaitOne($Seconds * 1000)
+            } catch [Threading.AbandonedMutexException] {
+                $Owned = $true
+                $Abandoned = $true
+            }
+            if (-not $Owned) {
+                throw "Die Installations-/Deinstallationssperre wurde nach erfolgreicher " +
+                    "Deinstallation nicht innerhalb des Zeitlimits freigegeben."
+            }
+            if ($Abandoned) {
+                throw "Die temporäre zweite Uninstaller-Phase wurde unerwartet beendet."
+            }
+        } finally {
+            if ($Owned) {
+                $Mutex.ReleaseMutex()
+            }
+        }
+    } finally {
+        if ($null -ne $Mutex) {
+            $Mutex.Dispose()
+        }
+    }
+}
+
+function Assert-NativeDesktopModulesLoaded {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.Process]$OwnedProcess,
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDirectory
+    )
+
+    $OwnedProcess.Refresh()
+    if ($OwnedProcess.HasExited) {
+        throw "Der gebundene Desktopprozess endete vor der Prüfung seiner nativen Module."
+    }
+    try {
+        $LoadedModulePaths = @($OwnedProcess.Modules | ForEach-Object { $_.FileName })
+    } catch {
+        throw "Die Module des gebundenen Desktopprozesses konnten nicht inventarisiert werden: $_"
+    }
+
+    foreach ($RelativePattern in @(
+        "_internal\watchfiles\_rust_notify*.pyd",
+        "_internal\websockets\speedups*.pyd"
+    )) {
+        $ExpectedPattern = Join-Path $InstallDirectory $RelativePattern
+        $Matches = @($LoadedModulePaths | Where-Object { $_ -like $ExpectedPattern })
+        if ($Matches.Count -ne 1) {
+            throw "Der gebundene Desktopprozess lud das erwartete native Modul nicht eindeutig: $RelativePattern"
+        }
+    }
+}
+
+function Assert-InstallTreeRemoved {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$DiagnosticPath,
+        [Parameter(Mandatory = $true)]
+        [string]$UninstallLogPath
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    $Remaining = [System.Collections.Generic.List[object]]::new()
+    $InventoryError = $null
+    try {
+        $Items = @(
+            Get-Item -LiteralPath $Path -Force
+            Get-ChildItem -LiteralPath $Path -Force -Recurse
+        )
+        foreach ($Item in $Items) {
+            $RelativePath = if ([string]::Equals(
+                $Item.FullName,
+                $Path,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+                "."
+            } else {
+                [System.IO.Path]::GetRelativePath($Path, $Item.FullName)
+            }
+            [void]$Remaining.Add([PSCustomObject]@{
+                relative_path = $RelativePath
+                type = if ($Item.PSIsContainer) { "directory" } else { "file" }
+                length = if ($Item.PSIsContainer) { $null } else { [long]$Item.Length }
+            })
+        }
+    } catch {
+        $InventoryError = $_.Exception.ToString()
+    }
+
+    $Diagnostic = [ordered]@{
+        observed_at_utc = [DateTime]::UtcNow.ToString("o")
+        install_dir = $Path
+        directory_exists = $true
+        uninstall_log = $UninstallLogPath
+        remaining_count = $Remaining.Count
+        remaining = @($Remaining)
+        inventory_error = $InventoryError
+    }
+    $Diagnostic | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $DiagnosticPath -Encoding utf8
+
+    $RemainingPreview = @($Remaining | Select-Object -First 20 | ForEach-Object { $_.relative_path }) -join ", "
+    throw "Der Installationsbaum blieb nach regulärer Deinstallation zurück: $Path`n" +
+        "Restinventar: $DiagnosticPath`nUninstall-Log: $UninstallLogPath`n" +
+        "Erste verbliebene Einträge: $RemainingPreview"
+}
+
 function Resolve-OwnedInstalledProcess {
     param(
         [Parameter(Mandatory = $true)]
@@ -103,6 +237,7 @@ function Invoke-TestUninstaller {
     if ($UninstallerProcess.ExitCode -ne 0) {
         throw "Deinstallation fehlgeschlagen (Exitcode $($UninstallerProcess.ExitCode))."
     }
+    Wait-SetupUninstallMutexReleased
 }
 
 function Invoke-TestInstaller {
@@ -229,6 +364,7 @@ $PdfHeaders = Join-Path $TestRoot "report-headers.txt"
 $InstallLog = Join-Path $TestRoot "install.log"
 $UpdateLog = Join-Path $TestRoot "update.log"
 $UninstallLog = Join-Path $TestRoot "uninstall.log"
+$UninstallDiagnostic = Join-Path $TestRoot "uninstall-diagnostic.json"
 $DataDirectory = Join-Path $env:LOCALAPPDATA "E-Rechnungs-Pruefer"
 $RuntimeFile = Join-Path $DataDirectory "runtime.json"
 $ApiTokenFile = Join-Path $DataDirectory "api-token.txt"
@@ -608,6 +744,7 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     if (-not (Test-Path -LiteralPath $Uninstaller)) {
         throw "Deinstallationsprogramm wurde nicht gefunden."
     }
+    Assert-NativeDesktopModulesLoaded -OwnedProcess $restartedProcess -InstallDirectory $InstallDir
     Invoke-TestUninstaller -Path $Uninstaller -LogPath $UninstallLog
     $UninstallCompleted = $true
 
@@ -615,9 +752,10 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
         throw "Die laufende Anwendung wurde bei der Deinstallation nicht kontrolliert beendet."
     }
 
-    if (Test-Path -LiteralPath $Executable) {
-        throw "Die Anwendung blieb nach der Deinstallation zurück."
-    }
+    Assert-InstallTreeRemoved `
+        -Path $InstallDir `
+        -DiagnosticPath $UninstallDiagnostic `
+        -UninstallLogPath $UninstallLog
     if (Test-Path -LiteralPath $RuntimeFile) {
         throw "Die Laufzeitdatei blieb nach der Deinstallation zurück."
     }

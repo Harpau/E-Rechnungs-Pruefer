@@ -329,6 +329,7 @@ def test_windows_installer_offers_removable_per_user_autostart() -> None:
 
 def test_windows_installer_stops_running_app_for_update_and_uninstall() -> None:
     installer = (PROJECT_ROOT / "packaging/windows/installer.iss").read_text(encoding="utf-8")
+    launcher = (PROJECT_ROOT / "app/windows_launcher.py").read_text(encoding="utf-8")
 
     assert "AppMutex=" not in installer
     assert "CloseApplications=yes" in installer
@@ -357,6 +358,15 @@ def test_windows_installer_stops_running_app_for_update_and_uninstall() -> None:
     uninstall = installer.index("function InitializeUninstall")
     stop_helper = installer.index("function StopRunningApplication")
     assert stop_helper < prepare < uninstall
+
+    assert r'WINDOWS_MUTEX_NAME = "Local\\E-Rechnungs-Pruefer-Desktop"' in launcher
+    assert "class WindowsProcessLifetimeMutex:" in launcher
+    lifetime_mutex = launcher[
+        launcher.index("class WindowsProcessLifetimeMutex") : launcher.index("class WindowsShutdownEvent")
+    ]
+    assert "def close" not in lifetime_mutex
+    launcher_main = launcher[launcher.index("def main(") :]
+    assert "\n                mutex.close()" not in launcher_main
 
 
 def test_windows_package_test_refuses_existing_state_before_installation() -> None:
@@ -451,14 +461,73 @@ def test_windows_package_test_exercises_running_update_and_uninstall() -> None:
         'throw "Die laufende Anwendung wurde beim Update nicht kontrolliert beendet."',
         "$restartedProcess = Resolve-OwnedInstalledProcess",
         'throw "Das persistente API-Zugriffstoken wurde beim Update unerwartet geändert."',
+        "Assert-NativeDesktopModulesLoaded -OwnedProcess $restartedProcess -InstallDirectory $InstallDir",
         "Invoke-TestUninstaller -Path $Uninstaller -LogPath $UninstallLog",
         'throw "Die laufende Anwendung wurde bei der Deinstallation nicht kontrolliert beendet."',
+        "Assert-InstallTreeRemoved",
+        "-Path $InstallDir",
+        "-DiagnosticPath $UninstallDiagnostic",
+        "-UninstallLogPath $UninstallLog",
     ):
         assert expected in script
 
     update = script.index("Invoke-TestInstaller -Path $Setup -TargetDirectory $InstallDir -LogPath $UpdateLog")
+    native_modules = script.index(
+        "Assert-NativeDesktopModulesLoaded -OwnedProcess $restartedProcess -InstallDirectory $InstallDir"
+    )
     uninstall = script.index("Invoke-TestUninstaller -Path $Uninstaller -LogPath $UninstallLog")
-    assert update < uninstall
+    process_exit = script.index("$restartedProcess.WaitForExit(10000)", uninstall)
+    complete_tree = script.index("Assert-InstallTreeRemoved `", process_exit)
+    assert update < native_modules < uninstall < process_exit < complete_tree
+
+
+def test_windows_package_test_preserves_evidence_for_incomplete_uninstall() -> None:
+    script = (PROJECT_ROOT / "scripts/test_windows_package.ps1").read_text(encoding="utf-8")
+
+    wait_helper = script[
+        script.index("function Wait-SetupUninstallMutexReleased") : script.index(
+            "function Assert-NativeDesktopModulesLoaded"
+        )
+    ]
+    assert '"Global\\E-Rechnungs-Pruefer-Setup-Uninstall"' in wait_helper
+    assert "$Mutex.WaitOne($Seconds * 1000)" in wait_helper
+    assert "Start-Sleep" not in wait_helper
+
+    invoke_uninstaller = script[
+        script.index("function Invoke-TestUninstaller") : script.index("function Invoke-TestInstaller")
+    ]
+    assert invoke_uninstaller.index("$UninstallerProcess.WaitForExit(120000)") < invoke_uninstaller.index(
+        "Wait-SetupUninstallMutexReleased"
+    )
+
+    native_helper = script[
+        script.index("function Assert-NativeDesktopModulesLoaded") : script.index("function Assert-InstallTreeRemoved")
+    ]
+    assert "_internal\\watchfiles\\_rust_notify*.pyd" in native_helper
+    assert "_internal\\websockets\\speedups*.pyd" in native_helper
+    assert "$OwnedProcess.Modules" in native_helper
+
+    residue_helper = script[
+        script.index("function Assert-InstallTreeRemoved") : script.index("function Resolve-OwnedInstalledProcess")
+    ]
+    for expected in (
+        "Test-Path -LiteralPath $Path",
+        "Get-ChildItem -LiteralPath $Path -Force -Recurse",
+        "ConvertTo-Json -Depth 5",
+        "Set-Content -LiteralPath $DiagnosticPath",
+        "Restinventar: $DiagnosticPath",
+        "Uninstall-Log: $UninstallLogPath",
+    ):
+        assert expected in residue_helper
+    assert "Start-Sleep" not in residue_helper
+    assert "Remove-Item" not in residue_helper
+
+    uninstall = script.index("Invoke-TestUninstaller -Path $Uninstaller -LogPath $UninstallLog")
+    completed = script.index("$UninstallCompleted = $true", uninstall)
+    complete_tree = script.index("Assert-InstallTreeRemoved `", completed)
+    cleanup = script.index("if ($InstallationStarted -and -not $UninstallCompleted)", complete_tree)
+    assert uninstall < completed < complete_tree < cleanup
+    assert "Remove-Item $TestRoot -Recurse" not in script
 
 
 def test_windows_package_test_exercises_packaged_pdf_report() -> None:

@@ -210,6 +210,8 @@ function WaitForApplicationExit: Boolean;
 var
   WaitedMilliseconds: Cardinal;
 begin
+  { The launcher retains this mutex until Windows closes its process handle
+    table. Its disappearance therefore follows Python/PyInstaller DLL teardown. }
   WaitedMilliseconds := 0;
   while CheckForMutexes(AppMutexName) and
         (WaitedMilliseconds < ShutdownTimeoutMilliseconds) do

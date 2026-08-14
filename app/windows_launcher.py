@@ -60,18 +60,12 @@ class RuntimeRecord:
     token: str
 
 
-@dataclass(slots=True)
-class WindowsMutex:
+@dataclass(frozen=True, slots=True)
+class WindowsProcessLifetimeMutex:
+    """Named mutex retained until Windows tears down the process handle table."""
+
     handle: int
     already_exists: bool
-
-    def close(self) -> None:
-        if self.handle:
-            close_handle = ctypes.CDLL("kernel32").CloseHandle
-            close_handle.argtypes = [ctypes.c_void_p]
-            close_handle.restype = ctypes.c_bool
-            close_handle(ctypes.c_void_p(self.handle))
-            self.handle = 0
 
 
 @dataclass(slots=True)
@@ -203,7 +197,7 @@ def _open_existing_instance(path: Path, timeout: float = 5.0) -> bool:
     return False
 
 
-def _create_windows_mutex() -> WindowsMutex:
+def _create_windows_mutex() -> WindowsProcessLifetimeMutex:
     kernel32 = ctypes.CDLL("kernel32")
     kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
     kernel32.CreateMutexW.restype = ctypes.c_void_p
@@ -212,7 +206,7 @@ def _create_windows_mutex() -> WindowsMutex:
     last_error = int(kernel32.GetLastError())
     if not handle:
         raise OSError(last_error, "CreateMutexW ist fehlgeschlagen.")
-    return WindowsMutex(
+    return WindowsProcessLifetimeMutex(
         handle=int(handle),
         already_exists=last_error == ERROR_ALREADY_EXISTS,
     )
@@ -402,7 +396,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if sys.platform != "win32":
         raise SystemExit("Der Desktop-Launcher ist ausschließlich für Windows vorgesehen.")
 
-    mutex: WindowsMutex | None = None
+    mutex: WindowsProcessLifetimeMutex | None = None
     backend_mutex: BackendMutex | None = None
     shutdown_event: WindowsShutdownEvent | None = None
     shutdown_watcher: Thread | None = None
@@ -485,11 +479,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 backend_mutex.close()
             except Exception as exc:
                 cleanup_error = cleanup_error or exc
-        if mutex is not None:
-            try:
-                mutex.close()
-            except Exception as exc:
-                cleanup_error = cleanup_error or exc
+        # Do not close the desktop mutex here. The installer treats its
+        # disappearance as proof that the complete executable has terminated.
+        # Windows closes the raw handle only after process/DLL teardown, so the
+        # sentinel also covers Python and PyInstaller unloading native modules.
         if cleanup_error is not None:
             exit_code = 1
             if primary_error is None:
