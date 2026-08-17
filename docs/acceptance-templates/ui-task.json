@@ -1,0 +1,29 @@
+{
+  "schema": "e-rechnungs-pruefer-computer-use-task/v1",
+  "scenario_id": "example-visible-smoke",
+  "start_state": {
+    "target_window": "replace-before-use",
+    "expected_version": "0.0.0",
+    "required_visible_elements": []
+  },
+  "allowed_actions": [
+    "focus the bound application window",
+    "click the predeclared synthetic example",
+    "capture the named screenshot checkpoints"
+  ],
+  "forbidden_actions": [
+    "approve UAC, PIN or password prompts",
+    "open an unbound application or website",
+    "retry an unexpected failure",
+    "change VM, snapshot, file or release state"
+  ],
+  "expected_observations": [],
+  "screenshot_checkpoints": [],
+  "stop_conditions": [
+    "unexpected dialog or target",
+    "focus loss",
+    "expired context",
+    "missing expected observation",
+    "permission or credential prompt"
+  ]
+}

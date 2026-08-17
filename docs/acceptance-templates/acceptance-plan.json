@@ -1,0 +1,47 @@
+{
+  "schema": "e-rechnungs-pruefer-acceptance-plan/v1",
+  "run_id": "release-0.0.0-example-attempt-1",
+  "created_at_utc": "2000-01-01T00:00:00Z",
+  "updated_at_utc": "2000-01-01T00:00:00Z",
+  "status": "PENDING",
+  "release": {
+    "version": "0.0.0",
+    "commit": "0000000000000000000000000000000000000000",
+    "tag_object": null,
+    "workflow_run": null,
+    "workflow_attempt": null
+  },
+  "controller": {
+    "id": "replace-before-use",
+    "role": "SINGLE_WRITER",
+    "action_scope": []
+  },
+  "artifacts": [],
+  "environments": [
+    {
+      "id": "example-windows-client",
+      "vm_uuid": "00000000-0000-0000-0000-000000000000",
+      "snapshot_uuid": "00000000-0000-0000-0000-000000000000",
+      "os_version": "replace-before-use",
+      "initial_state": "CLEAN_SNAPSHOT",
+      "preflight_status": "PENDING"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "example-visible-smoke",
+      "environment_id": "example-windows-client",
+      "mode": "COMPUTER_USE_WITH_CLI_BINDINGS",
+      "initial_state": "CLEAN_SNAPSHOT",
+      "status": "PENDING",
+      "automated_failure_budget": 2,
+      "attempts": [],
+      "authority_paths": [],
+      "fallback": "MANUAL_OR_INCONCLUSIVE",
+      "ui_task": "ui-tasks/example-visible-smoke.json"
+    }
+  ],
+  "conditional_tests": [],
+  "active_wait_contexts": [],
+  "findings": []
+}

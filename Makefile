@@ -56,4 +56,4 @@ docker:
 
 clean:
 	rm -rf build dist .pytest_cache .ruff_cache .mypy_cache htmlcov .coverage coverage.xml
-	find . -type d -name __pycache__ -prune -exec rm -rf {} +
+	find app tests scripts packaging -type d -name __pycache__ -prune -exec rm -rf {} +

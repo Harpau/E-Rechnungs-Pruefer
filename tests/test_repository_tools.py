@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -77,6 +78,21 @@ def test_release_filter_excludes_local_and_sensitive_files():
     assert module.should_include(Path("app/main.py")) is True
 
 
+def test_clean_target_limits_bytecode_cleanup_to_owned_code_roots():
+    makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+    clean_recipe = makefile.partition("\nclean:\n")[2]
+
+    assert clean_recipe
+    pycache_commands = [line.strip() for line in clean_recipe.splitlines() if "-name __pycache__" in line]
+    assert len(pycache_commands) == 1
+
+    arguments = shlex.split(pycache_commands[0])
+    type_index = arguments.index("-type")
+    assert arguments[0] == "find"
+    assert arguments[1:type_index] == ["app", "tests", "scripts", "packaging"]
+    assert not {".", ".venv", "venv", "vendor", "local-data"} & set(arguments[1:type_index])
+
+
 def test_python_and_windows_package_manifests_include_required_runtime_files():
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     manifest = (PROJECT_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
@@ -85,6 +101,7 @@ def test_python_and_windows_package_manifests_include_required_runtime_files():
     for expected in (
         "include app/presentation_contract.json",
         "include packaging/kosit/components.lock.json",
+        "recursive-include docs/acceptance-templates *.json",
         "recursive-include docs/examples *.json",
         "recursive-include tests *.mjs",
     ):
@@ -105,6 +122,8 @@ def test_repository_release_artifact_inventory_contains_required_runtime_and_sup
     assert {
         "app/presentation_contract.json",
         "packaging/kosit/components.lock.json",
+        "docs/acceptance-templates/acceptance-plan.json",
+        "docs/acceptance-templates/ui-task.json",
         "docs/examples/node-red-e-rechnungs-pruefer-flow.json",
         "tests/node_red_flow.test.mjs",
         "tests/frontend/test_app_schema_v2.mjs",
