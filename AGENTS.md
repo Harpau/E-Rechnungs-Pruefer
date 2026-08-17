@@ -50,6 +50,9 @@ Use `make format` to apply Python formatting. Do not reformat HTML, CSS, or Java
 
 ## Autonome Abnahme und Befundübergabe
 
+- Organisiere Release-Abnahmen verbindlich nach [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md). Pro Lauf gibt es
+  genau einen schreibenden Controller; `acceptance-plan.json` und die versiegelte Evidence sind maßgeblich,
+  niemals der Chatverlauf.
 - Führe alle technisch möglichen Abnahmeschritte innerhalb des freigegebenen Scopes selbst aus. Dazu gehören insbesondere Host- und Gastbefehle, Read-only-Inventuren, Harness- und Testläufe, Evidence-Prüfungen sowie ausdrücklich autorisierte VM-Schritte. Fordere den Nutzer nur für eine UAC-Bestätigung, eine erforderliche PIN- oder Passworteingabe oder eine tatsächlich menschliche visuelle Prüfung an; Zugangsdaten niemals erfragen, speichern oder umgehen.
 - Verwende für jeden Abnahmekontext, dessen Fortsetzung auf UAC, PIN, Passwort oder eine echte manuelle Sichtprüfung wartet, eine Gültigkeit von 120 Minuten. Binde diese Frist ausdrücklich in Generator, Kontext, Laufzeitprüfung und Regressionstests. Rein autonome Kontexte dürfen enger begrenzt bleiben. Eine längere Frist lockert keine Bindung an VM, Snapshot, Identität, Artefakte, Hashes oder Kollisionsfreiheit.
 - Handle fail-closed. Prüfe vor Produkt- oder VM-Aktionen die exakten Ziele, Hash- und Kontextbindungen, Kollisionsfreiheit und erforderlichen Receipts. Führe bei fehlenden, veralteten oder widersprüchlichen Bindungen keine Mutation aus. Führe VM-Aktionen nur in der autorisierten Reihenfolge und ausschließlich gegen die gebundene VM beziehungsweise den gebundenen Snapshot aus; verifiziere den Zustand nach jedem Schritt erneut.

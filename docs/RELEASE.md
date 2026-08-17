@@ -1,5 +1,9 @@
 # Release-Prozess
 
+Organisation, Zustandsmodell, Wiederaufnahme und Evidence einer Release-Abnahme richten sich verbindlich nach
+[`ACCEPTANCE.md`](ACCEPTANCE.md). Vor der ersten Produkt- oder VM-Mutation muss ein gebundener
+`acceptance-plan.json` existieren; der Chatverlauf ist keine Abnahmeautorität.
+
 ## 1. Version vorbereiten
 
 Version in folgenden Dateien ändern:
