@@ -122,6 +122,9 @@ Zustandsattestation und eine Begründung, warum Snapshot-Neustart den benötigte
 
 ## Evidence und Aufbewahrung
 
+Die verbindlichen Retention-Klassen, Mindestfristen und Archiv-Gates stehen in
+[`EVIDENCE_RETENTION.md`](EVIDENCE_RETENTION.md).
+
 Jeder Versuch besitzt ein eigenes Verzeichnis mit mindestens:
 
 - `result.json` mit Status, Bindungen, Zeitstempeln und autoritativen Nachweisen;
