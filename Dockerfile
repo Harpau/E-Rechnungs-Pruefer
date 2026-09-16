@@ -12,6 +12,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
+# This build chroot has no /proc/self/exe for Java's $ORIGIN lookup. Java,
+# its truststore and KoSIT are checked in the actual container with /proc.
 RUN test "$TARGETARCH" = "amd64" -o "$TARGETARCH" = "arm64" \
     && python -m pip install --force-reinstall --require-hashes --only-binary=:all: \
        -r packaging/docker/requirements-builder.txt \
@@ -37,8 +39,7 @@ RUN test "$TARGETARCH" = "amd64" -o "$TARGETARCH" = "arm64" \
        --runtime-lock "packaging/docker/requirements-runtime-${TARGETARCH}.txt" \
        --runtime-metadata "packaging/docker/requirements-runtime-${TARGETARCH}.txt.metadata.json" \
     && cp /tmp/builder-inventory.json /runtime-root/usr/share/e-rechnung-pruefer/builder-inventory.json \
-    && chroot /runtime-root /opt/runtime/bin/python -c "import ssl, sqlite3, bz2, lzma, lxml.etree, PIL.Image, reportlab, uvloop" \
-    && chroot /runtime-root /usr/bin/java -version
+    && chroot /runtime-root /opt/runtime/bin/python -c "import ssl, sqlite3, bz2, lzma, lxml.etree, PIL.Image, reportlab, uvloop"
 
 # Only measured runtime payloads cross this boundary. Package identities and
 # copyrights for every retained Debian payload remain available to scanners.
