@@ -104,6 +104,7 @@ def fixture(tmp_path: Path) -> tuple[dict, dict, dict, Path]:
             "record_sha256": digest(record),
         }
         put(info + "/METADATA", f"Metadata-Version: 2.3\nName: {name}\nVersion: {version}\n".encode(), origin)
+        put(info + "/WHEEL", b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n", origin)
         put(info + "/RECORD", record, origin)
         python_packages.append(
             {
@@ -155,6 +156,47 @@ def test_exact_runtime_manifest_inventory_and_trivy_coverage_pass(tmp_path: Path
     assert report["python_distributions"] == 27
     assert report["cpython_version"] == "3.14.7"
     assert coverage.verify_payload(manifest, image)["payload_passed"] is True
+
+
+@pytest.mark.parametrize("change", ["wheel_hash", "record_hash", "package_name", "file_type", "missing_manifest_entry"])
+def test_standard_wheel_file_requires_exact_distribution_and_record_binding(tmp_path: Path, change: str) -> None:
+    manifest, _, _, image = fixture(tmp_path)
+    path = next(path for path in manifest["files"] if path.endswith(".dist-info/WHEEL"))
+    entry = manifest["files"][path]
+    entry["provenance"] = copy.deepcopy(entry["provenance"])
+    if change == "wheel_hash":
+        entry["provenance"]["wheel_sha256"] = "0" * 64
+    elif change == "record_hash":
+        entry["provenance"]["record_sha256"] = "0" * 64
+    elif change == "package_name":
+        entry["provenance"]["name"] = "wheel"
+    elif change == "file_type":
+        entry["type"] = "directory"
+    else:
+        del manifest["files"][path]
+    with pytest.raises(coverage.CoverageError):
+        coverage.verify_payload(manifest, image)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "wheel/__init__.py",
+        "wheel-0.48.0.dist-info/WHEEL",
+        "unbound-1.0.dist-info/WHEEL",
+        "annotated-doc-0.0.5.dist-info/wheel",
+        "annotated-doc-0.0.5.dist-info/nested/WHEEL",
+    ],
+)
+def test_wheel_metadata_exception_never_allows_modules_distributions_or_unbound_files(
+    tmp_path: Path, relative: str
+) -> None:
+    manifest, _, _, image = fixture(tmp_path)
+    path = image / "opt/runtime/lib/python3.14/site-packages" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"synthetic forbidden wheel payload")
+    with pytest.raises(coverage.CoverageError):
+        coverage.verify_payload(manifest, image)
 
 
 @pytest.mark.parametrize(

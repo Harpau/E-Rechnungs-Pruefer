@@ -76,10 +76,15 @@ def package_identity(package: dict[str, Any], *, trivy: bool = False) -> tuple[s
     return cast(tuple[str, ...], values)
 
 
-def forbidden_payload(path: str) -> bool:
+def forbidden_payload(path: str, *, wheel_metadata_paths: frozenset[str] = frozenset()) -> bool:
     parts = PurePosixPath(path).parts
     for index, part in enumerate(parts):
         normalized = re.sub(r"[-_.]+", "-", part).lower()
+        if part == "WHEEL" and index == len(parts) - 1 and path in wheel_metadata_paths:
+            # The wheel format requires this metadata filename; it is not the
+            # wheel distribution. Only a fully bound immediate dist-info file
+            # qualifies, never a module, directory, nested or unmanifested file.
+            continue
         if index == 2 and parts[1:3] == ("app", "packaging"):
             # Repository data: runtime locks, KoSIT lock and Windows recipes.
             # Only this component is exempt, never nested tools or wheel bytes.
@@ -93,6 +98,30 @@ def forbidden_payload(path: str) -> bool:
         ):
             return True
     return False
+
+
+def bound_wheel_metadata(files: dict[str, Any], metadata_paths: dict[str, str]) -> frozenset[str]:
+    """Bind the standard WHEEL file to its METADATA, RECORD and original wheel."""
+    result = set()
+    for metadata_path in metadata_paths.values():
+        directory = posixpath.dirname(metadata_path)
+        path = directory + "/WHEEL"
+        if path not in files:
+            continue
+        metadata, record, wheel = files[metadata_path], files[directory + "/RECORD"], files[path]
+        origin = metadata["provenance"]
+        if (
+            not metadata_path.endswith(".dist-info/METADATA")
+            or not metadata_path.startswith("/opt/runtime/lib/python3.14/site-packages/")
+            or any(entry.get("type") != "file" for entry in (metadata, record, wheel))
+            or origin.get("kind") != "wheel"
+            or record.get("provenance") != origin
+            or wheel.get("provenance") != origin
+            or record.get("sha256") != origin.get("record_sha256")
+        ):
+            raise CoverageError(f"Standard WHEEL metadata is not bound to its distribution: {path}")
+        result.add(path)
+    return frozenset(result)
 
 
 def manifest_inventory(manifest: dict[str, Any]) -> tuple[set[tuple[str, ...]], dict[str, str], dict[str, str], str]:
@@ -132,8 +161,6 @@ def manifest_inventory(manifest: dict[str, Any]) -> tuple[set[tuple[str, ...]], 
     cpython: set[str] = set()
     for path, entry in files.items():
         image_path(path)
-        if forbidden_payload(path):
-            raise CoverageError(f"Bootstrap payload in manifest: {path}")
         kind = entry.get("type")
         if kind not in {"file", "directory", "symlink"}:
             raise CoverageError(f"Unknown runtime file type: {path}")
@@ -212,6 +239,10 @@ def manifest_inventory(manifest: dict[str, Any]) -> tuple[set[tuple[str, ...]], 
         raise CoverageError("Interpreter and libpython bytes are not inventoried")
     if files.get("/var/lib/dpkg/status", {}).get("type") != "file":
         raise CoverageError("Combined original Debian status is missing")
+    wheel_metadata_paths = bound_wheel_metadata(files, metadata_paths)
+    for path in files:
+        if forbidden_payload(path, wheel_metadata_paths=wheel_metadata_paths):
+            raise CoverageError(f"Bootstrap payload in manifest: {path}")
     return expected_os, python, metadata_paths, architecture
 
 
@@ -350,9 +381,10 @@ def status_identity(payload: bytes) -> tuple[str, ...]:
 
 
 def verify_payload(manifest: dict[str, Any], root: Path = Path("/")) -> dict[str, Any]:
-    expected_os, _, _, _ = manifest_inventory(manifest)
+    expected_os, _, metadata_paths, _ = manifest_inventory(manifest)
     root = root.resolve(strict=True)
     files = manifest["files"]
+    wheel_metadata_paths = bound_wheel_metadata(files, metadata_paths)
     for path, entry in files.items():
         actual = resolve_image(root, path, follow_final=False)
         try:
@@ -410,7 +442,7 @@ def verify_payload(manifest: dict[str, Any], root: Path = Path("/")) -> dict[str
             for name in (*directories, *names):
                 actual = Path(directory) / name
                 path = "/" + actual.relative_to(root).as_posix()
-                if forbidden_payload(path):
+                if forbidden_payload(path, wheel_metadata_paths=wheel_metadata_paths):
                     raise CoverageError(f"Forbidden bootstrap payload found: {path}")
                 if (
                     prefix != "/app"

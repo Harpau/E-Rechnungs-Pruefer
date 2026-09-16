@@ -488,6 +488,34 @@ def test_only_optional_system_font_roots_may_be_absent(tmp_path: Path, monkeypat
     assert "/usr/share/fonts" in copied
 
 
+@pytest.mark.parametrize("state", ["owned", "missing", "unowned"])
+def test_debian_release_marker_is_required_and_preserves_owned_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    marker = "/etc/debian_version"
+    build = builder(tmp_path, {marker: ["base-files:amd64"]} if state == "owned" else {})
+    build.statuses["base-files:amd64"] = stanza("base-files")
+    original = b"13.1\n"
+    if state != "missing":
+        put(build.source, marker, original)
+    original_copy = build.copy_path
+
+    def copy_marker_only(path: str, **kwargs) -> None:
+        if path == marker:
+            original_copy(path, **kwargs)
+
+    monkeypatch.setattr(build, "copy_path", copy_marker_only)
+    if state != "owned":
+        with pytest.raises(rootfs.RootfsError):
+            build.runtime_roots()
+        return
+    build.runtime_roots()
+    assert (build.output / marker.lstrip("/")).read_bytes() == original
+    assert build.entries[marker]["sha256"] == hashlib.sha256(original).hexdigest()
+    assert build.entries[marker]["provenance"] == {"kind": "debian", "packages": ["base-files:amd64"]}
+    assert "base-files:amd64" in build.packages
+
+
 def test_java_dlopen_fontconfig_root_preserves_library_and_owned_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

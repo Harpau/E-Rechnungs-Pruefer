@@ -737,6 +737,7 @@ class RootfsBuilder:
             "/etc/localtime",
             "/etc/nsswitch.conf",
             "/etc/os-release",
+            "/etc/debian_version",
             "/etc/ld.so.cache",
             "/usr/lib/ssl/cert.pem",
             "/usr/lib/ssl/certs",
