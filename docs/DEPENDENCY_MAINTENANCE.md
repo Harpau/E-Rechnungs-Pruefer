@@ -113,7 +113,11 @@ als Debian-Paket inventarisiert und vom OS-Scanner abgedeckt.
 einschließlich transitiver ELF-Bibliotheken, dynamischer Provider, Zertifikate,
 Zeitzonen und Lizenzen. Globale Buildpakete und der vollständige ungenutzte
 `ensurepip`-Baum einschließlich seines eingebetteten Pip-Wheels werden tatsächlich
-weggelassen. Paketstatusdaten für erhaltene Debian-Dateien bleiben vollständig
+weggelassen. Ebenso entfallen die ungenutzten Python-GUI-Komponenten Tkinter,
+IDLE und Turtle: Die offizielle Slim-Basis liefert bereits keine Tk-Laufzeit,
+obwohl sie die native `_tkinter`-Erweiterung enthält. Für sämtliche übrigen
+übernommenen ELF-Dateien bleibt die Abhängigkeitsprüfung verpflichtend.
+Paketstatusdaten für erhaltene Debian-Dateien bleiben vollständig
 erhalten, auch wenn nur Teile eines Pakets benötigt werden. Das Dateimanifest
 dokumentiert Herkunft, Inhalt und ELF-Abhängigkeiten des Laufzeitunterbaus;
 Anwendungsdateien werden separat durch Commit und finales Image gebunden.

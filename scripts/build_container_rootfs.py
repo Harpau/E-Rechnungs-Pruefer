@@ -259,7 +259,22 @@ def runtime_provenance(
 
 def skip_cpython(path: str) -> bool:
     parts = PurePosixPath(path).parts
-    return any(part in {"site-packages", "ensurepip", "__pycache__"} or part.startswith("config-") for part in parts)
+    if any(part in {"site-packages", "ensurepip", "__pycache__"} or part.startswith("config-") for part in parts):
+        return True
+    if path.startswith(PYTHON_STDLIB + "/"):
+        relative = PurePosixPath(path).relative_to(PYTHON_STDLIB)
+        # Official Python slim intentionally excludes tkinter from retained
+        # shared-library dependencies. This headless app does not use its GUI.
+        # docker-library/python 688a0b86bb44289df16a363e9f41d90514c1a5f9,
+        # 3.14/slim-trixie/Dockerfile:121-130.
+        if relative.parts[0] in {"tkinter", "idlelib", "turtledemo"}:
+            return True
+        return str(relative) in {
+            "turtle.py",
+            "lib-dynload/_tkinter.cpython-314-x86_64-linux-gnu.so",
+            "lib-dynload/_tkinter.cpython-314-aarch64-linux-gnu.so",
+        }
+    return False
 
 
 def skip_private_tls(path: str) -> bool:

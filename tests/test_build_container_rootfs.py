@@ -392,6 +392,35 @@ def test_cpython_payload_excludes_installer_and_build_payloads() -> None:
     assert not rootfs.skip_cpython("/usr/local/lib/python3.14/lib-dynload/_ssl.cpython-314-x86_64-linux-gnu.so")
 
 
+def test_headless_rootfs_removes_only_unused_cpython_gui_payload(tmp_path: Path) -> None:
+    build = builder(tmp_path)
+    excluded = (
+        "tkinter/__init__.py",
+        "idlelib/__main__.py",
+        "turtledemo/__main__.py",
+        "turtle.py",
+        "lib-dynload/_tkinter.cpython-314-x86_64-linux-gnu.so",
+        "lib-dynload/_tkinter.cpython-314-aarch64-linux-gnu.so",
+    )
+    retained = (
+        "ssl.py",
+        "lib-dynload/_ssl.cpython-314-x86_64-linux-gnu.so",
+        "lib-dynload/_sqlite3.cpython-314-aarch64-linux-gnu.so",
+        "lib-dynload/_ctypes.cpython-314-x86_64-linux-gnu.so",
+        "lib-dynload/unrelated_tkinter_named_extension.so",
+    )
+    for relative in excluded + retained:
+        put(build.source, rootfs.PYTHON_STDLIB + "/" + relative)
+    build.copy_path(rootfs.PYTHON_STDLIB, recursive=True, exclude=rootfs.skip_cpython)
+    for relative in excluded:
+        assert not (build.output / rootfs.PYTHON_STDLIB.lstrip("/") / relative).exists()
+        assert rootfs.PYTHON_STDLIB + "/" + relative not in build.entries
+    for relative in retained:
+        assert (build.output / rootfs.PYTHON_STDLIB.lstrip("/") / relative).is_file()
+    for directory in ("tkinter", "idlelib", "turtledemo"):
+        assert not (build.output / rootfs.PYTHON_STDLIB.lstrip("/") / directory).exists()
+
+
 def test_only_optional_system_font_roots_may_be_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     build = builder(tmp_path)
     put(build.source, "/usr/local/lib/.keep")
