@@ -101,7 +101,7 @@ jobs:
           container_id='${{ steps.runtime.outputs.container_id }}'
           docker exec "$container_id" python scripts/dependency_audit.py capture \
             --lock packaging/docker/requirements-linux-${{ matrix.arch }}.txt --output /tmp/python-inventory.json
-          docker cp "$container_id:/tmp/python-inventory.json" .cache/docker-evidence/python-inventory.json
+          docker exec "$container_id" cat /tmp/python-inventory.json > .cache/docker-evidence/python-inventory.json
           docker exec "$container_id" dpkg-query -W '-f=${binary:Package}\t${Version}\t${Architecture}\n' > .cache/docker-evidence/dpkg-inventory.tsv
           docker exec "$container_id" cat /etc/os-release > .cache/docker-evidence/os-release.txt
           docker exec "$container_id" java -version > .cache/docker-evidence/java-version.txt 2>&1
@@ -112,7 +112,7 @@ jobs:
           container_id='${{ steps.runtime.outputs.container_id }}'
           status=0
           docker exec "$container_id" python scripts/test_container.py --expect-kosit --output /tmp/http-smoke.json || status=$?
-          docker cp "$container_id:/tmp/http-smoke.json" .cache/docker-evidence/http-smoke.json
+          docker exec "$container_id" cat /tmp/http-smoke.json > .cache/docker-evidence/http-smoke.json
           exit "$status"
       - name: Real bound KoSIT acceptance, rejection and technical-failure smoke
         if: always() && steps.runtime.outcome == 'success'
@@ -122,7 +122,7 @@ jobs:
           docker exec "$container_id" python scripts/test_kosit_components.py --vendor-root /app/vendor/kosit \
             --java /usr/bin/java --config-archive '/locked-components/${{ steps.runtime.outputs.config_archive }}' \
             --output /tmp/kosit-smoke.json || status=$?
-          docker cp "$container_id:/tmp/kosit-smoke.json" .cache/docker-evidence/kosit-smoke.json
+          docker exec "$container_id" cat /tmp/kosit-smoke.json > .cache/docker-evidence/kosit-smoke.json
           exit "$status"
       - name: Fetch hash-pinned vulnerability scanner
         id: scanner
@@ -147,7 +147,7 @@ jobs:
       - name: Audit locked KoSIT Java libraries without exclusions
         if: always() && steps.scanner.outcome == 'success'
         run: |
-          .cache/trivy-bin/trivy fs --scanners vuln --ignorefile /dev/null --ignore-unfixed=false --list-all-pkgs \
+          .cache/trivy-bin/trivy rootfs --scanners vuln --ignorefile /dev/null --ignore-unfixed=false --list-all-pkgs \
             --exit-code 1 --format json --output .cache/docker-evidence/trivy-kosit.json vendor/kosit
       - name: Require actual OS, Java runtime and shaded-JAR scan coverage
         if: always() && steps.scanner.outcome == 'success'

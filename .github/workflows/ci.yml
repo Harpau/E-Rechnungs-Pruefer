@@ -150,7 +150,9 @@ jobs:
           tests/test_windows_install_conflicts.py
           tests/test_windows_install_transaction.py
           tests/test_windows_install_recovery.py tests/test_windows_install_reconcile.py
-          tests/test_windows_open_client_transaction.py tests/test_windows_native_adapters.py
+          tests/test_windows_open_client_transaction.py tests/test_windows_native_adapters.py tests/test_acceptance_context.py
+      - name: Native Windows evidence hashing regression
+        run: python -m pytest tests/test_release_evidence.py -k native_evidence_bytes_with_executable_extension_are_read_not_run
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/windows-components

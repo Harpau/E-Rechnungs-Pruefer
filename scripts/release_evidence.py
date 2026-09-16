@@ -48,8 +48,13 @@ def _mode(value: int) -> str:
     return f"{stat.S_IMODE(value):04o}"
 
 
-def _identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (value.st_dev, value.st_ino, value.st_mode, value.st_size, value.st_mtime_ns)
+def _identity(value: os.stat_result, *, cross_api: bool = False) -> tuple[int, int, int, int, int]:
+    # Windows path-stat synthesizes execute bits for .exe/.bat/.cmd/.com;
+    # handle-based fstat does not. Normalize only across APIs, never within one.
+    # https://github.com/python/cpython/blob/v3.14.7/Modules/posixmodule.c#L1915-L1931
+    # https://github.com/python/cpython/blob/v3.14.7/Python/fileutils.c#L1148-L1196
+    mode = value.st_mode & ~0o111 if cross_api and sys.platform == "win32" else value.st_mode
+    return (value.st_dev, value.st_ino, mode, value.st_size, value.st_mtime_ns)
 
 
 def _lstat(path: Path) -> os.stat_result:
@@ -70,7 +75,9 @@ def _file_digest(path: Path, before: os.stat_result) -> str:
     try:
         with os.fdopen(descriptor, "rb") as handle:
             opened = os.fstat(handle.fileno())
-            if not stat.S_ISREG(opened.st_mode) or _identity(opened) != _identity(before):
+            if not stat.S_ISREG(opened.st_mode) or _identity(opened, cross_api=True) != _identity(
+                before, cross_api=True
+            ):
                 raise InventoryError(f"Datei hat sich vor dem Hashen geändert: {path}")
             for chunk in iter(lambda: handle.read(BUFFER_SIZE), b""):
                 digest.update(chunk)
@@ -85,7 +92,7 @@ def _file_digest(path: Path, before: os.stat_result) -> str:
         raise
 
     after_path = _lstat(path)
-    if _identity(after_read) != _identity(opened) or _identity(after_path) != _identity(opened):
+    if _identity(after_read) != _identity(opened) or _identity(after_path) != _identity(before):
         raise InventoryError(f"Datei hat sich während des Hashens geändert: {path}")
     return digest.hexdigest()
 
@@ -263,7 +270,9 @@ def _read_regular_bytes(path: Path) -> bytes:
     try:
         with os.fdopen(descriptor, "rb") as handle:
             opened = os.fstat(handle.fileno())
-            if not stat.S_ISREG(opened.st_mode) or _identity(opened) != _identity(metadata):
+            if not stat.S_ISREG(opened.st_mode) or _identity(opened, cross_api=True) != _identity(
+                metadata, cross_api=True
+            ):
                 raise InventoryError(f"Datei hat sich vor dem Lesen geändert: {path}")
             content = handle.read()
             after_read = os.fstat(handle.fileno())
@@ -274,7 +283,7 @@ def _read_regular_bytes(path: Path) -> bytes:
             pass
         raise
     after_path = _lstat(path)
-    if _identity(after_read) != _identity(opened) or _identity(after_path) != _identity(opened):
+    if _identity(after_read) != _identity(opened) or _identity(after_path) != _identity(metadata):
         raise InventoryError(f"Datei hat sich während des Lesens geändert: {path}")
     return content
 

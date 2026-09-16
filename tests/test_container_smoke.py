@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -52,3 +53,12 @@ def test_multipart_preserves_the_uploaded_xml_bytes() -> None:
     assert content_type.startswith("multipart/form-data; boundary=")
     assert original in payload
     assert b'name="official"\r\n\r\nfalse\r\n' in payload
+
+
+def test_container_workflow_reads_tmpfs_evidence_and_scans_compiled_java() -> None:
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/docker.yml").read_text()
+    assert "docker cp" not in workflow
+    for filename in ("python-inventory.json", "http-smoke.json", "kosit-smoke.json"):
+        assert f"cat /tmp/{filename}" in workflow
+    assert "trivy rootfs --scanners vuln" in workflow
+    assert "trivy fs --scanners vuln" not in workflow

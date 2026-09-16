@@ -8,6 +8,7 @@ import subprocess
 import sys
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -214,3 +215,96 @@ def test_mode_changes_are_detected(tmp_path: Path):
     receipt.chmod(stat.S_IMODE(receipt.stat().st_mode) | stat.S_IXUSR)
 
     assert "Geändert: receipt.txt (mode)" in module.verify_inventory(root, inventory, checksum)
+
+
+def _read_evidence(module, path, reader):
+    if reader == "digest":
+        return module._file_digest(path, module._lstat(path))
+    return module._read_regular_bytes(path)
+
+
+def _metadata(value, **changes):
+    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns")
+    return SimpleNamespace(**({field: getattr(value, field) for field in fields} | changes))
+
+
+@pytest.mark.parametrize("reader", ["digest", "bytes"])
+@pytest.mark.parametrize("suffix", [".exe", ".EXE", ".bat", ".cmd", ".com", ".txt"])
+def test_windows_path_only_execute_bits_do_not_reject_unchanged_evidence(tmp_path, monkeypatch, reader, suffix):
+    module = _load_module()
+    path = tmp_path / f"synthetic-never-executed{suffix}"
+    content = b"synthetic evidence; never executable"
+    path.write_bytes(content)
+    actual = path.stat()
+    # CPython Windows path-stat derives execute bits from these extensions;
+    # fstat reports attributes without the filename-dependent adjustment.
+    execute = 0 if suffix == ".txt" else 0o111
+    path_metadata = _metadata(actual, st_mode=stat.S_IFREG | 0o666 | execute)
+    descriptor_metadata = _metadata(actual, st_mode=stat.S_IFREG | 0o666)
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(module, "_lstat", lambda unused: path_metadata)
+    monkeypatch.setattr(module.os, "fstat", lambda unused: descriptor_metadata)
+
+    assert _read_evidence(module, path, reader) == (sha256(content).hexdigest() if reader == "digest" else content)
+
+
+@pytest.mark.parametrize("reader", ["digest", "bytes"])
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+@pytest.mark.parametrize("origin", ["path", "descriptor"])
+@pytest.mark.parametrize("field", ["st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns"])
+def test_changes_within_each_stat_api_still_fail_closed(tmp_path, monkeypatch, reader, platform, origin, field):
+    module = _load_module()
+    path = tmp_path / "synthetic-never-executed.exe"
+    path.write_bytes(b"synthetic evidence")
+    before = _metadata(path.stat(), st_mode=stat.S_IFREG | 0o666)
+    changed = _metadata(before, **{field: getattr(before, field) ^ (0o111 if field == "st_mode" else 1)})
+    path_observations = iter((before, changed if origin == "path" else before))
+    handle_observations = iter((before, changed if origin == "descriptor" else before))
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(module, "_lstat", lambda unused: next(path_observations))
+    monkeypatch.setattr(module.os, "fstat", lambda unused: next(handle_observations))
+
+    with pytest.raises(module.InventoryError, match="geändert"):
+        _read_evidence(module, path, reader)
+
+
+@pytest.mark.parametrize("reader", ["digest", "bytes"])
+@pytest.mark.parametrize("field", ["st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns"])
+def test_cross_api_normalization_keeps_non_execute_identity_differences(tmp_path, monkeypatch, reader, field):
+    module = _load_module()
+    path = tmp_path / "synthetic-never-executed.exe"
+    path.write_bytes(b"synthetic evidence")
+    before = _metadata(path.stat(), st_mode=stat.S_IFREG | 0o666)
+    # A write-bit difference must not be normalized alongside execute bits.
+    opened = _metadata(before, **{field: getattr(before, field) ^ (0o200 if field == "st_mode" else 1)})
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(module, "_lstat", lambda unused: before)
+    monkeypatch.setattr(module.os, "fstat", lambda unused: opened)
+
+    with pytest.raises(module.InventoryError, match="geändert"):
+        _read_evidence(module, path, reader)
+
+
+@pytest.mark.parametrize("reader", ["digest", "bytes"])
+def test_posix_cross_api_execute_difference_is_not_normalized(tmp_path, monkeypatch, reader):
+    module = _load_module()
+    path = tmp_path / "synthetic.exe"
+    path.write_bytes(b"synthetic evidence")
+    before = _metadata(path.stat(), st_mode=stat.S_IFREG | 0o777)
+    opened = _metadata(before, st_mode=stat.S_IFREG | 0o666)
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(module, "_lstat", lambda unused: before)
+    monkeypatch.setattr(module.os, "fstat", lambda unused: opened)
+
+    with pytest.raises(module.InventoryError, match="geändert"):
+        _read_evidence(module, path, reader)
+
+
+@pytest.mark.parametrize("reader", ["digest", "bytes"])
+@pytest.mark.parametrize("suffix", [".exe", ".EXE", ".bat", ".cmd", ".com", ".txt"])
+def test_native_evidence_bytes_with_executable_extension_are_read_not_run(tmp_path, reader, suffix):
+    module = _load_module()
+    path = tmp_path / f"synthetic-never-executed{suffix}"
+    content = b"synthetic evidence; never executable"
+    path.write_bytes(content)
+    assert _read_evidence(module, path, reader) == (sha256(content).hexdigest() if reader == "digest" else content)

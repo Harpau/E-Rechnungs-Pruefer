@@ -94,10 +94,20 @@ def _read(path: Path) -> bytes:
         opened = os.fstat(stream.fileno())
         result = stream.read()
         after = os.fstat(stream.fileno())
-    identities = {
-        (s.st_dev, s.st_ino, s.st_mode, s.st_size, s.st_mtime_ns) for s in (before, opened, after, path.stat())
-    }
-    if len(identities) != 1 or len(result) != before.st_size:
+        final = path.stat()
+
+    def identity(metadata: os.stat_result, *, cross_api: bool = False) -> tuple[int, ...]:
+        # CPython adds extension-derived execute bits only to Windows path-stat.
+        # Keep full modes for before/after checks within each individual API.
+        mode = metadata.st_mode & ~0o111 if cross_api and sys.platform == "win32" else metadata.st_mode
+        return (metadata.st_dev, metadata.st_ino, mode, metadata.st_nlink, metadata.st_size, metadata.st_mtime_ns)
+
+    if (
+        identity(before) != identity(final)
+        or identity(opened) != identity(after)
+        or identity(before, cross_api=True) != identity(opened, cross_api=True)
+        or len(result) != before.st_size
+    ):
         raise ContextError(f"Datei während der Prüfung verändert: {path}")
     return result
 

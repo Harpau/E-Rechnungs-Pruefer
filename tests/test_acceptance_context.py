@@ -4,6 +4,7 @@ import importlib.util
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -132,6 +133,46 @@ def test_guard_rejects_modified_artifact_without_consuming_claim(module, tmp_pat
     with pytest.raises(module.ContextError, match="Artefakt"):
         module.guard(root, "controller-one", context["id"], binding(), preflight=preflight, now=NOW)
     assert module.verify(root)["contexts"][context["id"]]["status"] == "READY"
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_read_handles_windows_path_only_executable_bits(module, tmp_path, monkeypatch, platform):
+    artifact = tmp_path / "synthetic.exe"
+    artifact.write_bytes(b"synthetic; never executable")
+    artifact.chmod(0o755)
+    actual = artifact.stat()
+    descriptor = SimpleNamespace(**{name: getattr(actual, name) for name in dir(actual) if name.startswith("st_")})
+    descriptor.st_mode &= ~0o111
+    monkeypatch.setattr(module.os, "fstat", lambda fd: descriptor)
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform=platform))
+    if platform == "win32":
+        assert module._read(artifact) == artifact.read_bytes()
+    else:
+        with pytest.raises(module.ContextError, match="verändert"):
+            module._read(artifact)
+
+
+@pytest.mark.parametrize("suffix", [".exe", ".EXE", ".bat", ".cmd", ".com", ".txt"])
+def test_read_native_synthetic_artifact_without_executing_it(module, tmp_path, suffix):
+    artifact = tmp_path / f"synthetic{suffix}"
+    content = b"not a real executable; only test file metadata and exact bytes"
+    artifact.write_bytes(content)
+    assert module._read(artifact) == content
+
+
+@pytest.mark.parametrize("field", ["st_dev", "st_ino", "st_nlink", "st_size", "st_mtime_ns", "st_mode"])
+def test_read_rejects_descriptor_changes_even_with_windows_mode_normalization(module, tmp_path, monkeypatch, field):
+    artifact = tmp_path / "synthetic.exe"
+    artifact.write_bytes(b"synthetic; never executable")
+    actual = artifact.stat()
+    values = {name: getattr(actual, name) for name in dir(actual) if name.startswith("st_")}
+    changed = SimpleNamespace(**values)
+    setattr(changed, field, getattr(changed, field) ^ (0o111 if field == "st_mode" else 1))
+    observations = iter([actual, changed])
+    monkeypatch.setattr(module.os, "fstat", lambda fd: next(observations))
+    monkeypatch.setattr(module, "sys", SimpleNamespace(platform="win32"))
+    with pytest.raises(module.ContextError, match="verändert"):
+        module._read(artifact)
 
 
 def test_controller_scope_concurrent_writer_and_reinitialize_fail_closed(module, tmp_path):
