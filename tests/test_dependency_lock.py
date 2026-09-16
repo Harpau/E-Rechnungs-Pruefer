@@ -21,14 +21,24 @@ def environment() -> dict[str, str]:
     return lock.target_environment("windows-release", "3.14.7")
 
 
-def package(name: str, dependencies: tuple[str, ...] = (), version: str = "1.0") -> dict[str, object]:
-    return {"name": name, "version": version, "requires_python": ">=3.11", "requires_dist": list(dependencies)}
+def package(
+    name: str, dependencies: tuple[str, ...] = (), version: str = "1.0", extras: tuple[str, ...] = ()
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "version": version,
+        "requires_python": ">=3.11",
+        "requires_dist": list(dependencies),
+        "provides_extra": list(extras),
+    }
 
 
 def test_closure_follows_extras_recursively_and_target_markers() -> None:
     packages = [
-        package("server", ('watcher[fast]; extra == "standard"', 'windows; sys_platform == "win32"')),
-        package("watcher", ('native; extra == "fast"',)),
+        package(
+            "server", ('watcher[fast]; extra == "standard"', 'windows; sys_platform == "win32"'), extras=("standard",)
+        ),
+        package("watcher", ('native; extra == "fast"',), extras=("fast",)),
         package("native"),
         package("windows"),
     ]
@@ -38,13 +48,36 @@ def test_closure_follows_extras_recursively_and_target_markers() -> None:
 @pytest.mark.parametrize("missing", ["watcher", "native", "windows"])
 def test_closure_rejects_missing_transitive_or_extra(missing: str) -> None:
     packages = [
-        package("server", ('watcher[fast]; extra == "standard"', 'windows; sys_platform == "win32"')),
-        package("watcher", ('native; extra == "fast"',)),
+        package(
+            "server", ('watcher[fast]; extra == "standard"', 'windows; sys_platform == "win32"'), extras=("standard",)
+        ),
+        package("watcher", ('native; extra == "fast"',), extras=("fast",)),
         package("native"),
         package("windows"),
     ]
     with pytest.raises(lock.LockError, match=missing):
         lock.verify_closure(["server[standard]"], [p for p in packages if p["name"] != missing], environment())
+
+
+@pytest.mark.parametrize(
+    "roots,packages",
+    [
+        (["demo[missing]"], [package("demo")]),
+        (["parent"], [package("parent", ("demo[missing]",)), package("demo")]),
+        (["demo[existing,missing]"], [package("demo", extras=("existing",))]),
+    ],
+)
+def test_closure_rejects_undeclared_root_and_transitive_extras(roots: list[str], packages: list[dict]) -> None:
+    with pytest.raises(lock.LockError, match="missing"):
+        lock.verify_closure(roots, packages, environment())
+
+
+def test_closure_accepts_declared_empty_and_normalized_extras() -> None:
+    lock.verify_closure(["demo[empty,Fast_Mode]"], [package("demo", extras=("empty", "fast-mode"))], environment())
+
+
+def test_closure_ignores_inactive_undeclared_extra() -> None:
+    lock.verify_closure(["demo", 'demo[missing]; sys_platform == "linux"'], [package("demo")], environment())
 
 
 @pytest.mark.parametrize(
@@ -89,12 +122,30 @@ def test_lock_reader_rejects_normalized_duplicates() -> None:
         lock.parse_lock("Demo_Pkg==1 --hash=sha256:" + "a" * 64 + "\ndemo-pkg==1 --hash=sha256:" + "a" * 64)
 
 
-def make_wheel(tmp_path: Path, filename: str = "demo-1.0-py3-none-any.whl") -> Path:
+def make_wheel(tmp_path: Path, filename: str = "demo-1.0-py3-none-any.whl", extras: tuple[str, ...] = ()) -> Path:
     wheel = tmp_path / filename
     with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("demo-1.0.dist-info/METADATA", "Metadata-Version: 2.3\nName: demo\nVersion: 1.0\n")
+        archive.writestr(
+            "demo-1.0.dist-info/METADATA",
+            "Metadata-Version: 2.3\nName: demo\nVersion: 1.0\n"
+            + "".join(f"Provides-Extra: {extra}\n" for extra in extras),
+        )
         archive.writestr("demo-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nTag: py3-none-any\n")
     return wheel
+
+
+def test_wheel_metadata_records_normalized_exported_extras(tmp_path: Path) -> None:
+    wheel = make_wheel(tmp_path, extras=("Fast_Mode", "empty", "legacy.name"))
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    result = lock.read_wheel(wheel, digest, {"py3-none-any"})
+    assert result["provides_extra"] == ["empty", "fast-mode", "legacy-name"]
+
+
+def test_wheel_metadata_rejects_invalid_exported_extra(tmp_path: Path) -> None:
+    wheel = make_wheel(tmp_path, extras=("not an extra",))
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    with pytest.raises(lock.LockError, match="Extra"):
+        lock.read_wheel(wheel, digest, {"py3-none-any"})
 
 
 def test_wheel_verification_rejects_wrong_hash_and_metadata(tmp_path: Path) -> None:

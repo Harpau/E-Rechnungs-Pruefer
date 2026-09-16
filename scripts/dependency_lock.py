@@ -34,7 +34,7 @@ from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.tags import compatible_tags as generic_tags
 from packaging.tags import cpython_tags, parse_tag, sys_tags
-from packaging.utils import canonicalize_name, parse_wheel_filename
+from packaging.utils import InvalidName, canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -188,6 +188,15 @@ def package_map(packages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def normalized_extras(values: object) -> list[str]:
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise LockError("Ungültige Provides-Extra-Metadaten.")
+    try:
+        return sorted({canonicalize_name(value, validate=True) for value in values})
+    except InvalidName as exc:
+        raise LockError(f"Ungültige Provides-Extra-Metadaten: {exc}") from exc
+
+
 def verify_closure(roots: list[str], packages: list[dict[str, Any]], environment: dict[str, str]) -> None:
     locked = package_map(packages)
     for name, package in locked.items():
@@ -205,7 +214,11 @@ def verify_closure(roots: list[str], packages: list[dict[str, Any]], environment
         package = locked[name]
         if not requirement.specifier.contains(package["version"], prereleases=False):
             raise LockError(f"Unvereinbarer Pin für {name}: {requirement}")
-        extras = {"", *(canonicalize_name(extra) for extra in requirement.extras)}
+        requested_extras = {canonicalize_name(extra) for extra in requirement.extras}
+        missing_extras = requested_extras - set(normalized_extras(package.get("provides_extra", [])))
+        if missing_extras:
+            raise LockError(f"Paket {name} exportiert angeforderte Extras nicht: {', '.join(sorted(missing_extras))}")
+        extras = {"", *requested_extras}
         new_extras = extras - active.get(name, set())
         active.setdefault(name, set()).update(extras)
         for extra in new_extras:
@@ -272,6 +285,7 @@ def read_wheel(path: Path, digest: str, compatible_tags: set[str]) -> dict[str, 
         "tags": sorted(tags),
         "requires_python": metadata.get("Requires-Python", ""),
         "requires_dist": sorted(metadata.get_all("Requires-Dist", [])),
+        "provides_extra": normalized_extras(metadata.get_all("Provides-Extra", [])),
     }
 
 
