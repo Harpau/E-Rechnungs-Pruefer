@@ -95,21 +95,21 @@ jobs:
           echo "container_id=$container_id" >> "$GITHUB_OUTPUT"
           echo "config_archive=$config_archive" >> "$GITHUB_OUTPUT"
           docker inspect "$container_id" > .cache/docker-evidence/container-inspect.json
-          docker exec "$container_id" python -c "import json; from pathlib import Path; print(json.dumps({line.split()[4]: line.split()[3] for line in Path('/proc/self/mountinfo').read_text().splitlines() if line.split()[4] in ('/etc/hosts', '/etc/hostname', '/etc/resolv.conf')}))" > .cache/docker-evidence/engine-network-mounts.json
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          evidence = Path('.cache/docker-evidence')
-          config = json.loads((evidence / 'container-inspect.json').read_text())[0]
-          mounts = json.loads((evidence / 'engine-network-mounts.json').read_text())
-          expected = {'/etc/hosts': 'HostsPath', '/etc/hostname': 'HostnamePath', '/etc/resolv.conf': 'ResolvConfPath'}
-          if config['Image'] != '${{ steps.build.outputs.image_id }}' or config['Config']['User'] != 'appuser':
-              raise SystemExit('Runtime does not use the bound image and default non-root user')
-          if set(mounts) != set(expected) or any(mounts[path] != config[key] for path, key in expected.items()):
-              raise SystemExit('Engine-managed network files are not the bound Docker mounts')
-          if not config['HostConfig']['ReadonlyRootfs'] or config['HostConfig']['NetworkMode'] != 'none':
-              raise SystemExit('Runtime inspection must use the read-only offline container')
-          PY
+          inspect_sha256=$(python -c "import hashlib; from pathlib import Path; print(hashlib.sha256(Path('.cache/docker-evidence/container-inspect.json').read_bytes()).hexdigest())")
+          docker exec "$container_id" python scripts/check_container_mounts.py capture-container \
+            --container-id "$container_id" --image-id '${{ steps.build.outputs.image_id }}' \
+            --inspect-sha256 "$inspect_sha256" > .cache/docker-evidence/engine-container-facts.json
+          # Only lstat and public mount metadata are read; no host file contents or mutations.
+          sudo "$(command -v python)" scripts/check_container_mounts.py capture-host \
+            --inspect .cache/docker-evidence/container-inspect.json \
+            --container-id "$container_id" --image-id '${{ steps.build.outputs.image_id }}' \
+            > .cache/docker-evidence/engine-host-facts.json
+          python scripts/check_container_mounts.py check \
+            --inspect .cache/docker-evidence/container-inspect.json \
+            --host-facts .cache/docker-evidence/engine-host-facts.json \
+            --container-facts .cache/docker-evidence/engine-container-facts.json \
+            --container-id "$container_id" --image-id '${{ steps.build.outputs.image_id }}' \
+            --output .cache/docker-evidence/engine-network-mounts.json
       - name: Capture complete final-image Python, OS and Java inventories
         if: always() && steps.runtime.outcome == 'success'
         run: |

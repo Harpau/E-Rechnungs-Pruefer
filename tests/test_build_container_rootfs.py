@@ -488,6 +488,95 @@ def test_only_optional_system_font_roots_may_be_absent(tmp_path: Path, monkeypat
     assert "/usr/share/fonts" in copied
 
 
+def test_java_dlopen_fontconfig_root_preserves_library_and_owned_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    library = "/usr/lib/x86_64-linux-gnu/libfontconfig.so.1.12.0"
+    soname = "/usr/lib/x86_64-linux-gnu/libfontconfig.so.1"
+    configuration = "/etc/fonts/fonts.conf"
+    available = "/usr/share/fontconfig/conf.avail/10-example.conf"
+    enabled = "/etc/fonts/conf.d/10-example.conf"
+    owners = {
+        library: ["libfontconfig1:amd64"],
+        soname: ["libfontconfig1:amd64"],
+        configuration: ["fontconfig-config:all"],
+        available: ["fontconfig-config:all"],
+        enabled: ["fontconfig-config:all"],
+    }
+    build = builder(tmp_path, owners)
+    build.statuses["libfontconfig1:amd64"] = stanza("libfontconfig1")
+    build.statuses["fontconfig-config:all"] = stanza("fontconfig-config", "all")
+    put(build.source, library, b"\x7fELFsynthetic fontconfig")
+    (build.source / soname.lstrip("/")).symlink_to("libfontconfig.so.1.12.0")
+    put(build.source, configuration, b"synthetic fontconfig configuration")
+    put(build.source, available, b"synthetic selected configuration")
+    (build.source / "etc/fonts/conf.d").mkdir()
+    (build.source / enabled.lstrip("/")).symlink_to(available)
+    put(build.source, "/usr/local/lib/.keep")
+    original_copy = build.copy_path
+
+    def copy_fontconfig_only(path: str, **kwargs) -> None:
+        if path.startswith(("/etc/fonts", "/usr/share/fontconfig", "/usr/lib/x86_64-linux-gnu/libfontconfig")):
+            original_copy(path, **kwargs)
+
+    monkeypatch.setattr(build, "copy_path", copy_fontconfig_only)
+    build.runtime_roots()
+    assert (build.output / soname.lstrip("/")).readlink() == Path("libfontconfig.so.1.12.0")
+    assert (build.output / library.lstrip("/")).read_bytes() == b"\x7fELFsynthetic fontconfig"
+    assert (build.output / enabled.lstrip("/")).readlink() == Path(available)
+    assert build.entries[library]["elf"] is True
+    assert build.entries[library]["provenance"]["packages"] == ["libfontconfig1:amd64"]
+    assert build.entries[configuration]["provenance"]["packages"] == ["fontconfig-config:all"]
+    assert build.entries[available]["provenance"]["packages"] == ["fontconfig-config:all"]
+
+
+def fontconfig_generated_fixture(tmp_path: Path, name: str = "10-hinting-slight.conf"):
+    target = "/usr/share/fontconfig/conf.avail/" + name
+    path = "/etc/fonts/conf.d/" + name
+    build = builder(tmp_path, {target: ["fontconfig-config:amd64"]})
+    build.statuses["fontconfig-config:amd64"] = stanza("fontconfig-config")
+    put(build.source, target, b"synthetic package-owned fontconfig template")
+    put(build.source, "/var/lib/dpkg/info/fontconfig-config.postinst", b"# synthetic postinst fixture\n")
+    (build.source / "etc/fonts/conf.d").mkdir(parents=True)
+    (build.source / path.lstrip("/")).symlink_to(target)
+    return build, path, target
+
+
+@pytest.mark.parametrize("name", ["10-hinting-slight.conf", "70-no-bitmaps-except-emoji.conf"])
+def test_fontconfig_generated_defaults_bind_package_script_and_exact_template(tmp_path: Path, name: str) -> None:
+    build, path, target = fontconfig_generated_fixture(tmp_path, name)
+    build.copy_path(path)
+    origin = build.entries[path]["provenance"]
+    assert origin["kind"] == "debian-generated-symlink"
+    assert origin["packages"] == ["fontconfig-config:amd64"]
+    assert origin["target"] == target
+    assert origin["generator_version"] == "1.2-3"
+    assert origin["generator_sha256"] == rootfs.sha256(build.source / "var/lib/dpkg/info/fontconfig-config.postinst")
+    assert origin["inputs"] == {target: rootfs.sha256(build.source / target.lstrip("/"))}
+    assert (build.output / target.lstrip("/")).read_bytes() == b"synthetic package-owned fontconfig template"
+
+
+@pytest.mark.parametrize(
+    "problem", ["unknown-name", "different-target", "unowned-template", "no-script", "regular-file"]
+)
+def test_fontconfig_generated_rule_does_not_allow_unknown_payload(tmp_path: Path, problem: str) -> None:
+    name = "unapproved.conf" if problem == "unknown-name" else "10-hinting-slight.conf"
+    build, path, _ = fontconfig_generated_fixture(tmp_path, name)
+    link = build.source / path.lstrip("/")
+    if problem == "different-target":
+        link.unlink()
+        link.symlink_to("/usr/share/fontconfig/conf.avail/10-hinting-full.conf")
+    elif problem == "unowned-template":
+        build.owners.clear()
+    elif problem == "no-script":
+        (build.source / "var/lib/dpkg/info/fontconfig-config.postinst").unlink()
+    elif problem == "regular-file":
+        link.unlink()
+        link.write_bytes(b"unapproved file")
+    with pytest.raises(rootfs.RootfsError):
+        build.copy_path(path)
+
+
 def test_runtime_ssl_root_excludes_private_keys_and_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     public_paths = ["/etc/ssl/certs/example.pem", "/etc/ssl/certs/java/cacerts"]
     build = builder(tmp_path, {path: ["libdemo:amd64"] for path in public_paths})

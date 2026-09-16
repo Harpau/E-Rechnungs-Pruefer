@@ -67,7 +67,7 @@ jobs:
       - name: Mypy
         run: |
           python -m mypy
-          python -m mypy scripts/dependency_lock.py scripts/dependency_audit.py scripts/acceptance_context.py scripts/test_container.py scripts/test_kosit_components.py scripts/check_source_artifacts.py scripts/docker_runtime_lock.py scripts/build_container_rootfs.py scripts/check_container_coverage.py scripts/test_container_runtime.py
+          python -m mypy scripts/dependency_lock.py scripts/dependency_audit.py scripts/acceptance_context.py scripts/test_container.py scripts/test_kosit_components.py scripts/check_source_artifacts.py scripts/docker_runtime_lock.py scripts/build_container_rootfs.py scripts/check_container_coverage.py scripts/test_container_runtime.py scripts/check_container_mounts.py
       - name: Tests with coverage
         run: python -m pytest --cov=app --cov-report=term-missing --cov-report=xml
       - name: Package metadata

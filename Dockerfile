@@ -6,7 +6,9 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ca-certificates openjdk-21-jre-headless \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates openjdk-21-jre-headless \
+       libharfbuzz0b libfreetype6 libasound2t64 libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
