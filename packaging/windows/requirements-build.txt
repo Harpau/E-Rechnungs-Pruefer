@@ -1,5 +1,5 @@
-pyinstaller==6.21.0
+pyinstaller==6.22.3
 pystray==0.19.5
 Pillow==12.3.0
 pywin32==312
-regipy==6.2.1
+regipy==6.3.0

@@ -12,7 +12,7 @@ repos:
         entry: python -m ruff check --fix
         language: python
         additional_dependencies:
-          - "ruff>=0.12,<1"
+          - "ruff>=0.16.8,<1"
         types_or: [python, pyi]
 
       - id: ruff-format
@@ -20,5 +20,5 @@ repos:
         entry: python -m ruff format
         language: python
         additional_dependencies:
-          - "ruff>=0.12,<1"
+          - "ruff>=0.16.8,<1"
         types_or: [python, pyi]

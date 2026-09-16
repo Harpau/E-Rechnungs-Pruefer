@@ -4,6 +4,22 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 2.0.3 – 2026-09-16
+
+### Sicherheitswartung und Abhängigkeiten
+
+- Laufzeit-, Entwicklungs- und Windows-Buildpakete auf aktuelle kompatible stabile Versionen aktualisiert;
+  insbesondere pypdf 6.19 und HTTPX2/HTTPCore2 2.13 sowie pip 26.2.1 schließen die gemeldeten Auditbefunde.
+- Windows-, Source- und Docker-Builds verwenden vollständige, native und gehashte Paketlisten. Die Audits
+  prüfen auch Entwicklungswerkzeuge sowie tatsächlich installierte plattformabhängige Pakete.
+- KoSIT Validator 1.6.3 und XRechnung-Konfiguration 2026-08-31 mit CEN-EN-16931-Regeln 1.3.16 und
+  XRechnung-Schematron 2.6.0 eingebunden. Die CEN-Regeln ordnen die UBL-Dokumenttypen 502 und 503 jetzt
+  der CreditNote-Syntax zu; interne Hinweise und offizielle Regelbefunde berücksichtigen diesen Stand.
+- Windows-Laufzeit und Dockerbasis auf Python 3.14.7 aktualisiert; Quellinstallationen unterstützen weiterhin
+  Python ab 3.11. Java, Installer- und CI-Werkzeuge werden mit verifizierten Versionen und Hashes gebunden.
+- Abnahme-Kontexte binden Commit, Lauf, Ziel und Artefakte vor Paketmutationen. Nutzerwarte-Kontexte sind
+  120 Minuten gültig; alte oder bereits verbrauchte Kontexte werden zurückgewiesen.
+
 ## 2.0.2 – 2026-08-17
 
 ### Windows-Oberfläche und KoSIT-Ausführung

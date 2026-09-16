@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      prepare_dependencies:
+        description: "Nur native Wartungs-Locks erzeugen; keine Produktinstallation"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -15,16 +20,17 @@ concurrency:
 
 jobs:
   quality:
+    if: inputs.prepare_dependencies != true
     name: Quality gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
           cache: pip
@@ -42,7 +48,7 @@ jobs:
         run: python -m pytest --cov=app --cov-report=term-missing --cov-report=xml
       - name: Package metadata
         run: python -m pip check
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: coverage-xml
@@ -50,6 +56,7 @@ jobs:
           if-no-files-found: ignore
 
   tests:
+    if: inputs.prepare_dependencies != true
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
@@ -57,10 +64,10 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -70,13 +77,14 @@ jobs:
         run: python -m pytest
 
   windows-smoke:
+    if: inputs.prepare_dependencies != true
     name: Windows package and smoke test
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13.14"
           cache: pip
@@ -101,7 +109,7 @@ jobs:
           tests/test_windows_install_transaction.py
           tests/test_windows_install_recovery.py tests/test_windows_install_reconcile.py
           tests/test_windows_open_client_transaction.py tests/test_windows_native_adapters.py
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/windows-components
           key: windows-components-${{ hashFiles('packaging/windows/components.lock.json') }}
@@ -128,7 +136,7 @@ jobs:
       - name: Test installed Windows service package
         shell: pwsh
         run: .\scripts\test_windows_service_package.ps1 -ConfirmIsolatedEnvironment -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-x64-package-${{ github.sha }}
           path: |
@@ -138,11 +146,88 @@ jobs:
             dist/*-Windows-x64-SHA256SUMS.txt
 
   docker:
+    if: inputs.prepare_dependencies != true
     name: Docker build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build image
         run: docker build --tag e-rechnung-pruefer:test .
+
+  prepare-dependencies:
+    name: Prepare ${{ matrix.profile }}
+    if: github.event_name == 'workflow_dispatch' && inputs.prepare_dependencies == true
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: windows-release
+            runner: windows-2022
+            lock: packaging/windows/requirements-release.txt
+          - profile: source-release
+            runner: ubuntu-24.04
+            lock: packaging/python/requirements-source-release.txt
+          - profile: docker-amd64
+            runner: ubuntu-24.04
+            lock: packaging/docker/requirements-linux-amd64.txt
+          - profile: docker-arm64
+            runner: ubuntu-24.04-arm
+            lock: packaging/docker/requirements-linux-arm64.txt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: Install explicit resolver tools
+        run: python -m pip install --upgrade "pip==26.2.1" "packaging==26.3"
+      - name: Verify Inno compiler provenance
+        if: matrix.profile == 'windows-release'
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.0-x64.exe'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe' -OutFile $installer
+          $expected = '0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f'
+          if ((Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'Inno installer hash mismatch'
+          }
+          $directory = Join-Path $env:RUNNER_TEMP 'maintenance-inno-7.1.0'
+          $process = Start-Process $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',("/DIR=" + $directory) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Inno setup failed: $($process.ExitCode)" }
+          $compiler = Join-Path $directory 'ISCC.exe'
+          $receipt = @{
+            installer_sha256 = $expected
+            compiler_sha256 = (Get-FileHash -Algorithm SHA256 $compiler).Hash.ToLowerInvariant()
+            compiler_version = (Get-Item $compiler).VersionInfo.FileVersion
+            commit = $env:GITHUB_SHA
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+          }
+          $receipt | ConvertTo-Json | Set-Content -Encoding utf8 inno-provenance.json
+          Get-Content inno-provenance.json
+      - name: Resolve complete native wheel lock
+        shell: bash
+        env:
+          LOCK_PROFILE: ${{ matrix.profile }}
+          LOCK_OUTPUT: ${{ matrix.lock }}
+        run: |
+          bootstrap=(--bootstrap pip==26.2.1)
+          if [[ "$LOCK_PROFILE" == "windows-release" || "$LOCK_PROFILE" == "source-release" ]]; then
+            bootstrap+=(--bootstrap setuptools==84.0.0 --bootstrap wheel==0.48.0)
+          fi
+          python scripts/dependency_lock.py refresh --profile "$LOCK_PROFILE" --python-version 3.14.7 --output "$LOCK_OUTPUT" "${bootstrap[@]}" --wheelhouse .cache/maintenance-wheels
+          python scripts/dependency_lock.py verify --lock "$LOCK_OUTPUT" --wheelhouse .cache/maintenance-wheels
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: native-lock-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            ${{ matrix.lock }}
+            ${{ matrix.lock }}.metadata.json
+            inno-provenance.json
