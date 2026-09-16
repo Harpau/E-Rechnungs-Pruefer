@@ -358,6 +358,58 @@ class RootfsBuilder:
             raise RootfsError(f"Missing or ambiguous generated-file producer: {name}")
         return matches[0]
 
+    def ca_configuration_provenance(self) -> dict[str, Any]:
+        # Debian ca-certificates.postinst generates this configuration from
+        # the package's available certificates and the selected Debconf list.
+        # https://sources.debian.org/src/ca-certificates/20250419/debian/ca-certificates.postinst/
+        package = self.package("ca-certificates")
+        generator = self.source / "var/lib/dpkg/info/ca-certificates.postinst"
+        if not generator.is_file() or generator.is_symlink():
+            raise RootfsError("Missing ca-certificates postinst provenance")
+        fields = email.parser.Parser().parsestr(self.statuses[package])
+        inputs: dict[str, str] = {}
+        selected: list[str] = []
+        deselected: list[str] = []
+        configuration = self.source / "etc/ca-certificates.conf"
+        for line in configuration.read_text().splitlines():
+            if not line or line.startswith("#"):
+                continue
+            disabled = line.startswith("!")
+            relative = line.removeprefix("!")
+            if (
+                not relative.endswith(".crt")
+                or relative.startswith("/")
+                or any(part in {"", ".", ".."} for part in relative.split("/"))
+                or relative != relative.strip()
+            ):
+                raise RootfsError(f"Unapproved CA configuration input: {relative}")
+            path = "/usr/share/ca-certificates/" + relative
+            if path in selected or path in deselected:
+                raise RootfsError(f"Duplicate CA configuration input: {relative}")
+            (deselected if disabled else selected).append(path)
+            anchor = image_path(self.source, path)
+            # Debian retains disabled entries for certificates removed by an
+            # upgrade. They cannot contribute bytes to an active truststore.
+            if disabled and not anchor.exists():
+                continue
+            if not anchor.is_file() or anchor.is_symlink() or package not in self.owners.get(path, []):
+                raise RootfsError(f"Missing or untraced CA configuration input: {relative}")
+            inputs[path] = sha256(anchor)
+        if not selected:
+            raise RootfsError("CA configuration contains no package-owned active inputs")
+        self.packages.add(package)
+        return {
+            "kind": "debian-generated",
+            "packages": [package],
+            "generator": "ca-certificates postinst",
+            "generator_version": fields["Version"],
+            "generator_path": "/var/lib/dpkg/info/ca-certificates.postinst",
+            "generator_sha256": sha256(generator),
+            "inputs": dict(sorted(inputs.items())),
+            "selected": sorted(selected),
+            "deselected": sorted(deselected),
+        }
+
     def provenance(self, path: str, *, symlink: bool = False) -> dict[str, Any]:
         owners = self.owners.get(path, [])
         if owners:
@@ -396,6 +448,8 @@ class RootfsBuilder:
             return {"kind": "cpython-venv", "version": PYTHON_VERSION, "base_image": self.base_image}
         if path == RUNTIME + "/lib64" and symlink and os.readlink(image_path(self.source, path)) == "lib":
             return {"kind": "cpython-venv", "version": PYTHON_VERSION, "base_image": self.base_image}
+        if path == "/etc/ca-certificates.conf" and not symlink:
+            return self.ca_configuration_provenance()
         generated = {
             "/etc/ssl/certs/ca-certificates.crt": "ca-certificates",
             "/etc/ssl/certs/java/cacerts": "ca-certificates-java",

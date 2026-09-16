@@ -306,6 +306,80 @@ def test_generated_truststore_requires_real_producer_and_ca_inputs(tmp_path: Pat
         build.copy_path("/etc/ssl/certs/java/cacerts")
 
 
+def ca_configuration_fixture(tmp_path: Path):
+    anchor = "/usr/share/ca-certificates/mozilla/example.crt"
+    build = builder(tmp_path, {anchor: ["ca-certificates:all"]})
+    build.statuses["ca-certificates:all"] = stanza("ca-certificates", "all")
+    put(build.source, anchor, b"synthetic public certificate")
+    put(build.source, "/etc/ca-certificates.conf", b"# synthetic generated selection\nmozilla/example.crt\n")
+    put(
+        build.source, "/var/lib/dpkg/info/ca-certificates.postinst", b"# synthetic fixture: /etc/ca-certificates.conf\n"
+    )
+    return build, anchor
+
+
+def test_generated_ca_configuration_records_producer_version_and_input_hashes(tmp_path: Path) -> None:
+    build, anchor = ca_configuration_fixture(tmp_path)
+    build.copy_path("/etc/ca-certificates.conf")
+    provenance = build.entries["/etc/ca-certificates.conf"]["provenance"]
+    assert provenance["kind"] == "debian-generated"
+    assert provenance["packages"] == ["ca-certificates:all"]
+    assert provenance["generator_version"] == "1.2-3"
+    assert provenance["generator_sha256"] == rootfs.sha256(build.source / "var/lib/dpkg/info/ca-certificates.postinst")
+    assert provenance["inputs"] == {anchor: rootfs.sha256(build.source / anchor.lstrip("/"))}
+
+
+def test_disabled_removed_ca_is_recorded_without_claiming_active_input(tmp_path: Path) -> None:
+    build, anchor = ca_configuration_fixture(tmp_path)
+    (build.source / "etc/ca-certificates.conf").write_text("mozilla/example.crt\n!mozilla/removed.crt\n")
+    build.copy_path("/etc/ca-certificates.conf")
+    provenance = build.entries["/etc/ca-certificates.conf"]["provenance"]
+    assert provenance["selected"] == [anchor]
+    assert provenance["deselected"] == ["/usr/share/ca-certificates/mozilla/removed.crt"]
+    assert set(provenance["inputs"]) == {anchor}
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "no-producer",
+        "no-script",
+        "unowned-input",
+        "missing-input",
+        "escaping-input",
+        "duplicate-input",
+        "symlink-script",
+        "symlink-input",
+    ],
+)
+def test_generated_ca_configuration_does_not_whitelist_unknown_origins(tmp_path: Path, problem: str) -> None:
+    build, anchor = ca_configuration_fixture(tmp_path)
+    if problem == "no-producer":
+        del build.statuses["ca-certificates:all"]
+    elif problem == "no-script":
+        (build.source / "var/lib/dpkg/info/ca-certificates.postinst").unlink()
+    elif problem == "unowned-input":
+        build.owners.clear()
+    elif problem == "missing-input":
+        (build.source / anchor.lstrip("/")).unlink()
+    elif problem == "duplicate-input":
+        (build.source / "etc/ca-certificates.conf").write_text("mozilla/example.crt\n!mozilla/example.crt\n")
+    elif problem in {"symlink-script", "symlink-input"}:
+        victim = (
+            build.source / "var/lib/dpkg/info/ca-certificates.postinst"
+            if problem == "symlink-script"
+            else build.source / anchor.lstrip("/")
+        )
+        external = tmp_path / "unbound"
+        external.write_bytes(victim.read_bytes())
+        victim.unlink()
+        victim.symlink_to(external)
+    else:
+        (build.source / "etc/ca-certificates.conf").write_text("../../tmp/unknown.crt\n")
+    with pytest.raises(rootfs.RootfsError):
+        build.copy_path("/etc/ca-certificates.conf")
+
+
 def test_cpython_payload_excludes_installer_and_build_payloads() -> None:
     for path in (
         "/usr/local/lib/python3.14/ensurepip/__init__.py",
