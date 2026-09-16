@@ -95,24 +95,70 @@ jobs:
           echo "container_id=$container_id" >> "$GITHUB_OUTPUT"
           echo "config_archive=$config_archive" >> "$GITHUB_OUTPUT"
           docker inspect "$container_id" > .cache/docker-evidence/container-inspect.json
+          docker exec "$container_id" python -c "import json; from pathlib import Path; print(json.dumps({line.split()[4]: line.split()[3] for line in Path('/proc/self/mountinfo').read_text().splitlines() if line.split()[4] in ('/etc/hosts', '/etc/hostname', '/etc/resolv.conf')}))" > .cache/docker-evidence/engine-network-mounts.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          evidence = Path('.cache/docker-evidence')
+          config = json.loads((evidence / 'container-inspect.json').read_text())[0]
+          mounts = json.loads((evidence / 'engine-network-mounts.json').read_text())
+          expected = {'/etc/hosts': 'HostsPath', '/etc/hostname': 'HostnamePath', '/etc/resolv.conf': 'ResolvConfPath'}
+          if config['Image'] != '${{ steps.build.outputs.image_id }}' or config['Config']['User'] != 'appuser':
+              raise SystemExit('Runtime does not use the bound image and default non-root user')
+          if set(mounts) != set(expected) or any(mounts[path] != config[key] for path, key in expected.items()):
+              raise SystemExit('Engine-managed network files are not the bound Docker mounts')
+          if not config['HostConfig']['ReadonlyRootfs'] or config['HostConfig']['NetworkMode'] != 'none':
+              raise SystemExit('Runtime inspection must use the read-only offline container')
+          PY
       - name: Capture complete final-image Python, OS and Java inventories
         if: always() && steps.runtime.outcome == 'success'
         run: |
           container_id='${{ steps.runtime.outputs.container_id }}'
           docker exec "$container_id" python scripts/dependency_audit.py capture \
-            --lock packaging/docker/requirements-linux-${{ matrix.arch }}.txt --output /tmp/python-inventory.json
-          docker exec "$container_id" cat /tmp/python-inventory.json > .cache/docker-evidence/python-inventory.json
-          docker exec "$container_id" dpkg-query -W '-f=${binary:Package}\t${Version}\t${Architecture}\n' > .cache/docker-evidence/dpkg-inventory.tsv
-          docker exec "$container_id" cat /etc/os-release > .cache/docker-evidence/os-release.txt
+            --lock packaging/docker/requirements-runtime-${{ matrix.arch }}.txt --output /tmp/python-inventory.json
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/python-inventory.json').read_text())" > .cache/docker-evidence/python-inventory.json
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/var/lib/dpkg/status').read_text())" > .cache/docker-evidence/dpkg-status.txt
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/etc/os-release').read_text())" > .cache/docker-evidence/os-release.txt
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/usr/share/e-rechnung-pruefer/runtime-rootfs-manifest.json').read_text())" > .cache/docker-evidence/runtime-rootfs-manifest.json
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/usr/share/e-rechnung-pruefer/builder-inventory.json').read_text())" > .cache/docker-evidence/builder-inventory.json
           docker exec "$container_id" java -version > .cache/docker-evidence/java-version.txt 2>&1
-          docker exec "$container_id" python -m pip check > .cache/docker-evidence/pip-check.txt
+      - name: Verify retained runtime bytes against their build manifest
+        if: always() && steps.runtime.outcome == 'success'
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          status=0
+          # This process only inventories the read-only filesystem; functional probes retain UID 10001.
+          docker exec --user 0 "$container_id" python scripts/check_container_coverage.py verify-payload \
+            --manifest /usr/share/e-rechnung-pruefer/runtime-rootfs-manifest.json --root / \
+            --output /tmp/runtime-payload-check.json || status=$?
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/runtime-payload-check.json').read_text())" > .cache/docker-evidence/runtime-payload-check.json
+          exit "$status"
+      - name: Verify non-root runtime, certificates, DNS, timezone and native rendering
+        if: always() && steps.runtime.outcome == 'success'
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          status=0
+          docker exec "$container_id" python scripts/test_container_runtime.py --output /tmp/runtime-smoke.json || status=$?
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/runtime-smoke.json').read_text())" > .cache/docker-evidence/runtime-smoke.json
+          exit "$status"
+      - name: Exercise explicit KoSIT HTTPS setup in the exact final image
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          # Only this explicit setup container has networking. No invoice or host data is mounted.
+          # The production installer verifies both downloaded public component hashes.
+          docker run --name einvoice-setup-${{ matrix.arch }} --cap-drop ALL --security-opt no-new-privileges \
+            '${{ steps.build.outputs.image_id }}' python scripts/install_kosit.py \
+            > .cache/docker-evidence/kosit-network-setup.log 2>&1
+          docker inspect einvoice-setup-${{ matrix.arch }} > .cache/docker-evidence/setup-container-inspect.json
+          docker cp einvoice-setup-${{ matrix.arch }}:/app/.env.kosit .cache/docker-evidence/setup.env.kosit
+          docker rm einvoice-setup-${{ matrix.arch }}
       - name: Real HTTP analysis, byte-exact XML and rendered PDF smoke
         if: always() && steps.runtime.outcome == 'success'
         run: |
           container_id='${{ steps.runtime.outputs.container_id }}'
           status=0
           docker exec "$container_id" python scripts/test_container.py --expect-kosit --output /tmp/http-smoke.json || status=$?
-          docker exec "$container_id" cat /tmp/http-smoke.json > .cache/docker-evidence/http-smoke.json
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/http-smoke.json').read_text())" > .cache/docker-evidence/http-smoke.json
           exit "$status"
       - name: Real bound KoSIT acceptance, rejection and technical-failure smoke
         if: always() && steps.runtime.outcome == 'success'
@@ -122,7 +168,7 @@ jobs:
           docker exec "$container_id" python scripts/test_kosit_components.py --vendor-root /app/vendor/kosit \
             --java /usr/bin/java --config-archive '/locked-components/${{ steps.runtime.outputs.config_archive }}' \
             --output /tmp/kosit-smoke.json || status=$?
-          docker exec "$container_id" cat /tmp/kosit-smoke.json > .cache/docker-evidence/kosit-smoke.json
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/kosit-smoke.json').read_text())" > .cache/docker-evidence/kosit-smoke.json
           exit "$status"
       - name: Fetch hash-pinned vulnerability scanner
         id: scanner
@@ -149,6 +195,14 @@ jobs:
         run: |
           .cache/trivy-bin/trivy rootfs --scanners vuln --ignorefile /dev/null --ignore-unfixed=false --list-all-pkgs \
             --exit-code 1 --format json --output .cache/docker-evidence/trivy-kosit.json vendor/kosit
+      - name: Require complete retained OS and Python scan coverage
+        if: always() && steps.scanner.outcome == 'success'
+        run: |
+          python scripts/check_container_coverage.py check \
+            --manifest .cache/docker-evidence/runtime-rootfs-manifest.json \
+            --trivy-image .cache/docker-evidence/trivy-image.json \
+            --inventory .cache/docker-evidence/python-inventory.json \
+            --output .cache/docker-evidence/runtime-scan-coverage.json
       - name: Require actual OS, Java runtime and shaded-JAR scan coverage
         if: always() && steps.scanner.outcome == 'success'
         run: |
@@ -261,21 +315,30 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          from scripts.dependency_audit import validate_inventory
-          from scripts.dependency_lock import check_lock, compare_target_inventory
+          from scripts.dependency_audit import compare_lock, validate_inventory
+          from scripts.docker_runtime_lock import check_runtime_lock, verify_runtime_inventory
           for arch in ("amd64", "arm64"):
-              lock = Path(f"packaging/docker/requirements-linux-{arch}.txt")
-              metadata = check_lock(lock, Path.cwd())
+              parent = Path(f"packaging/docker/requirements-linux-{arch}.txt")
+              runtime = Path(f"packaging/docker/requirements-runtime-{arch}.txt")
+              metadata = check_runtime_lock(runtime, parent, Path.cwd())
               evidence = Path(f"docker-evidence/docker-evidence-{arch}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}")
               inventory = json.loads((evidence / "python-inventory.json").read_text())
               validate_inventory(inventory)
-              compare_target_inventory(metadata, inventory)
+              verify_runtime_inventory(metadata, inventory)
+              builder = json.loads((evidence / "builder-inventory.json").read_text())
+              validate_inventory(builder)
+              compare_lock(builder, Path("packaging/docker/requirements-builder.txt"))
+              if builder.get("excluded_editable") is not None:
+                  raise SystemExit("Unexpected editable builder distribution")
           PY
           result=0
           for arch in amd64 arm64; do
             python scripts/dependency_audit.py audit \
               --inventory "docker-evidence/docker-evidence-${arch}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/python-inventory.json" \
               --output "audit-evidence/pip-audit-${arch}.json" || result=1
+            python scripts/dependency_audit.py audit \
+              --inventory "docker-evidence/docker-evidence-${arch}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/builder-inventory.json" \
+              --output "audit-evidence/builder-pip-audit-${arch}.json" || result=1
           done
           exit "$result"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

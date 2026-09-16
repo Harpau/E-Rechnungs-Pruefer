@@ -57,8 +57,11 @@ def test_multipart_preserves_the_uploaded_xml_bytes() -> None:
 
 def test_container_workflow_reads_tmpfs_evidence_and_scans_compiled_java() -> None:
     workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/docker.yml").read_text()
-    assert "docker cp" not in workflow
-    for filename in ("python-inventory.json", "http-smoke.json", "kosit-smoke.json"):
-        assert f"cat /tmp/{filename}" in workflow
+    # Docker's archive API does not expose tmpfs contents; execute Python in the
+    # live shell-free container. Only setup's ordinary /app file uses docker cp.
+    copies = [line.strip() for line in workflow.splitlines() if "docker cp" in line]
+    assert len(copies) == 1 and ":/app/.env.kosit " in copies[0]
+    for filename in ("python-inventory.json", "http-smoke.json", "kosit-smoke.json", "runtime-smoke.json"):
+        assert f"Path('/tmp/{filename}').read_text()" in workflow
     assert "trivy rootfs --scanners vuln" in workflow
     assert "trivy fs --scanners vuln" not in workflow

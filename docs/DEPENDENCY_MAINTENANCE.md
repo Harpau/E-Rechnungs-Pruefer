@@ -81,6 +81,64 @@ Für Container kann das ausschließlich standardbibliotheksbasierte
 extern mit `verify --inventory` und `dependency_audit.py audit` geprüft werden.
 Auditwerkzeuge müssen dadurch nicht in ein Produktimage installiert werden.
 
+### Container: getrennte Build- und Laufzeitpakete
+
+Die beiden ursprünglichen Docker-Locks bleiben die nativ verifizierte Wheelquelle.
+`scripts/docker_runtime_lock.py` leitet daraus `requirements-runtime-{amd64,arm64}.txt`
+ab: Ausschließlich die explizite Pip-Bootstraproot und das Pip-Paket entfallen.
+Der Abhängigkeitsabschluss wird erneut geprüft; benötigt ein Laufzeitpaket Pip,
+schlägt die Ableitung fehl. Der eigene Sidecar bindet Parent-Lock, Parent-Sidecar,
+Generatorrevision, Ableitungsskript und unveränderte Wheelmetadaten. Nach einer
+Änderung des Ableitungsskripts müssen beide Runtime-Locks neu erzeugt werden:
+
+```sh
+python scripts/docker_runtime_lock.py derive \
+  --parent packaging/docker/requirements-linux-amd64.txt \
+  --output packaging/docker/requirements-runtime-amd64.txt
+```
+
+Für arm64 wird derselbe Aufruf mit den entsprechenden Dateinamen ausgeführt.
+Bestehende abweichende Ausgaben werden nicht still überschrieben. Nach bewusstem
+Entfernen der betroffenen generierten Dateien erfolgt die erneute Ableitung aus
+den validierten Parent-Dateien, ohne Paketauflösung.
+
+Der Builder installiert nur die gehashten Pip-/Packaging-Werkzeuge aus
+`requirements-builder.txt`; sein vollständiges Inventar wird separat auditiert.
+Er prüft alle Parent-Wheelbytes nativ und installiert die 27 Runtime-Pakete in ein
+Pip-freies Venv. Das finale Image erhält den offiziellen CPython 3.14.7, dieses
+unverändert platzierte Venv und die stabile Debian-13-Java-Laufzeit. Java bleibt
+als Debian-Paket inventarisiert und vom OS-Scanner abgedeckt.
+
+`scripts/build_container_rootfs.py` übernimmt nur den benötigten Laufzeitbestand
+einschließlich transitiver ELF-Bibliotheken, dynamischer Provider, Zertifikate,
+Zeitzonen und Lizenzen. Globale Buildpakete und der vollständige ungenutzte
+`ensurepip`-Baum einschließlich seines eingebetteten Pip-Wheels werden tatsächlich
+weggelassen. Paketstatusdaten für erhaltene Debian-Dateien bleiben vollständig
+erhalten, auch wenn nur Teile eines Pakets benötigt werden. Das Dateimanifest
+dokumentiert Herkunft, Inhalt und ELF-Abhängigkeiten des Laufzeitunterbaus;
+Anwendungsdateien werden separat durch Commit und finales Image gebunden.
+
+Die finale Inventur muss exakt zum Runtime-Lock passen. Zusätzliche native Proben
+prüfen Benutzeridentität, fehlende Buildwerkzeuge, CA-/Java-Truststore, DNS,
+Zeitzonen sowie Unicode-PDFs und native Bildbibliotheken. Nur ein eigener expliziter
+KoSIT-Setup-Prozess bekommt Netzwerkzugriff zum Download der hashgebundenen
+öffentlichen Komponenten. Die anschließenden Rechnungs- und KoSIT-Funktionstests
+laufen ohne externes Netzwerk. Es gibt keine Severity-, Unfixed- oder CVE-Ausnahmen:
+Verbleibende Bibliotheksbefunde blockieren den Gesamtgate weiterhin.
+
+Für die Entwicklung des Containers kann der CI-Workflow manuell mit
+`container_only=true` auf einem eigenen Probe-Branch gestartet werden. Dieser
+begrenzte Lauf überspringt Windows-Paketmutationen und ist kein vollständiger
+Release-Nachweis. Die normalen PR-/Main-Läufe prüfen weiterhin alle Jobs;
+Containerprobe, Lockvorbereitung und Volllauf haben getrennte Concurrency-Gruppen.
+
+Die positive Trivy-Abdeckung bezieht sich auf die behaltenen Debian-Pakete und
+installierten Python-Distributionen, der separate JAR-Scan auf die eingebetteten
+Maven-Komponenten. Die Herkunftsbindung des offiziellen CPython-Interpreters ist
+kein eigener CVE-Scan seines nativen Codes; Interpreter-Advisories und darin
+enthaltene Bibliotheken müssen zusätzlich bewertet werden. Ein leeres
+Distributionsergebnis allein belegt keine vollständige Unbetroffenheit des Images.
+
 ## Versionsentscheidungen und Dependabot
 
 Aktualisierungen wählen den neuesten gemeinsam verträglichen stabilen Stand.
@@ -107,7 +165,9 @@ weder Produktabnahme noch Signatur- und Artefaktprüfung.
 
 Die native Erzeugung mit CPython 3.14.7 und dem unabhängig geprüften Generator lief auf Windows x64,
 Linux x64 und Linux arm64: [Vorbereitungslauf 35126632657](https://github.com/Harpau/E-Rechnungs-Pruefer/actions/runs/35126632657).
-Die Profile enthalten 53 Windows-Pakete, 97 Source-/Dev-/Build-Pakete und jeweils 28 Containerpakete.
+Die Profile enthalten 53 Windows-Pakete, 97 Source-/Dev-/Build-Pakete und jeweils 28 Pakete in den
+ursprünglichen Docker-Locks. Die davon abgeleiteten finalen Container enthalten jeweils 27 Python-Pakete;
+Pip und Packaging bleiben in der separat auditierten Build-Stufe.
 Die allgemeine Python-Mindestversion bleibt 3.11; für die aktuellen stabilen Pakete ist keine Anhebung nötig.
 
 Der zusätzliche aktuelle PyPI-Abgleich umfasst 110 unterschiedliche Pakete aus diesen Profilen und der

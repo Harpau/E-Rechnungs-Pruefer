@@ -12,6 +12,9 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   insbesondere pypdf 6.19 und HTTPX2/HTTPCore2 2.13 sowie pip 26.2.1 schließen die gemeldeten Auditbefunde.
 - Windows-, Source- und Docker-Builds verwenden vollständige, native und gehashte Paketlisten. Die Audits
   prüfen auch Entwicklungswerkzeuge sowie tatsächlich installierte plattformabhängige Pakete.
+- Docker trennt Buildwerkzeuge von der Laufzeit: Das finale Image enthält weder Shell noch Pip oder
+  Betriebssystem-Paketmanager. Bibliotheken, Java, Zertifikate und vollständige Herkunftsmetadaten bleiben
+  erhalten; amd64 und arm64 werden einschließlich expliziter KoSIT-Einrichtung nativ geprüft.
 - KoSIT Validator 1.6.3 und XRechnung-Konfiguration 2026-08-31 mit CEN-EN-16931-Regeln 1.3.16 und
   XRechnung-Schematron 2.6.0 eingebunden. Die CEN-Regeln ordnen die UBL-Dokumenttypen 502 und 503 jetzt
   der CreditNote-Syntax zu; interne Hinweise und offizielle Regelbefunde berücksichtigen diesen Stand.

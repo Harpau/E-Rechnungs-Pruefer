@@ -10,17 +10,30 @@ on:
         description: "Nur native Wartungs-Locks erzeugen; keine Produktinstallation"
         type: boolean
         default: false
+      container_only:
+        description: "Nur native Containerproben; ersetzt keine vollständige Release-CI"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.prepare_dependencies && 'dependency-preparation' || inputs.container_only && 'container-probe' || 'full' }}
   cancel-in-progress: true
 
 jobs:
+  dispatch-inputs:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reject conflicting partial validation modes
+        env:
+          PREPARE: ${{ inputs.prepare_dependencies }}
+          CONTAINER_ONLY: ${{ inputs.container_only }}
+        run: test "$PREPARE" != true || test "$CONTAINER_ONLY" != true
   quality:
-    if: inputs.prepare_dependencies != true
+    if: inputs.prepare_dependencies != true && inputs.container_only != true
     name: Quality gate
     runs-on: ubuntu-24.04
     steps:
@@ -54,7 +67,7 @@ jobs:
       - name: Mypy
         run: |
           python -m mypy
-          python -m mypy scripts/dependency_lock.py scripts/dependency_audit.py scripts/acceptance_context.py scripts/test_container.py scripts/test_kosit_components.py scripts/check_source_artifacts.py
+          python -m mypy scripts/dependency_lock.py scripts/dependency_audit.py scripts/acceptance_context.py scripts/test_container.py scripts/test_kosit_components.py scripts/check_source_artifacts.py scripts/docker_runtime_lock.py scripts/build_container_rootfs.py scripts/check_container_coverage.py scripts/test_container_runtime.py
       - name: Tests with coverage
         run: python -m pytest --cov=app --cov-report=term-missing --cov-report=xml
       - name: Package metadata
@@ -88,7 +101,7 @@ jobs:
           if-no-files-found: ignore
 
   tests:
-    if: inputs.prepare_dependencies != true
+    if: inputs.prepare_dependencies != true && inputs.container_only != true
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-24.04
     strategy:
@@ -111,7 +124,7 @@ jobs:
         run: python -m pytest
 
   windows-smoke:
-    if: inputs.prepare_dependencies != true
+    if: inputs.prepare_dependencies != true && inputs.container_only != true
     name: Windows package and smoke test
     runs-on: windows-2022
     steps:
@@ -244,7 +257,7 @@ jobs:
 
   prepare-dependencies:
     name: Prepare ${{ matrix.profile }}
-    if: github.event_name == 'workflow_dispatch' && inputs.prepare_dependencies == true
+    if: github.event_name == 'workflow_dispatch' && inputs.prepare_dependencies == true && inputs.container_only != true
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

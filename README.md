@@ -100,6 +100,16 @@ docker compose up --build
 
 Der Port wird in `compose.yaml` ausschließlich an `127.0.0.1` gebunden. Das lokale `vendor/`-Verzeichnis wird eingebunden, damit eine optionale KoSIT-Installation erhalten bleibt.
 
+Das Laufzeitimage enthält Python, Java und die benötigten Bibliotheken, jedoch keine Shell,
+Paketverwaltung oder Pip. Diagnosebefehle und die optionale Einrichtung werden direkt mit Python gestartet:
+
+```sh
+docker compose exec app python scripts/install_kosit.py
+```
+
+Der Dienstname ist in `compose.yaml` festgelegt. Abhängigkeiten werden durch einen erneuten Image-Build
+aktualisiert. Für die KoSIT-Einrichtung muss das eingebundene `vendor/` für UID 10001 beschreibbar sein.
+
 ## Oberfläche und Berichtsausgaben
 
 - **Prüfbericht JSON** lädt die vollständige Schema-2-Analyse.
