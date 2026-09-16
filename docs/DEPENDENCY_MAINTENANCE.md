@@ -122,6 +122,14 @@ erhalten, auch wenn nur Teile eines Pakets benötigt werden. Das Dateimanifest
 dokumentiert Herkunft, Inhalt und ELF-Abhängigkeiten des Laufzeitunterbaus;
 Anwendungsdateien werden separat durch Commit und finales Image gebunden.
 
+Die originale paketgebundene `/etc/debian_version` bleibt erhalten, damit Trivy
+Debian tatsächlich erkennt. Beim Inventarvergleich werden Epoch, Version und
+Debian-Revision sowohl für Binär- als auch Quellpakete vollständig berücksichtigt.
+Die von Docker bereitgestellten drei Netzwerkdateien werden über Gerät und Inode
+an den gebundenen Container gekoppelt; nur der exakte Laufzeitlink
+`/etc/mtab -> /proc/mounts` ist zusätzlich zulässig. Standardisierte `WHEEL`-Dateien
+sind ausschließlich innerhalb ihrer vollständig gebundenen Paketmetadaten erlaubt.
+
 Die finale Inventur muss exakt zum Runtime-Lock passen. Zusätzliche native Proben
 prüfen Benutzeridentität, fehlende Buildwerkzeuge, CA-/Java-Truststore, DNS,
 Zeitzonen sowie Unicode-PDFs und native Bildbibliotheken. Nur ein eigener expliziter

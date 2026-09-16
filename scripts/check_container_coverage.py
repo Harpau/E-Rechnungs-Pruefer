@@ -64,13 +64,42 @@ def canonical_name(value: Any) -> str:
     return re.sub(r"[-_.]+", "-", value).lower()
 
 
+def trivy_debian_version(package: dict[str, Any], prefix: str = "") -> str:
+    # Trivy's dpkg analyzer parses binary and source versions independently:
+    # https://github.com/aquasecurity/trivy/blob/v0.74.0/pkg/fanal/analyzer/pkg/dpkg/dpkg.go
+    # Epoch=0 and Release="" are omitted from JSON (types/package.go). Never
+    # recover missing components from the manifest or the original package ID.
+    version = package.get(prefix + "Version")
+    epoch = package.get(prefix + "Epoch", 0)
+    release = package.get(prefix + "Release", "")
+    if (
+        not isinstance(version, str)
+        or not version
+        or any(character.isspace() for character in version)
+        or type(epoch) is not int
+        or epoch < 0
+        or not isinstance(release, str)
+        or any(character.isspace() for character in release)
+    ):
+        raise CoverageError("Incomplete or malformed Trivy Debian version components")
+    return (f"{epoch}:" if epoch else "") + version + ("-" + release if release else "")
+
+
 def package_identity(package: dict[str, Any], *, trivy: bool = False) -> tuple[str, ...]:
-    keys = (
-        ("Name", "Version", "Arch", "SrcName", "SrcVersion")
-        if trivy
-        else ("name", "version", "architecture", "source_name", "source_version")
-    )
-    values = tuple(package.get(key) for key in keys)
+    values: tuple[Any, ...]
+    if trivy:
+        values = (
+            package.get("Name"),
+            trivy_debian_version(package),
+            package.get("Arch"),
+            package.get("SrcName"),
+            trivy_debian_version(package, "Src"),
+        )
+        if package.get("ID") != f"{values[0]}@{values[1]}":
+            raise CoverageError("Trivy Debian package ID contradicts reconstructed binary version")
+    else:
+        keys = ("name", "version", "architecture", "source_name", "source_version")
+        values = tuple(package.get(key) for key in keys)
     if any(not isinstance(value, str) or not value or any(c.isspace() for c in value) for value in values):
         raise CoverageError("Incomplete Debian binary/source identity")
     return cast(tuple[str, ...], values)
@@ -430,6 +459,7 @@ def verify_payload(manifest: dict[str, Any], root: Path = Path("/")) -> dict[str
     if len(identities) != len(expected_os) or set(identities) != expected_os:
         raise CoverageError("Combined Debian status does not describe the retained package set")
     extras_allowed = {MANIFEST_PATH, BUILDER_INVENTORY_PATH}
+    engine_symlinks = []
 
     def walk_error(error: OSError) -> None:
         raise CoverageError(f"Runtime subtree could not be inventoried: {error}") from error
@@ -444,6 +474,15 @@ def verify_payload(manifest: dict[str, Any], root: Path = Path("/")) -> dict[str
                 path = "/" + actual.relative_to(root).as_posix()
                 if forbidden_payload(path, wheel_metadata_paths=wheel_metadata_paths):
                     raise CoverageError(f"Forbidden bootstrap payload found: {path}")
+                if path == "/etc/mtab" and path not in files:
+                    # Docker's init layer adds this exact symlink to containers:
+                    # https://github.com/moby/moby/blob/master/daemon/initlayer/setup_unix.go
+                    # A manifested path must pass normal validation; no other
+                    # path, file type or equivalent/relative target qualifies.
+                    if not stat.S_ISLNK(actual.lstat().st_mode) or os.readlink(actual) != "/proc/mounts":
+                        raise CoverageError("Docker runtime /etc/mtab is not the exact /proc/mounts symlink")
+                    engine_symlinks.append({"path": path, "type": "symlink", "target": "/proc/mounts"})
+                    continue
                 if (
                     prefix != "/app"
                     and (actual.is_symlink() or not actual.is_dir())
@@ -455,6 +494,7 @@ def verify_payload(manifest: dict[str, Any], root: Path = Path("/")) -> dict[str
         "payload_passed": True,
         "files_verified": len(files) - sum(path in files for path in ENGINE_NETWORK_FILES),
         "engine_network_exceptions": [path for path in ENGINE_NETWORK_FILES if path in files],
+        "engine_symlink_exceptions": engine_symlinks,
     }
 
 

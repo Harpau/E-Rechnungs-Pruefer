@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ def digest(value: bytes) -> str:
 
 
 def fixture(tmp_path: Path) -> tuple[dict, dict, dict, Path]:
+    if os.name != "posix":
+        pytest.skip("Synthetic Linux rootfs requires POSIX paths, modes and symlinks")
     image = tmp_path / "image"
     image.mkdir()
     manifest: dict[str, Any] = {
@@ -73,11 +76,14 @@ def fixture(tmp_path: Path) -> tuple[dict, dict, dict, Path]:
         }
         os_packages.append(
             {
+                "ID": name + "@1.2-3+b1",
                 "Name": name,
-                "Version": "1.2-3+b1",
+                "Version": "1.2",
+                "Release": "3+b1",
                 "Arch": "amd64",
                 "SrcName": "example-source",
-                "SrcVersion": "1.2-3",
+                "SrcVersion": "1.2",
+                "SrcRelease": "3",
                 "AnalyzedBy": "dpkg",
             }
         )
@@ -156,6 +162,171 @@ def test_exact_runtime_manifest_inventory_and_trivy_coverage_pass(tmp_path: Path
     assert report["python_distributions"] == 27
     assert report["cpython_version"] == "3.14.7"
     assert coverage.verify_payload(manifest, image)["payload_passed"] is True
+
+
+@pytest.mark.parametrize(
+    ("binary", "source", "expected_binary", "expected_source"),
+    [
+        ({"Version": "20250419"}, {"SrcVersion": "20250419"}, "20250419", "20250419"),
+        (
+            {"Version": "1.1.0", "Release": "2+b7"},
+            {"SrcVersion": "1.1.0", "SrcRelease": "2"},
+            "1.1.0-2+b7",
+            "1.1.0-2",
+        ),
+        (
+            {"Epoch": 1, "Version": "1.3.dfsg+really1.3.1", "Release": "1+b1"},
+            {"SrcEpoch": 1, "SrcVersion": "1.3.dfsg+really1.3.1", "SrcRelease": "1"},
+            "1:1.3.dfsg+really1.3.1-1+b1",
+            "1:1.3.dfsg+really1.3.1-1",
+        ),
+        (
+            {"Epoch": 2, "Version": "3.110", "Release": "1+deb13u4"},
+            {"SrcEpoch": 1, "SrcVersion": "3.110", "SrcRelease": "1~deb13u4"},
+            "2:3.110-1+deb13u4",
+            "1:3.110-1~deb13u4",
+        ),
+        (
+            {"Epoch": 0, "Version": "1.2-beta", "Release": "3"},
+            {"SrcEpoch": 0, "SrcVersion": "1.2-beta", "SrcRelease": "3"},
+            "1.2-beta-3",
+            "1.2-beta-3",
+        ),
+    ],
+)
+def test_trivy_debian_json_reconstructs_binary_and_source_versions_independently(
+    binary: dict, source: dict, expected_binary: str, expected_source: str
+) -> None:
+    package = {
+        "ID": "synthetic@" + expected_binary,
+        "Name": "synthetic",
+        "Arch": "arm64",
+        "SrcName": "synthetic-source",
+        **binary,
+        **source,
+    }
+    assert coverage.package_identity(package, trivy=True) == (
+        "synthetic",
+        expected_binary,
+        "arm64",
+        "synthetic-source",
+        expected_source,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("Epoch", -1),
+        ("Epoch", True),
+        ("Epoch", "1"),
+        ("Epoch", None),
+        ("SrcEpoch", -1),
+        ("SrcEpoch", False),
+        ("SrcEpoch", "1"),
+        ("SrcEpoch", None),
+        ("Version", ""),
+        ("Version", None),
+        ("Version", "1.2\n"),
+        ("SrcVersion", ""),
+        ("SrcVersion", None),
+        ("SrcVersion", "1.2\n"),
+        ("Release", None),
+        ("Release", 3),
+        ("Release", "3\n"),
+        ("SrcRelease", None),
+        ("SrcRelease", 3),
+        ("SrcRelease", "3\n"),
+        ("ID", None),
+        ("ID", "different@1:1.2-3+b1"),
+        ("Release", "4"),
+        ("Epoch", 2),
+        ("Version", "1:1.2-3+b1"),
+    ],
+)
+def test_trivy_debian_json_rejects_malformed_or_conflicting_version_fields(field: str, value: Any) -> None:
+    package = {
+        "ID": "synthetic@1:1.2-3+b1",
+        "Name": "synthetic",
+        "Arch": "arm64",
+        "Version": "1.2",
+        "Epoch": 1,
+        "Release": "3+b1",
+        "SrcName": "synthetic-source",
+        "SrcVersion": "1.2",
+        "SrcEpoch": 1,
+        "SrcRelease": "3",
+    }
+    package[field] = value
+    with pytest.raises(coverage.CoverageError):
+        coverage.package_identity(package, trivy=True)
+
+
+@pytest.mark.parametrize("field", ["Version", "Epoch", "Release", "SrcVersion", "ID"])
+def test_trivy_debian_json_never_recovers_missing_version_fields_from_id(field: str) -> None:
+    package = {
+        "ID": "synthetic@1:1.2-3+b1",
+        "Name": "synthetic",
+        "Arch": "arm64",
+        "Version": "1.2",
+        "Epoch": 1,
+        "Release": "3+b1",
+        "SrcName": "synthetic-source",
+        "SrcVersion": "1.2",
+        "SrcEpoch": 1,
+        "SrcRelease": "3",
+    }
+    del package[field]
+    with pytest.raises(coverage.CoverageError):
+        coverage.package_identity(package, trivy=True)
+
+
+@pytest.mark.parametrize("field", ["Release", "SrcRelease", "SrcEpoch"])
+def test_debian_coverage_rejects_missing_revision_or_wrong_source_epoch(tmp_path: Path, field: str) -> None:
+    manifest, scan, inventory, _ = fixture(tmp_path)
+    package = scan["Results"][0]["Packages"][0]
+    if field == "SrcEpoch":
+        package[field] = 1
+    else:
+        del package[field]
+    with pytest.raises(coverage.CoverageError):
+        coverage.check_coverage(manifest, scan, inventory)
+
+
+def test_only_exact_unmanifested_docker_mtab_symlink_is_reported(tmp_path: Path) -> None:
+    manifest, _, _, image = fixture(tmp_path)
+    assert coverage.verify_payload(manifest, image)["engine_symlink_exceptions"] == []
+    (image / "etc/mtab").symlink_to("/proc/mounts")
+    report = coverage.verify_payload(manifest, image)
+    assert report["payload_passed"] is True
+    assert report["engine_symlink_exceptions"] == [{"path": "/etc/mtab", "type": "symlink", "target": "/proc/mounts"}]
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "relative", "other_target", "other_path", "manifested"])
+def test_docker_mtab_exception_rejects_other_types_targets_paths_and_manifest_overrides(
+    tmp_path: Path, kind: str
+) -> None:
+    manifest, _, _, image = fixture(tmp_path)
+    target = image / "etc/mtab"
+    if kind == "file":
+        target.write_bytes(b"synthetic mounts")
+    elif kind == "directory":
+        target.mkdir()
+    elif kind == "relative":
+        target.symlink_to("../proc/mounts")
+    elif kind == "other_target":
+        target.symlink_to("/proc/self/mounts")
+    elif kind == "other_path":
+        (image / "etc/extra-mtab").symlink_to("/proc/mounts")
+    else:
+        target.symlink_to("/proc/mounts")
+        manifest["files"]["/etc/mtab"] = {
+            "type": "symlink",
+            "target": "/usr/lib/libc6.so",
+            "provenance": {"kind": "debian", "packages": ["libc6:amd64"]},
+        }
+    with pytest.raises(coverage.CoverageError):
+        coverage.verify_payload(manifest, image)
 
 
 @pytest.mark.parametrize("change", ["wheel_hash", "record_hash", "package_name", "file_type", "missing_manifest_entry"])
