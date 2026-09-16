@@ -266,6 +266,36 @@ def test_venv_lib64_link_requires_exact_relative_target(tmp_path: Path) -> None:
     assert (build.output / "opt/runtime/lib64").readlink() == Path("lib")
 
 
+@pytest.mark.parametrize("interpreter_name", ["python", "python3", "python3.14"])
+def test_cpython_314_pi_alias_requires_bound_interpreter_chain(tmp_path: Path, interpreter_name: str) -> None:
+    build = builder(tmp_path)
+    put(build.source, "/usr/local/bin/python3.14", b"bound CPython interpreter")
+    (build.source / "opt/runtime/bin").mkdir(parents=True)
+    (build.source / f"opt/runtime/bin/{interpreter_name}").symlink_to("/usr/local/bin/python3.14")
+    (build.source / "opt/runtime/bin/𝜋thon").symlink_to(interpreter_name)
+    build.copy_path("/opt/runtime/bin/𝜋thon")
+    assert (build.output / "opt/runtime/bin/𝜋thon").readlink() == Path(interpreter_name)
+    assert build.entries["/opt/runtime/bin/𝜋thon"]["provenance"]["kind"] == "cpython-venv"
+    assert (build.output / "usr/local/bin/python3.14").read_bytes() == b"bound CPython interpreter"
+
+
+@pytest.mark.parametrize("case", ["regular-file", "foreign-target", "redirected-python"])
+def test_pi_alias_does_not_authorize_unbound_payload(tmp_path: Path, case: str) -> None:
+    build = builder(tmp_path)
+    put(build.source, "/usr/local/bin/python3.14", b"bound CPython interpreter")
+    put(build.source, "/opt/runtime/bin/foreign", b"unapproved executable")
+    (build.source / "opt/runtime/bin/python").symlink_to(
+        "foreign" if case == "redirected-python" else "/usr/local/bin/python3.14"
+    )
+    alias = build.source / "opt/runtime/bin/𝜋thon"
+    if case == "regular-file":
+        alias.write_bytes(b"unapproved executable")
+    else:
+        alias.symlink_to("foreign" if case == "foreign-target" else "python")
+    with pytest.raises(rootfs.RootfsError):
+        build.copy_path("/opt/runtime/bin/𝜋thon")
+
+
 def test_generated_truststore_requires_real_producer_and_ca_inputs(tmp_path: Path) -> None:
     build = builder(tmp_path)
     put(build.source, "/etc/ssl/certs/java/cacerts")
