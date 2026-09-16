@@ -117,7 +117,7 @@ def main() -> int:
         shutil.rmtree(DIST_DIR)
     DIST_DIR.mkdir(parents=True)
 
-    run(sys.executable, "-m", "build", "--outdir", str(DIST_DIR))
+    run(sys.executable, "-m", "build", "--no-isolation", "--outdir", str(DIST_DIR))
     distributions = sorted(DIST_DIR.glob("*.whl")) + sorted(DIST_DIR.glob("*.tar.gz"))
     run(sys.executable, "-m", "twine", "check", *(str(path) for path in distributions))
 

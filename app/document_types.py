@@ -1,9 +1,10 @@
 """Versioned document-type semantics for the bundled CEN validation rules.
 
 The registry deliberately follows the locally bundled CEN EN 16931 validation
-artefacts version 1.3.15. In particular, UBL codes 502 and 503 remain assigned
-to ``Invoice`` here. Updating this module to a newer CEN allocation must happen
-together with an explicit validator-version update.
+artefacts version 1.3.16. In particular, UBL codes 502 and 503 are now assigned
+to ``CreditNote`` by BR-CL-01 (they belonged to ``Invoice`` in 1.3.15).
+Updating this module to a newer CEN allocation must happen together with an
+explicit validator-version update.
 """
 
 from __future__ import annotations
@@ -14,17 +15,19 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Final
 
-REGISTRY_VERSION: Final = "CEN-EN16931-validation-1.3.15"
+REGISTRY_VERSION: Final = "CEN-EN16931-validation-1.3.16"
 
 CEN_UBL_INVOICE_CODES: Final[frozenset[str]] = frozenset(
     """
     71 80 81 82 84 102 130 202 203 204 211 218 219 295 325 326 331 380 382
     383 384 385 386 387 388 389 390 393 394 395 456 457 471 472 473 500 501
-    502 503 527 553 575 623 633 751 780 817 870 875 876 877 935
+    527 553 575 623 633 751 780 817 870 875 876 877 935
     """.split()
 )
 
-CEN_UBL_CREDIT_NOTE_CODES: Final[frozenset[str]] = frozenset("81 83 261 262 296 308 381 396 420 458 532".split())
+CEN_UBL_CREDIT_NOTE_CODES: Final[frozenset[str]] = frozenset(
+    "81 83 261 262 296 308 381 396 420 458 502 503 532".split()
+)
 
 
 class UblRoot(StrEnum):

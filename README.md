@@ -29,7 +29,7 @@ Reine Sicht- oder Scan-PDFs ohne eingebettete strukturierte XML werden bewusst n
 - optionale KoSIT-Prüfung mit zuverlässiger Auswertung des VARL-Berichts
 - geschlossenes Analyseschema 2 mit getrennten Achsen für offizielle Konformität, interne Prüfung und
   technischen Verarbeitungsabschluss
-- versionierte Dokumenttypauflösung für 62 UNTDID-1001-Codes aus CEN EN 16931 1.3.15 sowie abgeleitete
+- versionierte Dokumenttypauflösung für 62 UNTDID-1001-Codes aus CEN EN 16931 1.3.16 sowie abgeleitete
   Dokument-, Gläubiger-/Schuldner- und erwartete Zahlungsrollen
 - übersichtliche Rechnungsdarstellung mit 30 wesentlichen Kopffakten, expliziter Rechnungsart sowie getrenntem
   Dokument- und erwartetem Zahlungsfluss
@@ -211,8 +211,8 @@ Der Installer:
 Die Anwendung verwendet KoSIT ohne `-p/--print`, liest primär die erzeugte `*-report.xml` und wertet die ausdrückliche VARL-Entscheidung `<rep:accept/>` oder `<rep:reject/>` aus. Java-, JAR-, Konfigurations- und Timeoutfehler werden als „nicht ausgeführt“ und nicht als Rechnungsablehnung ausgewiesen.
 
 Die Sperrdatei [`packaging/kosit/components.lock.json`](packaging/kosit/components.lock.json) legt derzeit
-KoSIT Validator **1.6.2** und die XRechnung-Validator-Konfiguration **2026-01-31** für XRechnung **3.0.2**
-fest. Darin enthalten sind CEN-EN-16931-Regeln **1.3.15** und XRechnung-Schematron **2.5.0**. Installer und
+KoSIT Validator **1.6.3** und die XRechnung-Validator-Konfiguration **2026-08-31** für XRechnung **3.0.2**
+fest. Darin enthalten sind CEN-EN-16931-Regeln **1.3.16** und XRechnung-Schematron **2.6.0**. Installer und
 Windows-Build prüfen die festgelegten SHA-256-Werte; `/api/health` veröffentlicht die Komponentenversionen ohne
 lokale Pfade.
 

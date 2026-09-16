@@ -78,6 +78,21 @@ def test_release_filter_excludes_local_and_sensitive_files():
     assert module.should_include(Path("app/main.py")) is True
 
 
+def test_release_build_uses_the_prepared_backend_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    module = _load_script("build_release.py")
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(module, "DIST_DIR", tmp_path / "dist")
+    monkeypatch.setattr(module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(module, "verify", lambda: "2.0.3")
+    monkeypatch.setattr(module, "repository_files", lambda: [])
+    monkeypatch.setattr(module, "run", lambda *command: commands.append(command))
+
+    assert module.main() == 0
+
+    build_command = next(command for command in commands if command[1:3] == ("-m", "build"))
+    assert "--no-isolation" in build_command
+
+
 def test_clean_target_limits_bytecode_cleanup_to_owned_code_roots():
     makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
     clean_recipe = makefile.partition("\nclean:\n")[2]

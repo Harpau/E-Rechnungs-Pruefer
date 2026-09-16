@@ -287,16 +287,16 @@ if ($SigningEnabled) {
     Write-Warning "Keine Signierkonfiguration gesetzt; die Pakete werden für Tests unsigniert gebaut."
 }
 
-$ExpectedIsccSha256 = "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d"
+$ExpectedIsccSha256 = "d06ebd38f38e3cee60a3c50cc45bd449d77e0bc6a5cabc607ea9886808e4de1a"
 $Iscc = [System.IO.Path]::GetFullPath($InnoSetupCompiler)
 if (-not (Test-Path -LiteralPath $Iscc -PathType Leaf)) {
-    throw "Der festgeschriebene Inno-Setup-7.0.2-Compiler wurde nicht gefunden: $Iscc"
+    throw "Der festgeschriebene Inno-Setup-7.1.0-Compiler wurde nicht gefunden: $Iscc"
 }
 $ActualIsccSha256 = (Get-FileHash -LiteralPath $Iscc -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($ActualIsccSha256 -ne $ExpectedIsccSha256) {
-    throw "Der angegebene Compiler entspricht nicht dem festgeschriebenen Inno Setup 7.0.2 x64: $Iscc"
+    throw "Der angegebene Compiler entspricht nicht dem festgeschriebenen Inno Setup 7.1.0 x64: $Iscc"
 }
-Write-Host "Inno Setup 7.0.2 x64: $Iscc (SHA-256 $ActualIsccSha256)"
+Write-Host "Inno Setup 7.1.0 x64: $Iscc (SHA-256 $ActualIsccSha256)"
 
 & $Iscc `
     "/DAppVersion=$Version" `

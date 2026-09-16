@@ -33,13 +33,20 @@ Nachweis für den Inhalt des späteren Tag-Builds.
 
 ```sh
 ./scripts/check.sh
-python -m pip_audit --strict .
-python -m pip_audit --strict --disable-pip --require-hashes \
-  -r packaging/windows/requirements-release.txt
+make audit
 ```
 
-Der Projektmodus prüft die in `pyproject.toml` deklarierten Fremdabhängigkeiten, ohne das lokal editierbar
-installierte und nicht auf PyPI veröffentlichte Projekt selbst als externe Distribution zu behandeln.
+`make audit` erfasst die tatsächlich installierten Fremdpakete einschließlich Entwicklungs- und
+Bootstrapwerkzeugen; nur die identitäts- und pfadgeprüfte eigene Editable-Installation wird ausgenommen.
+Zusätzlich wird der Windows-Lock unabhängig auditiert. Der zusätzliche CI-Projektresolveraudit ist kein
+Nachweis über die installierte Entwicklungsumgebung. Die vollständige OS-/Python-Matrix, die nativen
+Lockprofile und der Container-Audit sind in [`DEPENDENCY_MAINTENANCE.md`](DEPENDENCY_MAINTENANCE.md) beschrieben.
+
+Source-Releases und das maßgebliche Quality-Gate verwenden auf Linux x64 CPython 3.14.7 und
+`packaging/python/requirements-source-release.txt` samt Sidecar. Installation mit
+`--require-hashes --only-binary=:all:`, anschließend `--no-deps --no-build-isolation -e .`;
+`dependency_lock.py verify --installed` prüft die exakte Umgebung. Der Build läuft mit `--no-isolation`.
+Nach dem Build werden Inventar und Audit erneut aus derselben Umgebung erstellt.
 
 Die anonymisierten CII-/UBL-Beispiele und die Hybrid-PDF sind durch die Regressionstests abgedeckt. Eine
 zusätzliche manuelle Sichtprüfung ist nur erforderlich, wenn eine Änderung ein visuelles Verhalten einführt,
@@ -120,10 +127,10 @@ $InnoSetupCompiler = .\scripts\install_inno_setup.ps1
     -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
 ```
 
-Die CI- und signierten GitHub-Builds installieren zusätzlich den offiziellen Inno-Setup-7.0.2-x64-Compiler aus
+Die CI- und signierten GitHub-Builds installieren zusätzlich den offiziellen Inno-Setup-7.1.0-x64-Compiler aus
 seinem unveränderlichen Releaseasset, prüfen Installer und Compiler gegen die festgeschriebenen SHA-256-Werte
 und übergeben ausschließlich diesen Compilerpfad an den Windows-Build. Die signierten GitHub-Builds verwenden
-außerdem exakt CPython 3.13.14 und installieren sämtliche Laufzeit-, Test- und Buildabhängigkeiten ausschließlich
+außerdem exakt CPython 3.14.7 und installieren sämtliche Laufzeit-, Test- und Buildabhängigkeiten ausschließlich
 aus `packaging/windows/requirements-release.txt`. Dort sind alle Pakete samt
 transitiven Abhängigkeiten auf die ausgewählten Windows-x64-Wheels und deren SHA-256-Hashes festgelegt. Dadurch
 verwenden manueller Probelauf und späterer Tag-Lauf dieselbe Python-Abhängigkeitsbasis. Der allgemeinere
@@ -132,6 +139,14 @@ Abhängigkeitsbereiche.
 
 Im signierten Vorab-Probelauf werden sämtliche Paket-, Modusausschluss- und Recoverytest-Aufrufe zusätzlich mit
 `-RequireSignature` ausgeführt.
+
+Bereits unsignierte PR-/CI-Paketläufe binden vor dem ersten Installeraufruf den tatsächlich ausgecheckten
+Commit, Run, Attempt, Job, Runner, Installerbytes und Testskripte an einen eigenen Teilplan.
+`acceptance_context.py run-ci` konsumiert den einmaligen Guard unmittelbar vor dem Prozessstart und erhält
+Rohlogs sowie terminale Receipts; jeder Nicht-PASS sperrt den Teil-Lauf. Die vorhandenen Signatur- und
+Kollisionsprüfungen bleiben im Pakettest aktiv. Diese Evidence wird 14 Tage als separates Actions-Artefakt
+bewahrt und ersetzt nicht den nachfolgenden Main-Kandidatenplan oder die Clientabnahme. Details:
+[`acceptance-tooling.md`](acceptance-tooling.md).
 
 Die Pakettests verwenden die echten Produkt-IDs, Dienstnamen, Registry- und Laufzeitpfade. Sie dürfen deshalb nur
 in einer sauberen, entbehrlichen Windows-VM oder unter einer eigenen Testidentität laufen.
@@ -178,11 +193,11 @@ Für KoSIT und XRechnung ist
 
 | Komponente | Festgelegter Stand | SHA-256 |
 |---|---|---|
-| KoSIT Validator | `validator-1.6.2-standalone.jar` / 1.6.2 | `244978514ad48f67c7573acfffc8f4fd73d81feda6f276710033f9913579857e` |
-| XRechnung-Konfiguration | `xrechnung-3.0.2-validator-configuration-2026-01-31.zip` | `6a5a5911a421b25fbc423f62f93f894df7b236f5d73ca4f84bb222a945082704` |
+| KoSIT Validator | `validator-1.6.3-standalone.jar` / 1.6.3 | `799e64befca97d4080e03608c80b85dd5a5ecc5f4ae4f35d1116ec2855b9a7c9` |
+| XRechnung-Konfiguration | `xrechnung-3.0.2-validator-configuration-2026-08-31.zip` | `2530cd107c414511c5d0462ec10f886910395abfca820db82e83d70bf01221a8` |
 
-Die darin ausgewiesenen Standards sind XRechnung 3.0.2, Konfigurationsstand 2026-01-31,
-CEN-EN-16931-Regeln 1.3.15 und XRechnung-Schematron 2.5.0. Dateiname, URL, Version und Hash müssen gemeinsam
+Die darin ausgewiesenen Standards sind XRechnung 3.0.2, Konfigurationsstand 2026-08-31,
+CEN-EN-16931-Regeln 1.3.16 und XRechnung-Schematron 2.6.0. Dateiname, URL, Version und Hash müssen gemeinsam
 aktualisiert werden; `app/component_versions.py`, Health-Antwort, Tests und Dokumenttyp-Registry müssen denselben
 Stand nennen. Ein Hash- oder Versionsunterschied ist ein Releasefehler.
 
@@ -279,8 +294,8 @@ Befund kann durch dokumentierte Einzelentscheidung als nicht blockierend eingest
 Best-Effort-Kompatibilität entsteht keine vollständige Supportzusage.
 
 Unter Windows 11 verbleiben zwei fokussierte Upgrades von der unmittelbar vorher veröffentlichten Patchversion
-derselben Release-Linie. Für 2.0.2 sind das die unveränderten, veröffentlichten und signierten
-2.0.1-Produktinstaller als Baseline auf zwei getrennten Snapshots:
+derselben Release-Linie. Für 2.0.3 sind das die unveränderten, veröffentlichten und signierten
+2.0.2-Produktinstaller als Baseline auf zwei getrennten Snapshots:
 
 1. Beim Desktop-Upgrade bleibt ein Alt-Tab mit warmem Cache geöffnet. Es muss kontrolliert mit
    `403 desktop_session_error` oder `409 ui_version_mismatch` samt Wiederöffnungshinweis enden. Ein neues

@@ -288,21 +288,23 @@ werden. Anschließend sind mindestens eine Annahme und eine Ablehnung real mit K
 
 ## Lokaler Build auf Windows
 
-Voraussetzungen sind Windows-x64-Python 3.13 und Netzwerkzugriff beim Vorbereiten der gesperrten Komponenten und
-des auf Inno Setup 7.0.2 x64 festgeschriebenen Installercompilers:
+Voraussetzungen sind Windows-x64-CPython 3.14.7 und Netzwerkzugriff beim Vorbereiten der gesperrten Komponenten und
+des auf Inno Setup 7.1.0 x64 festgeschriebenen Installercompilers:
 
 ```powershell
-py -3.13 -m venv .venv
+py -3.14 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e . -r packaging\windows\requirements-build.txt
+python -m pip install --require-hashes --only-binary=:all: -r packaging\windows\requirements-release.txt
+python -m pip install --no-deps --no-build-isolation -e .
+python scripts\dependency_lock.py verify --lock packaging\windows\requirements-release.txt --installed
+python -m pip check
 python scripts\prepare_windows_components.py
 $InnoSetupCompiler = .\scripts\install_inno_setup.ps1
 .\scripts\build_windows.ps1 -InnoSetupCompiler $InnoSetupCompiler
 ```
 
-Für signierte GitHub-Builds gilt stattdessen der vollständige, gehashte Windows-x64-Lock
-`packaging\windows\requirements-release.txt` zusammen mit CPython 3.13.14. Der Workflow installiert diesen Lock
+Für lokale und signierte GitHub-Builds gilt der vollständige, gehashte Windows-x64-Lock
+`packaging\windows\requirements-release.txt` zusammen mit CPython 3.14.7. Der Workflow installiert diesen Lock
 mit `--require-hashes --only-binary=:all:` und anschließend das lokale Projekt ohne erneute
 Abhängigkeitsauflösung. Änderungen am Lock sind eigenständige Releaseänderungen und müssen durch den
 Windows-Pakettest geprüft werden.

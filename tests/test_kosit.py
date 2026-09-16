@@ -528,17 +528,17 @@ def test_installer_uses_locked_components_and_selects_only_standalone_jar(tmp_pa
     spec.loader.exec_module(module)
 
     locked = module.load_lock(module.DEFAULT_LOCK_FILE)
-    assert locked["components"]["validator"]["version"] == "KoSIT Validator 1.6.2"
-    assert locked["components"]["xrechnung"]["version"].endswith("2026-01-31")
+    assert locked["components"]["validator"]["version"] == "KoSIT Validator 1.6.3"
+    assert locked["components"]["xrechnung"]["version"].endswith("2026-08-31")
     assert locked["standards"] == {
         "xrechnung": "3.0.2",
-        "xrechnung_configuration": "2026-01-31",
-        "cen_en16931": "1.3.15",
-        "xrechnung_schematron": "2.5.0",
+        "xrechnung_configuration": "2026-08-31",
+        "cen_en16931": "1.3.16",
+        "xrechnung_schematron": "2.6.0",
     }
 
-    normal = tmp_path / "validator-1.6.2.jar"
-    standalone = tmp_path / "validator-1.6.2-standalone.jar"
+    normal = tmp_path / "validator-1.6.3.jar"
+    standalone = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(normal, None)
     _write_jar(standalone, "de.kosit.validationtool.cmd.CommandLineApplication")
     assert module.find_validator_jar(tmp_path) == standalone

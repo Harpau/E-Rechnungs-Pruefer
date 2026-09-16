@@ -1,4 +1,6 @@
-FROM python:3.13-slim
+FROM python:3.14.7-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
+
+ARG TARGETARCH
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,14 +9,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates default-jre-headless \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends ca-certificates openjdk-21-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -r requirements.txt
+COPY packaging/docker/requirements-linux-*.txt /tmp/docker-locks/
+RUN test "$TARGETARCH" = "amd64" -o "$TARGETARCH" = "arm64" \
+    && python -m pip install --force-reinstall --require-hashes --only-binary=:all: \
+       -r "/tmp/docker-locks/requirements-linux-${TARGETARCH}.txt" \
+    && python -m pip check \
+    && rm -rf /tmp/docker-locks
 
 COPY . .
 RUN useradd --create-home --uid 10001 appuser \

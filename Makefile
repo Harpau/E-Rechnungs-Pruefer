@@ -46,7 +46,10 @@ build:
 	$(PYTHON) scripts/build_release.py
 
 audit:
-	$(PYTHON) -m pip_audit
+	$(PYTHON) scripts/dependency_audit.py capture --output .cache/dependency-audit/installed.json
+	$(PYTHON) scripts/dependency_audit.py audit --inventory .cache/dependency-audit/installed.json --output .cache/dependency-audit/audit.json
+	$(PYTHON) scripts/dependency_lock.py check --lock packaging/windows/requirements-release.txt
+	$(PYTHON) -m pip_audit --strict --disable-pip --require-hashes -r packaging/windows/requirements-release.txt
 
 kosit:
 	$(PYTHON) scripts/install_kosit.py

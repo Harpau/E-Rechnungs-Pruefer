@@ -19,3 +19,4 @@ vendor
 local-data
 reports
 tests
+.cache

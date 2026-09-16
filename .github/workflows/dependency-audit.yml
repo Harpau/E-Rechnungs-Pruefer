@@ -1,6 +1,9 @@
 name: Dependency audit
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   schedule:
     - cron: "31 5 * * 2"
   workflow_dispatch:
@@ -8,22 +11,274 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: dependency-audit-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  pip-audit:
-    runs-on: ubuntu-latest
+  environments:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }} / ${{ matrix.profile }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        profile: [runtime, dev]
+    env:
+      AUDIT_PROFILE: ${{ matrix.profile }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
-          cache: pip
-      - name: Install project and audit tool
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
-      - name: Audit installed dependencies
-        run: python -m pip_audit --strict .
-      - name: Audit locked Windows package dependencies
-        run: >-
-          python -m pip_audit --strict --disable-pip --require-hashes
-          -r packaging/windows/requirements-release.txt
+          python-version: ${{ matrix.python-version }}
+      - name: Prepare independent target and auditor environments
+        shell: python
+        run: |
+          import json
+          import os
+          import platform
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          evidence = Path("audit-evidence")
+          evidence.mkdir()
+          (evidence / "runner.json").write_text(json.dumps({
+              "python": sys.version, "platform": platform.platform(),
+              "profile": os.environ["AUDIT_PROFILE"],
+              "run": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "commit": os.environ["GITHUB_SHA"],
+          }, indent=2), encoding="utf-8")
+
+          def run(command, filename):
+              with (evidence / filename).open("w", encoding="utf-8") as output:
+                  subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, check=True)
+
+          interpreters = {}
+          bootstrap = ["pip==26.2.1", "setuptools==84.0.0", "wheel==0.48.0"]
+          for name in ("target", "tools"):
+              destination = Path(os.environ["RUNNER_TEMP"]) / ("einvoice-audit-" + name)
+              run([sys.executable, "-m", "venv", str(destination)], name + "-venv.log")
+              interpreter = destination / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+              interpreters[name] = str(interpreter)
+              run([str(interpreter), "-m", "pip", "install", "--only-binary=:all:", *bootstrap], name + "-bootstrap.log")
+          project = ".[dev]" if os.environ["AUDIT_PROFILE"] == "dev" else "."
+          run([interpreters["target"], "-m", "pip", "install", "--only-binary=:all:",
+               "--no-build-isolation", "-e", project], "target-install.log")
+          run([interpreters["target"], "-m", "pip", "check"], "target-pip-check.log")
+          run([interpreters["tools"], "-m", "pip", "install", "--only-binary=:all:",
+               "pip-audit==2.10.1", "packaging==26.3"], "tools-install.log")
+          run([interpreters["tools"], "-m", "pip_audit", "--version"], "auditor-version.txt")
+          for name, interpreter in interpreters.items():
+              run([interpreter, "-m", "pip", "--version"], name + "-pip-version.txt")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write("TARGET_PY=" + interpreters["target"] + "\n")
+              output.write("AUDITOR_PY=" + interpreters["tools"] + "\n")
+      - name: Capture complete installed inventories
+        shell: python
+        run: |
+          import os
+          import subprocess
+          for name, interpreter in (("target", os.environ["TARGET_PY"]), ("tools", os.environ["AUDITOR_PY"])):
+              subprocess.run([interpreter, "scripts/dependency_audit.py", "capture", "--output",
+                              "audit-evidence/" + name + "-inventory.json"], check=True)
+      - name: Audit target and auditor without suppressing either result
+        shell: python
+        run: |
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          outcomes = {}
+          for name in ("target", "tools"):
+              outcome = subprocess.run([
+                  os.environ["AUDITOR_PY"], "scripts/dependency_audit.py", "audit",
+                  "--inventory", "audit-evidence/" + name + "-inventory.json",
+                  "--output", "audit-evidence/" + name + "-audit.json",
+              ], check=False)
+              outcomes[name] = outcome.returncode
+          Path("audit-evidence/outcomes.json").write_text(json.dumps(outcomes), encoding="utf-8")
+          if any(outcomes.values()):
+              raise SystemExit(1)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: audit-${{ matrix.os }}-py${{ matrix.python-version }}-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: audit-evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+  windows-lock:
+    name: Windows locked dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: Prepare isolated audit tools
+        id: tools
+        run: |
+          mkdir -p audit-evidence
+          python --version > audit-evidence/python-version.txt 2>&1
+          python -m venv "$RUNNER_TEMP/einvoice-windows-audit"
+          source "$RUNNER_TEMP/einvoice-windows-audit/bin/activate"
+          python -m pip install --only-binary=:all: pip==26.2.1 setuptools==84.0.0 wheel==0.48.0 \
+            pip-audit==2.10.1 packaging==26.3 > audit-evidence/tools-install.log 2>&1
+          python -m pip_audit --version > audit-evidence/auditor-version.txt 2>&1
+          python scripts/dependency_audit.py capture --output audit-evidence/tools-inventory.json
+      - name: Check marker-free Windows lock and sidecar offline
+        id: check
+        run: |
+          source "$RUNNER_TEMP/einvoice-windows-audit/bin/activate"
+          python scripts/dependency_lock.py check --lock packaging/windows/requirements-release.txt \
+            > audit-evidence/lock-check.log 2>&1
+      - name: Audit every pinned Windows package without host resolution
+        run: |
+          source "$RUNNER_TEMP/einvoice-windows-audit/bin/activate"
+          python -m pip_audit --strict --disable-pip --require-hashes \
+            -r packaging/windows/requirements-release.txt \
+            --format json --output audit-evidence/windows-lock-audit.json \
+            > audit-evidence/windows-lock-audit.stdout.txt 2> audit-evidence/windows-lock-audit.stderr.txt
+      - name: Independently audit the audit tool environment
+        if: always() && steps.tools.outcome == 'success'
+        run: |
+          source "$RUNNER_TEMP/einvoice-windows-audit/bin/activate"
+          python scripts/dependency_audit.py audit --inventory audit-evidence/tools-inventory.json \
+            --output audit-evidence/tools-audit.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: audit-windows-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: audit-evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+  source-lock:
+    name: Source release locked dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: Install exclusively from the frozen source release lock
+        run: |
+          mkdir -p audit-evidence
+          python --version > audit-evidence/python-version.txt 2>&1
+          python -m venv "$RUNNER_TEMP/einvoice-source-audit"
+          source "$RUNNER_TEMP/einvoice-source-audit/bin/activate"
+          python -m pip install --require-hashes --only-binary=:all: --force-reinstall \
+            -r packaging/python/requirements-source-release.txt > audit-evidence/locked-install.log 2>&1
+          python -m pip install --no-deps --no-build-isolation -e . > audit-evidence/project-install.log 2>&1
+          python -m pip check > audit-evidence/pip-check.log 2>&1
+          python -m pip_audit --version > audit-evidence/auditor-version.txt 2>&1
+      - name: Capture exact release environment
+        id: capture
+        run: |
+          source "$RUNNER_TEMP/einvoice-source-audit/bin/activate"
+          python scripts/dependency_audit.py capture --output audit-evidence/source-inventory.json \
+            --lock packaging/python/requirements-source-release.txt
+      - name: Verify native wheels, hashes and active dependency closure
+        run: |
+          source "$RUNNER_TEMP/einvoice-source-audit/bin/activate"
+          python scripts/dependency_lock.py verify --lock packaging/python/requirements-source-release.txt \
+            --installed > audit-evidence/native-verification.log 2>&1
+      - name: Audit the captured source environment even if wheel verification failed
+        if: always() && steps.capture.outcome == 'success'
+        run: |
+          source "$RUNNER_TEMP/einvoice-source-audit/bin/activate"
+          python scripts/dependency_audit.py audit --inventory audit-evidence/source-inventory.json \
+            --output audit-evidence/source-audit.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: audit-source-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: audit-evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+  project-resolver:
+    name: Additional freshly resolved project audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: Prepare isolated project audit tools
+        id: tools
+        run: |
+          mkdir -p audit-evidence
+          python --version > audit-evidence/python-version.txt 2>&1
+          python -m venv "$RUNNER_TEMP/einvoice-project-audit"
+          source "$RUNNER_TEMP/einvoice-project-audit/bin/activate"
+          python -m pip install --only-binary=:all: pip==26.2.1 setuptools==84.0.0 wheel==0.48.0 \
+            pip-audit==2.10.1 > audit-evidence/tools-install.log 2>&1
+          python -m pip_audit --version > audit-evidence/auditor-version.txt 2>&1
+          python scripts/dependency_audit.py capture --output audit-evidence/tools-inventory.json
+      - name: Audit newly resolved runtime as an additional freshness check
+        run: |
+          source "$RUNNER_TEMP/einvoice-project-audit/bin/activate"
+          python -m pip_audit --strict . --format json --output audit-evidence/project-audit.json \
+            > audit-evidence/project-audit.stdout.txt 2> audit-evidence/project-audit.stderr.txt
+      - name: Independently audit the project audit tool environment
+        if: always() && steps.tools.outcome == 'success'
+        run: |
+          source "$RUNNER_TEMP/einvoice-project-audit/bin/activate"
+          python scripts/dependency_audit.py audit --inventory audit-evidence/tools-inventory.json \
+            --output audit-evidence/tools-audit.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: audit-project-resolver-${{ github.run_id }}-${{ github.run_attempt }}
+          path: audit-evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+  docker:
+    name: Final Docker image dependency audit
+    uses: ./.github/workflows/docker.yml
+
+  audit-gate:
+    name: Complete dependency audit gate
+    if: always()
+    needs: [environments, windows-lock, source-lock, project-resolver, docker]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require successful completion of every dependency profile
+        shell: python
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          import json
+          import os
+          expected = {"environments", "windows-lock", "source-lock", "project-resolver", "docker"}
+          results = json.loads(os.environ["NEEDS_JSON"])
+          if set(results) != expected or any(value.get("result") != "success" for value in results.values()):
+              print("Dependency audit incomplete or failed: " + json.dumps(results, sort_keys=True))
+              raise SystemExit(1)
+          print("Every required dependency profile completed successfully.")

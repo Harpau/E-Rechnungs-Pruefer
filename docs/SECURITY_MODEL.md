@@ -18,9 +18,9 @@
 6. Downloads aus dem KoSIT-Installer erfolgen nur nach ausdrücklichem Benutzeraufruf. Für KoSIT Validator und
    XRechnung ist `packaging/kosit/components.lock.json` maßgeblich. Der Windows-Lock unter
    `packaging/windows/components.lock.json` spiegelt diese beiden Einträge und ergänzt die festgeschriebene
-   Java-Laufzeit; der Build verifiziert alle SHA-256-Prüfsummen. Der zentrale KoSIT-Lock pinnt Validator 1.6.2
-   und die XRechnung-3.0.2-Konfiguration 2026-01-31 mit CEN-Regeln 1.3.15 und
-   XRechnung-Schematron 2.5.0.
+   Java-Laufzeit; der Build verifiziert alle SHA-256-Prüfsummen. Der zentrale KoSIT-Lock pinnt Validator 1.6.3
+   und die XRechnung-3.0.2-Konfiguration 2026-08-31 mit CEN-Regeln 1.3.16 und
+   XRechnung-Schematron 2.6.0.
 
 ## Wesentliche Bedrohungen und Kontrollen
 
