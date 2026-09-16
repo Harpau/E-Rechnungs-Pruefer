@@ -76,6 +76,19 @@ def test_ldd_parses_loader_and_rejects_missing_or_unrecognised_results() -> None
             rootfs.parse_ldd(bad)
 
 
+def test_ldd_reports_all_failures_and_preserves_healthy_dependency_edges() -> None:
+    with pytest.raises(rootfs.ElfInspectionError) as caught:
+        rootfs.parse_ldd(
+            "libmissing1.so => not found\n"
+            "libhealthy.so => /usr/lib/libhealthy.so (0x0001)\n"
+            "libmissing2.so => not found\n"
+            "unexpected diagnostic\n"
+        )
+    assert caught.value.dependencies == ["/usr/lib/libhealthy.so"]
+    for diagnostic in ("libmissing1.so", "libmissing2.so", "unexpected diagnostic"):
+        assert diagnostic in str(caught.value)
+
+
 def test_dependency_free_elf_loader_is_proven_from_dynamic_headers(tmp_path: Path) -> None:
     header = bytearray(64)
     header[:7] = b"\x7fELF\x02\x01\x01"
@@ -149,6 +162,43 @@ def test_elf_closure_inspects_non_executable_files_and_is_transitive(tmp_path: P
     assert seen == paths
     assert all(path in build.entries for path in paths)
     assert build.entries[paths[0]]["elf_dependencies"] == [paths[1]]
+
+
+def test_elf_closure_collects_broken_roots_and_finishes_healthy_transitive_inventory(tmp_path: Path) -> None:
+    broken_one, broken_two, healthy_root, child, grandchild = [
+        f"/usr/lib/{name}.so" for name in ("broken1", "broken2", "healthy", "child", "grandchild")
+    ]
+    paths = [broken_one, broken_two, healthy_root, child, grandchild]
+    build = builder(tmp_path, {path: ["libdemo:amd64"] for path in paths})
+    for path in paths:
+        put(build.source, path, b"\x7fELF" + path.encode())
+    for path in paths[:3]:
+        build.copy_path(path)
+    visited = []
+
+    def inspect(path: str) -> list[str]:
+        visited.append(path)
+        if path == broken_one:
+            return rootfs.parse_ldd(
+                f"libabsent1.so => not found\nlibchild.so => {child} (0x001)\nlibabsent2.so => not found\n"
+            )
+        if path == broken_two:
+            raise rootfs.RootfsError("independent ldd command failure")
+        return {healthy_root: [child], child: [grandchild], grandchild: []}[path]
+
+    with pytest.raises(rootfs.RootfsError) as caught:
+        build.copy_elf_closure(inspect)
+    for detail in (broken_one, broken_two, "libabsent1.so", "libabsent2.so", "independent ldd command failure"):
+        assert detail in str(caught.value)
+    assert set(visited) == set(paths)
+    assert len(visited) == len(paths)
+    assert "elf_dependencies" not in build.entries[broken_one]
+    assert "elf_dependencies" not in build.entries[broken_two]
+    assert build.entries[child]["elf_dependencies"] == [grandchild]
+    assert build.entries[grandchild]["elf_dependencies"] == []
+    with pytest.raises(rootfs.RootfsError, match="ELF was not inspected"):
+        build.write_manifest(lock=tmp_path / "unused-lock", metadata=tmp_path / "unused-metadata")
+    assert not (build.output / rootfs.MANIFEST_PATH.lstrip("/")).exists()
 
 
 def test_metadata_keeps_full_status_and_resolves_copyright_owners(tmp_path: Path) -> None:

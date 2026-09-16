@@ -41,6 +41,14 @@ class RootfsError(RuntimeError):
     """Runtime closure or provenance could not be proved."""
 
 
+class ElfInspectionError(RootfsError):
+    """Retain healthy edges while reporting an unsuccessful ELF inspection."""
+
+    def __init__(self, message: str, dependencies: list[str]) -> None:
+        super().__init__(message)
+        self.dependencies = dependencies
+
+
 class WheelEntryPoints(configparser.ConfigParser):
     def optionxform(self, optionstr: str) -> str:
         return optionstr
@@ -283,6 +291,7 @@ def skip_private_tls(path: str) -> bool:
 
 def parse_ldd(text: str) -> list[str]:
     dependencies = []
+    errors = []
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
@@ -291,10 +300,13 @@ def parse_ldd(text: str) -> list[str]:
             continue
         match = re.fullmatch(r"(?:\S+ => )?(/\S+) \(0x[0-9a-f]+\)", line)
         if not match:
-            raise RootfsError(f"Unresolved or unexpected ldd output: {line}")
-        dependencies.append(match[1])
+            errors.append(line)
+        else:
+            dependencies.append(match[1])
+    if errors:
+        raise ElfInspectionError("Unresolved or unexpected ldd output:\n" + "\n".join(errors), dependencies)
     if not dependencies:
-        raise RootfsError(f"No dynamic ELF closure proved: {text!r}")
+        raise ElfInspectionError(f"No dynamic ELF closure proved: {text!r}", [])
     return dependencies
 
 
@@ -592,17 +604,39 @@ class RootfsBuilder:
             self._copying.remove(path)
 
     def copy_elf_closure(self, inspect: Callable[[str], list[str]]) -> None:
-        inspected: set[str] = set()
+        attempted: set[str] = set()
+        failures: dict[str, list[str]] = {}
         while True:
-            pending = [path for path, entry in self.entries.items() if entry.get("elf") and path not in inspected]
+            pending = [path for path, entry in self.entries.items() if entry.get("elf") and path not in attempted]
             if not pending:
-                return
+                break
             for path in pending:
-                dependencies = inspect(path)
+                attempted.add(path)
+                self.entries[path].pop("elf_dependencies", None)
+                errors = []
+                dependencies = []
+                try:
+                    dependencies = inspect(path)
+                except ElfInspectionError as exc:
+                    dependencies = exc.dependencies
+                    errors.append(str(exc))
+                except (RootfsError, OSError, ValueError) as exc:
+                    errors.append(str(exc))
                 for dependency in dependencies:
-                    self.copy_path(dependency)
-                self.entries[path]["elf_dependencies"] = dependencies
-                inspected.add(path)
+                    try:
+                        self.copy_path(dependency)
+                    except (RootfsError, OSError, ValueError) as exc:
+                        errors.append(f"Dependency {dependency}: {exc}")
+                if errors:
+                    failures[path] = errors
+                else:
+                    self.entries[path]["elf_dependencies"] = dependencies
+        if failures:
+            details = "\n".join(
+                f"- {path}:\n" + "\n".join("  " + line for error in errors for line in error.splitlines())
+                for path, errors in sorted(failures.items())
+            )
+            raise RootfsError(f"ELF dependency inspection failed for {len(failures)} file(s):\n{details}")
 
     def generated(self, path: str, data: bytes, reason: str, *, mode: int = 0o644) -> None:
         path = normalize(path)
@@ -789,7 +823,12 @@ def main(argv: list[str] | None = None) -> int:
             needed, interpreter = elf_linkage(Path(path))
             if not needed:
                 return [interpreter] if interpreter else []
-            dependencies = parse_ldd(command(["ldd", path], env=environment))
+            try:
+                dependencies = parse_ldd(command(["ldd", path], env=environment))
+            except ElfInspectionError as exc:
+                if interpreter and interpreter not in exc.dependencies:
+                    exc.dependencies.append(interpreter)
+                raise
             if interpreter and interpreter not in dependencies:
                 dependencies.append(interpreter)
             return dependencies
