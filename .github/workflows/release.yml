@@ -223,7 +223,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action desktop --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" --script scripts/test_windows_package.ps1 --evidence .cache/acceptance-logs/desktop.log -- pwsh -NoProfile -File scripts/test_windows_package.ps1 -RequireSignature -ConfirmIsolatedEnvironment -Setup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe"
+          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action desktop --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" --artifact scripts/test_processing_package.py --artifact scripts/test_processing_package.ps1 --artifact scripts/processing_smoke.py --artifact "build/windows/bundle/E-Rechnungs-Pruefer/E-Rechnungs-Pruefer.exe" --script scripts/test_windows_package.ps1 --evidence .cache/acceptance-logs/desktop.log -- pwsh -NoProfile -File scripts/test_windows_package.ps1 -RequireSignature -ConfirmIsolatedEnvironment -Setup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test mutual exclusion of desktop and service modes
         shell: pwsh
@@ -235,7 +235,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action service-recovery --artifact "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" --script scripts/test_windows_service_package.ps1 --evidence .cache/acceptance-logs/service-recovery.log -- pwsh -NoProfile -File scripts/test_windows_service_package.ps1 -RequireSignature -ConfirmIsolatedEnvironment -Setup "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
+          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action service-recovery --artifact "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" --artifact scripts/test_processing_package.py --artifact scripts/test_processing_package.ps1 --artifact scripts/processing_smoke.py --artifact "build/windows/bundle/E-Rechnungs-Pruefer-Dienst/E-Rechnungs-Pruefer-Dienst.exe" --script scripts/test_windows_service_package.ps1 --evidence .cache/acceptance-logs/service-recovery.log -- pwsh -NoProfile -File scripts/test_windows_service_package.ps1 -RequireSignature -ConfirmIsolatedEnvironment -Setup "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify package evidence and unchanged dependency inventory
         shell: pwsh

@@ -20,6 +20,19 @@ Die folgenden Tabellen dokumentieren die zentralen Feldzuordnungen und ausdrück
 Sie ersetzen keine Bestandsaufnahme der tatsächlich von einem Consumer verwendeten Schema-1-Pfade, da nicht
 jedes historische optionale Feld eine direkte Eins-zu-eins-Entsprechung besitzt.
 
+## Zusätzliche HTTP-Ressourcengrenzen in 2.0.3
+
+Die neue isolierte HTTP-Verarbeitung erhöht die Schemaversion nicht. Erfolgreiche Antworten bleiben Schema 2,
+Berichte behalten die sechs Statusheader und den Umfang `readable|complete`; `/api/xml` bleibt byteidentisch.
+Neu sind frühe Uploadablehnung mit 413 statt später 422, Headerfehler 431, eindeutige Formular-/Medientypfehler
+und getrennte technische Worker-/Budgetfehler. Ein technischer Abbruch ist niemals eine offizielle Ablehnung.
+Alle vier Uploadrouten, auch XML-Export, teilen zwei Auftragsplätze je Backendprozess.
+
+Consumer müssen genau eine Datei und nur die dokumentierten Felder senden, vollständige Ergebnisbytes abwarten
+und den [`Upload- und Fehlervertrag`](AUTOMATION_INTEGRATION.md#begrenzter-uploadvertrag) berücksichtigen.
+413/422 erfordern eine geänderte Eingabe beziehungsweise manuelle Behandlung, 503 eine begrenzte Wiederholung
+mit Beachtung von `Retry-After`. Eine abgebrochene Verbindung ist kein erfolgreiches Schema-2-Ergebnis.
+
 ## Geschlossener Top-Level-Vertrag
 
 `POST /api/analyze` liefert genau diese Top-Level-Felder:

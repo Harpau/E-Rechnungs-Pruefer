@@ -137,6 +137,16 @@ def test_missing_runtime_resource_is_not_hidden_by_other_archives(module, tmp_pa
         module.check_artifacts(dist, VERSION)
 
 
+def test_isolation_bootstrap_cannot_be_missing_from_all_runtime_archives(module, tmp_path):
+    def omit(groups):
+        for files in groups.values():
+            files.pop("app/processing/bootstrap.py", None)
+
+    dist = write_release(module, tmp_path, omit)
+    with pytest.raises(module.ArtifactError, match="fehlt"):
+        module.check_artifacts(dist, VERSION)
+
+
 @pytest.mark.parametrize("kind", ["sdist", "repository"])
 def test_source_archives_require_lock_sidecars_and_setup_entrypoints(module, tmp_path, kind):
     path = "packaging/docker/requirements-linux-arm64.txt.metadata.json"
@@ -214,13 +224,39 @@ def test_smoke_uses_isolated_interpreter_and_an_empty_directory(module, tmp_path
         calls.append((command, kwargs))
         assert list(Path(kwargs["cwd"]).iterdir()) == []
         assert json.loads(kwargs["input"])["app/__init__.py"]
-        return subprocess.CompletedProcess(command, 0, json.dumps({"version": VERSION, "syntax": ["CII", "UBL"]}), "")
+        receipt = {
+            "version": VERSION,
+            "syntax": ["CII", "UBL"],
+            "native_processing": {
+                "jobs": 8,
+                "role_counts": {"supervisor": 8, "worker": 8},
+                "all_reaped": True,
+                "leases_remaining": 0,
+            },
+        }
+        return subprocess.CompletedProcess(command, 0, json.dumps(receipt), "")
 
     monkeypatch.setattr(module.subprocess, "run", run)
     result = module.wheel_smoke("synthetic-python", dist / module.artifact_names(VERSION)["wheel"], VERSION)
     assert result["version"] == VERSION
     assert calls[0][0][:3] == ["synthetic-python", "-I", "-c"]
     assert calls[0][1]["env"]["KOSIT_ENABLED"] == "false"
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [None, {"jobs": 8, "role_counts": {"supervisor": 8, "worker": 8}, "all_reaped": False, "leases_remaining": 0}],
+)
+def test_wheel_smoke_cannot_succeed_without_native_child_end_proof(module, tmp_path, monkeypatch, proof):
+    dist = write_release(module, tmp_path)
+    receipt = {"version": VERSION, "syntax": ["CII", "UBL"], "native_processing": proof}
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, json.dumps(receipt), ""),
+    )
+    with pytest.raises(module.ArtifactError, match="Prozess"):
+        module.wheel_smoke("synthetic-python", dist / module.artifact_names(VERSION)["wheel"], VERSION)
 
 
 def test_wheel_metadata_and_unexpected_importable_top_level_are_rejected(module, tmp_path):

@@ -25,8 +25,8 @@ from typing import IO, Any
 
 from lxml import etree
 
+from ..configuration import Settings
 from ..desktop_security import API_TOKEN_ENV, SERVICE_MODE_ENV
-from ..settings import Settings
 from ..windows_acl import WindowsServiceAcl
 from ..windows_service_config import ServicePaths
 from ..xml_utils import clean_text, local_name, namespace_uri
@@ -285,8 +285,8 @@ def _ephemeral_invoice_file(path: Path, payload: bytes) -> Iterator[None]:
 @contextmanager
 def _kosit_temporary_directory() -> Iterator[Path]:
     if sys.platform != "win32" or os.environ.get(SERVICE_MODE_ENV) != "1":
-        with tempfile.TemporaryDirectory(prefix="einvoice-kosit-") as temporary:
-            yield Path(temporary)
+        with tempfile.TemporaryDirectory(prefix="einvoice-kosit-") as temporary_name:
+            yield Path(temporary_name)
         return
 
     paths = ServicePaths.from_environment()
@@ -866,67 +866,121 @@ class KositValidator:
                     finding_id="KOSIT-REPORT",
                     exit_code=completed.returncode,
                 )
-            report_source: str | None = "file" if report_payload is not None else None
-            if report_payload is None:
-                report_payload = self._extract_xml_payload(completed.stdout)
-                report_source = "stdout" if report_payload is not None else None
-            if report_payload is None:
-                report_payload = self._extract_format_error_payload(completed.stderr)
-                report_source = "stderr-format-error" if report_payload is not None else None
-            if report_payload is None:
-                report_payload = self._extract_xml_payload(completed.stderr)
-                report_source = "stderr" if report_payload is not None else None
+        return self.evaluate_execution(
+            state,
+            returncode=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            report_payload=report_payload,
+            console_overflow=bool(getattr(completed, "_kosit_console_overflow", False)),
+        )
 
-            stdout = completed.stdout.decode("utf-8", errors="replace").strip()
-            stderr = completed.stderr.decode("utf-8", errors="replace").strip()
-            findings, report_decision, assessment, valid_report = self._parse_report(report_payload)
-            technical_output = "\n".join(part for part in (stderr, stdout if not valid_report else "") if part).strip()
-            console_overflow = bool(getattr(completed, "_kosit_console_overflow", False))
-            if console_overflow and not valid_report:
-                overflow_notice = (
-                    f"Die KoSIT-Konsolenausgabe überschritt das Bytebudget von "
-                    f"{MAXIMUM_KOSIT_CONSOLE_BYTES} Bytes und wurde gekürzt."
-                )
-                technical_output = "\n".join(part for part in (overflow_notice, technical_output) if part)
+    def evaluate_execution(
+        self,
+        state: dict[str, Any],
+        *,
+        returncode: int,
+        stdout: bytes,
+        stderr: bytes,
+        report_payload: bytes | None,
+        console_overflow: bool = False,
+        console_error: str | None = None,
+    ) -> dict[str, Any]:
+        """Interpret bounded results inside the parser worker, without starting Java."""
+        if console_error is not None and (
+            type(console_error) is not str or console_error != "console_capture_read_failed"
+        ):
+            raise ValueError("Ungültige KoSIT-Konsolendiagnose.")
+        if any(len(value) > MAXIMUM_KOSIT_CONSOLE_BYTES for value in (stdout, stderr)):
+            raise ValueError("KoSIT-Konsolenausgabe überschreitet das Transportbudget.")
+        if report_payload is not None:
+            if len(report_payload) > MAXIMUM_KOSIT_REPORT_BYTES:
+                raise ValueError("KoSIT-Bericht überschreitet das Transportbudget.")
+            root = self._parse_xml_root(report_payload)
+            if root is None or local_name(root).lower() not in {"report", "validationreport"}:
+                report_payload = None
+        completed = subprocess.CompletedProcess([], returncode, stdout, stderr)
+        report_source: str | None = "file" if report_payload is not None else None
+        if report_payload is None:
+            report_payload = self._extract_xml_payload(completed.stdout)
+            report_source = "stdout" if report_payload is not None else None
+        if report_payload is None:
+            report_payload = self._extract_format_error_payload(completed.stderr)
+            report_source = "stderr-format-error" if report_payload is not None else None
+        if report_payload is None:
+            report_payload = self._extract_xml_payload(completed.stderr)
+            report_source = "stderr" if report_payload is not None else None
 
-            # A Java/configuration failure without a valid report says nothing
-            # about the invoice and must never be shown as a rejection.
-            if not valid_report:
-                diagnostic = technical_output or (
-                    f"Der Prozess endete mit Rückgabecode {completed.returncode}, ohne einen auswertbaren "
-                    "KoSIT-XML-Bericht zu liefern."
-                )
-                if self._looks_like_startup_failure(diagnostic):
-                    summary = (
-                        "KoSIT-Prüfung wurde wegen einer technischen Start- oder "
-                        "JAR-Konfigurationsstörung nicht ausgeführt."
-                    )
-                else:
-                    summary = (
-                        "KoSIT-Prüfung lieferte keinen auswertbaren XML-Prüfbericht und wurde daher "
-                        "nicht als Rechnungsprüfung gewertet."
-                    )
-                return self._not_executed(
-                    state,
-                    summary=summary,
-                    message=diagnostic,
-                    finding_id="KOSIT-EXEC",
-                    exit_code=completed.returncode,
-                    technical_output=technical_output or None,
-                )
+        stdout_text = completed.stdout.decode("utf-8", errors="replace").strip()
+        stderr_text = completed.stderr.decode("utf-8", errors="replace").strip()
+        findings, report_decision, assessment, valid_report = self._parse_report(report_payload)
+        technical_output = "\n".join(
+            part for part in (stderr_text, stdout_text if not valid_report else "") if part
+        ).strip()
+        if console_error and not valid_report:
+            technical_output = "\n".join(
+                part
+                for part in ("Die KoSIT-Konsolenausgabe konnte nicht vollständig gelesen werden.", technical_output)
+                if part
+            )
+        if console_overflow and not valid_report:
+            overflow_notice = (
+                f"Die KoSIT-Konsolenausgabe überschritt das Bytebudget von "
+                f"{MAXIMUM_KOSIT_CONSOLE_BYTES} Bytes und wurde gekürzt."
+            )
+            technical_output = "\n".join(part for part in (overflow_notice, technical_output) if part)
 
-            if console_overflow:
-                findings.append(
-                    {
-                        "id": "KOSIT-OUTPUT-TRUNCATED",
-                        "severity": "warning",
-                        "title": "KoSIT-Konsolenausgabe wurde begrenzt",
-                        "message": (
-                            "Die KoSIT-Konsolenausgabe überschritt das feste Bytebudget und wurde gekürzt. "
-                            "Die ausdrückliche Entscheidung im vollständig gelesenen VARL-Bericht bleibt maßgeblich."
-                        ),
-                    }
+        # A Java/configuration failure without a valid report says nothing
+        # about the invoice and must never be shown as a rejection.
+        if not valid_report:
+            diagnostic = technical_output or (
+                f"Der Prozess endete mit Rückgabecode {completed.returncode}, ohne einen auswertbaren "
+                "KoSIT-XML-Bericht zu liefern."
+            )
+            if self._looks_like_startup_failure(diagnostic):
+                summary = (
+                    "KoSIT-Prüfung wurde wegen einer technischen Start- oder "
+                    "JAR-Konfigurationsstörung nicht ausgeführt."
                 )
+            else:
+                summary = (
+                    "KoSIT-Prüfung lieferte keinen auswertbaren XML-Prüfbericht und wurde daher "
+                    "nicht als Rechnungsprüfung gewertet."
+                )
+            return self._not_executed(
+                state,
+                summary=summary,
+                message=diagnostic,
+                finding_id="KOSIT-EXEC",
+                exit_code=completed.returncode,
+                technical_output=technical_output or None,
+            )
+
+        if console_overflow:
+            findings.append(
+                {
+                    "id": "KOSIT-OUTPUT-TRUNCATED",
+                    "severity": "warning",
+                    "title": "KoSIT-Konsolenausgabe wurde begrenzt",
+                    "message": (
+                        "Die KoSIT-Konsolenausgabe überschritt das feste Bytebudget und wurde gekürzt. "
+                        "Die ausdrückliche Entscheidung im vollständig gelesenen VARL-Bericht bleibt maßgeblich."
+                    ),
+                }
+            )
+
+        if console_error:
+            findings.append(
+                {
+                    "id": "KOSIT-CONSOLE-INCOMPLETE",
+                    "severity": "warning",
+                    "title": "KoSIT-Konsolenausgabe konnte nicht vollständig gelesen werden",
+                    "message": (
+                        "Beim Lesen der Java-Konsolenausgabe trat ein technischer Fehler auf. "
+                        "Die ausdrückliche Entscheidung im vollständig gelesenen VARL-Bericht bleibt maßgeblich."
+                    ),
+                }
+            )
 
         # The explicit assessment in the VARL XML report is authoritative. The
         # process return code remains a fallback for custom/older reports.
@@ -979,7 +1033,7 @@ class KositValidator:
                 }
             )
 
-        clean_technical_output = stderr or None
+        clean_technical_output = stderr_text or None
         if (
             clean_technical_output
             and "[Format error!]" in clean_technical_output

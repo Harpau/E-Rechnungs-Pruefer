@@ -399,6 +399,7 @@ if ([string]::IsNullOrWhiteSpace($CurrentUserSid)) {
 $PackageTestMutexName = "Global\E-Rechnungs-Pruefer-Package-Test-$CurrentUserSid"
 $PackageTestMutex = [System.Threading.Mutex]::new($false, $PackageTestMutexName)
 $PackageTestMutexAcquired = $false
+$NativeProcessingProbeFailed = $false
 $InstallationStarted = $false
 $UninstallCompleted = $false
 $process = $null
@@ -537,6 +538,48 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     $ApiToken = (Get-Content $ApiTokenFile -Raw).Trim()
     if ($ApiToken.Length -lt 32) {
         throw "Das persistente API-Zugriffstoken ist ungültig."
+    }
+
+    if ($env:GITHUB_ACTIONS -eq "true") {
+        . (Join-Path $PSScriptRoot "test_processing_package.ps1")
+        $NativeProcessingProbeFailed = $true
+        $StartProcessingBackend = {
+            try {
+                $env:EINVOICE_DESKTOP_NO_DIALOG = "1"
+                $env:PORT = "18080"
+                $NextProcess = Start-Process $Executable -ArgumentList "--background" -PassThru
+            } finally {
+                Restore-ProcessEnvironment -HadNoDialog $HadNoDialog -NoDialogValue $OriginalNoDialog `
+                    -HadPort $HadPort -PortValue $OriginalPort
+            }
+            $ReadyDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+                Start-Sleep -Milliseconds 100
+                $ReadyHealth = $null
+                try { $ReadyHealth = Invoke-RestMethod "http://127.0.0.1:18080/api/health" -TimeoutSec 1 } catch {}
+            } until (($null -ne $ReadyHealth -and $ReadyHealth.status -eq "ok") -or $NextProcess.HasExited -or [DateTime]::UtcNow -ge $ReadyDeadline)
+            if ($NextProcess.HasExited -or $null -eq $ReadyHealth -or $ReadyHealth.status -ne "ok") {
+                throw "Der native Desktop-Neustart wurde nicht betriebsbereit; keine Wiederholung."
+            }
+            return $NextProcess
+        }
+        $StopProcessingBackend = {
+            param($BoundProcess, [scriptblock]$AssertStopAllowed)
+            $BoundProcess.Refresh()
+            if ($BoundProcess.HasExited) { throw "Gebundener Desktop endete vor dem Stoppsignal." }
+            $StopEvent = [Threading.EventWaitHandle]::OpenExisting("Local\E-Rechnungs-Pruefer-Desktop-Shutdown")
+            try {
+                & $AssertStopAllowed
+                [void]$StopEvent.Set()
+            } finally { $StopEvent.Dispose() }
+        }
+        $process = Invoke-BoundProcessingPackageTests -Mode desktop -ParentProcess $process `
+            -Executable $Executable `
+            -ExpectedExecutable (Join-Path $ProjectRoot "build\windows\bundle\E-Rechnungs-Pruefer\E-Rechnungs-Pruefer.exe") `
+            -Port 18080 -TokenFile $ApiTokenFile -OwnerSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) `
+            -StartBackend $StartProcessingBackend -StopBackend $StopProcessingBackend
+        $runtime = Get-Content $RuntimeFile -Raw | ConvertFrom-Json
+        $NativeProcessingProbeFailed = $false
     }
 
     $Bootstrap = "http://127.0.0.1:$($runtime.port)/desktop/bootstrap?token=$($runtime.token)"
@@ -773,6 +816,7 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
         -HadPort $HadPort `
         -PortValue $OriginalPort
 
+    if (-not $NativeProcessingProbeFailed) {
     $OwnedProcessStopped = $true
     try {
         Stop-OwnedProcess -OwnedProcess $process
@@ -806,6 +850,9 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
         }
     } catch {
         Write-Warning "Der test-eigene Autostart-Eintrag konnte nicht sicher geprüft oder bereinigt werden: $_"
+    }
+    } else {
+        Write-Warning "Native Paketprobe fehlgeschlagen: Produktprozesse, Installation und Autostart bleiben zur Klassifikation erhalten."
     }
     try {
         if ($PackageTestMutexAcquired) {

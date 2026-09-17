@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import re
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
@@ -14,7 +10,6 @@ import pytest
 from pypdf import PdfReader
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, Spacer, Table
-from starlette.datastructures import UploadFile
 
 import app.pdf_report as pdf_report_module
 from app.pdf_report import render_pdf_report
@@ -927,126 +922,6 @@ def test_pdf_page_guard_returns_valid_compact_schema_two_replacement(monkeypatch
     assert "Kompakter Ersatz-Prüfbericht" in text
     assert "Sicherheitsgrenze von maximal 1 Seite" in text
     assert "Ausstehender Betrag (BT-115)" in text
-
-
-def test_pdf_endpoint_delegates_schema_two_analysis_and_renderer_to_threadpool(monkeypatch):
-    import app.main as main_module
-
-    delegated: list[object] = []
-    analysis = _schema2_analysis()
-
-    async def fake_run_in_threadpool(function, *args, **kwargs):
-        delegated.append(function)
-        return analysis if function is main_module._analyze_bytes_limited else b"%PDF-test\n%%EOF"
-
-    monkeypatch.setattr(main_module, "run_in_threadpool", fake_run_in_threadpool)
-
-    response = asyncio.run(
-        main_module.pdf_report(
-            file=UploadFile(BytesIO(b"<xml/>"), filename="rechnung.xml"),
-            official=False,
-            scope="readable",
-        )
-    )
-
-    assert bytes(response.body) == b"%PDF-test\n%%EOF"
-    assert delegated == [
-        main_module._analyze_bytes_limited,
-        main_module._render_pdf_report_limited,
-    ]
-
-
-def test_limited_analysis_allows_only_two_concurrent_jobs(monkeypatch):
-    import app.main as main_module
-
-    active = 0
-    maximum_active = 0
-    lock = threading.Lock()
-    both_started = threading.Event()
-    release = threading.Event()
-
-    def fake_analyze(*_args, **_kwargs):
-        nonlocal active, maximum_active
-        with lock:
-            active += 1
-            maximum_active = max(maximum_active, active)
-            if active == 2:
-                both_started.set()
-        assert release.wait(timeout=1)
-        with lock:
-            active -= 1
-        return {"schema_version": 2}
-
-    monkeypatch.setattr(main_module, "analyze_bytes", fake_analyze)
-    monkeypatch.setattr(main_module, "_analysis_slots", threading.BoundedSemaphore(2))
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        active_futures = [
-            executor.submit(
-                main_module._analyze_bytes_limited,
-                b"<xml/>",
-                "rechnung.xml",
-                "application/xml",
-                run_official_validation=False,
-            )
-            for _ in range(2)
-        ]
-        assert both_started.wait(timeout=1)
-        overflow_futures = [
-            executor.submit(
-                main_module._analyze_bytes_limited,
-                b"<xml/>",
-                "rechnung.xml",
-                "application/xml",
-                run_official_validation=False,
-            )
-            for _ in range(3)
-        ]
-        for future in overflow_futures:
-            with pytest.raises(main_module._AnalysisCapacityError):
-                future.result(timeout=1)
-        release.set()
-        results = [future.result(timeout=1) for future in active_futures]
-
-    assert results == [{"schema_version": 2}] * 2
-    assert maximum_active == 2
-
-
-def test_pdf_limited_renderer_allows_only_two_concurrent_jobs(monkeypatch):
-    import app.main as main_module
-    from app.report_presentation import build_report_presentation
-
-    active = 0
-    maximum_active = 0
-    lock = threading.Lock()
-
-    def fake_render(*_args, **_kwargs):
-        nonlocal active, maximum_active
-        with lock:
-            active += 1
-            maximum_active = max(maximum_active, active)
-        time.sleep(0.02)
-        with lock:
-            active -= 1
-        return b"%PDF-test\n%%EOF"
-
-    monkeypatch.setattr(main_module, "render_pdf_report", fake_render)
-    monkeypatch.setattr(main_module, "_pdf_render_slots", threading.BoundedSemaphore(2))
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [
-            executor.submit(
-                main_module._render_pdf_report_limited,
-                _schema2_analysis(),
-                generated_at="22.07.2026 10:00:00 CEST",
-                version="test",
-                scope="readable",
-                presentation=build_report_presentation(_schema2_analysis()),
-            )
-            for _ in range(5)
-        ]
-        payloads = [future.result() for future in futures]
-
-    assert payloads == [b"%PDF-test\n%%EOF"] * 5
-    assert maximum_active == 2
 
 
 def test_pdf_font_assets_are_pinned_and_licensed():

@@ -3,13 +3,20 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-import app.main as main_module
 from app.main import app
 
 TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "app" / "templates" / "report.html"
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _client_lifespan():
+    # Real startup/stop per test; never inherit another client's closed admission.
+    with client:
+        yield
 
 
 def _report(cii_path: Path, *, scope: str | None = None) -> str:
@@ -75,16 +82,30 @@ def test_readable_html_report_omits_every_technical_appendix(cii_path: Path) -> 
 
 
 def test_complete_html_report_adds_every_technical_appendix(cii_path: Path, monkeypatch) -> None:
-    original_analyze = main_module._analyze_bytes_limited
+    from app.configuration import Settings
+    from app.processing import operations
+
+    original_analyze = operations.analyze_bytes
 
     def analyze_with_technical_output(*args, **kwargs):
         analysis = original_analyze(*args, **kwargs)
         analysis["assessment"]["official"]["technical_output"] = "SYNTHETISCHE-HTML-TECHNIKAUSGABE"
         return analysis
 
-    monkeypatch.setattr(main_module, "_analyze_bytes_limited", analyze_with_technical_output)
-    readable_text = _visible_text(_report(cii_path))
-    html = _report(cii_path, scope="complete")
+    monkeypatch.setattr(operations, "analyze_bytes", analyze_with_technical_output)
+
+    def rendered(scope):
+        return operations.execute_operation(
+            "report_html",
+            cii_path.read_bytes(),
+            cii_path.name,
+            app_settings=Settings(),
+            official=False,
+            scope=scope,
+        ).body.decode("utf-8")
+
+    readable_text = _visible_text(rendered("readable"))
+    html = rendered("complete")
     text = _visible_text(html)
 
     assert "SYNTHETISCHE-HTML-TECHNIKAUSGABE" not in readable_text

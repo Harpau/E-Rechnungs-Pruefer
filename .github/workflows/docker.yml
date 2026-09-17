@@ -170,6 +170,56 @@ jobs:
             --output /tmp/kosit-smoke.json || status=$?
           docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/kosit-smoke.json').read_text())" > .cache/docker-evidence/kosit-smoke.json
           exit "$status"
+      - name: Complete bounded native processing catalog in the exact final image
+        if: always() && steps.runtime.outcome == 'success'
+        timeout-minutes: 7
+        shell: bash
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          # Six fixed cases have independent 15/60-second outer deadlines;
+          # the step also has a fixed outer ceiling. Raw synthetic outputs use
+          # the existing 256-MiB tmpfs (normally less than 32 MiB in total).
+          docker exec "$container_id" python -c "from pathlib import Path; Path('/tmp/processing-smoke-evidence').mkdir(mode=0o700)"
+          status=0
+          docker exec "$container_id" python scripts/processing_smoke.py \
+            --case small --case xml_25mib --case cii_large --case ubl_large --case hybrid_pdf --case parallel \
+            --output /tmp/processing-smoke-evidence/catalog.json \
+            > .cache/docker-evidence/processing-smoke.stdout.txt \
+            2> .cache/docker-evidence/processing-smoke.stderr.txt || status=$?
+          # Docker's archive API cannot read tmpfs. Preserve its complete raw
+          # tree as a stdlib stream, even after a failed case, without unpacking.
+          docker exec "$container_id" python -c '
+          import sys, tarfile
+          with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+              archive.add("/tmp/processing-smoke-evidence", arcname="processing-smoke-evidence")
+          ' > .cache/docker-evidence/processing-smoke-raw.tar \
+            2> .cache/docker-evidence/processing-smoke-archive.stderr.txt || status=1
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/processing-smoke-evidence/catalog.json').read_text())" \
+            > .cache/docker-evidence/processing-smoke.json \
+            2> .cache/docker-evidence/processing-smoke-json.stderr.txt || status=1
+          exit "$status"
+      - name: Active processing cancellation and role-death catalog in the exact final image
+        if: always() && steps.runtime.outcome == 'success'
+        timeout-minutes: 7
+        shell: bash
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          docker exec "$container_id" python -c "from pathlib import Path; Path('/tmp/processing-lifecycle-evidence').mkdir(mode=0o700)"
+          status=0
+          docker exec "$container_id" python scripts/processing_lifecycle_probe.py \
+            --output /tmp/processing-lifecycle-evidence/catalog.json \
+            > .cache/docker-evidence/processing-lifecycle.stdout.txt \
+            2> .cache/docker-evidence/processing-lifecycle.stderr.txt || status=$?
+          docker exec "$container_id" python -c '
+          import sys, tarfile
+          with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+              archive.add("/tmp/processing-lifecycle-evidence", arcname="processing-lifecycle-evidence")
+          ' > .cache/docker-evidence/processing-lifecycle-raw.tar \
+            2> .cache/docker-evidence/processing-lifecycle-archive.stderr.txt || status=1
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/processing-lifecycle-evidence/catalog.json').read_text())" \
+            > .cache/docker-evidence/processing-lifecycle.json \
+            2> .cache/docker-evidence/processing-lifecycle-json.stderr.txt || status=1
+          exit "$status"
       - name: Fetch hash-pinned vulnerability scanner
         id: scanner
         if: always() && steps.build.outcome == 'success'

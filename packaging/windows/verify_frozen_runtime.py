@@ -23,6 +23,34 @@ EXECUTABLE_NAMES = (
     "E-Rechnungs-Pruefer-Dienst.exe",
     "E-Rechnungs-Pruefer-Oeffnen.exe",
 )
+APPLICATION_MODULES = {
+    "app.main": "app/main.py",
+    "app.configuration": "app/configuration.py",
+    "app.http_upload": "app/http_upload.py",
+    "app.report_templates": "app/report_templates.py",
+    "app.server_runtime": "app/server_runtime.py",
+    "app.upload_ingress": "app/upload_ingress.py",
+    "app.processing": "app/processing/__init__.py",
+    **{
+        f"app.processing.{name}": f"app/processing/{name}.py"
+        for name in (
+            "bootstrap",
+            "budgets",
+            "kosit_runtime",
+            "manager",
+            "native",
+            "operations",
+            "posix",
+            "protocol",
+            "ready",
+            "result",
+            "supervisor",
+            "watchdog",
+            "windows",
+            "worker",
+        )
+    },
+}
 
 
 class FrozenRuntimeError(RuntimeError):
@@ -97,7 +125,7 @@ def code_digest(code: CodeType) -> str:
     return hashlib.sha256(_serialized(_code_fields(code)).encode("utf-8")).hexdigest()
 
 
-def read_frozen_code(path: Path) -> CodeType:
+def read_frozen_code(path: Path, module_name: str = "urllib.request") -> CodeType:
     try:
         archive = archive_reader(path)
         pyz_names = [name for name, entry in archive.toc.items() if entry[-1] == "z"]
@@ -108,16 +136,36 @@ def read_frozen_code(path: Path) -> CodeType:
         if raw[:8] != b"PYZ\0" + importlib.util.MAGIC_NUMBER:
             raise FrozenRuntimeError("PYZ-Pythonmagic stimmt nicht mit dem geprüften Interpreter überein.")
         pyz = archive.open_embedded_archive("PYZ.pyz")
-        if pyz.toc.get("urllib.request", (None,))[0] != 0:
-            raise FrozenRuntimeError("Das eingefrorene urllib.request-Modul fehlt oder hat den falschen Typ.")
-        code = pyz.extract("urllib.request")
+        expected_type = 1 if module_name == "app.processing" else 0
+        if pyz.toc.get(module_name, (None,))[0] != expected_type:
+            raise FrozenRuntimeError(f"Das eingefrorene Modul fehlt oder hat den falschen Typ: {module_name}")
+        code = pyz.extract(module_name)
         if not isinstance(code, CodeType):
-            raise FrozenRuntimeError("Das eingefrorene urllib.request enthält keinen Code.")
+            raise FrozenRuntimeError(f"Das eingefrorene Modul enthält keinen Code: {module_name}")
         return code
     except FrozenRuntimeError:
         raise
     except Exception as exc:
         raise FrozenRuntimeError(f"Eingefrorener Code kann nicht gelesen werden: {path.name}") from exc
+
+
+def verify_application_code(path: Path, *, source_root: Path | None = None) -> dict[str, Any]:
+    """Read-only app payload binding; never execute frozen processing code."""
+    root = source_root or Path(__file__).resolve().parents[2]
+    records = []
+    for name, relative in APPLICATION_MODULES.items():
+        source_path = root / relative
+        before = file_record(source_path)
+        source = source_path.read_bytes()
+        expected = compile(source, relative, "exec", dont_inherit=True, optimize=1)
+        expected_digest = code_digest(expected)
+        actual = read_frozen_code(path, name)
+        if code_digest(actual) != expected_digest:
+            raise FrozenRuntimeError(f"Eingefrorener Anwendungscode weicht von der Build-Source ab: {name}")
+        if hashlib.sha256(source).hexdigest() != before["sha256"] or file_record(source_path) != before:
+            raise FrozenRuntimeError(f"Anwendungs-Source wurde während der Prüfung verändert: {name}")
+        records.append({"name": name, "source_sha256": before["sha256"], "code_sha256": expected_digest})
+    return {"passed": True, "modules": records}
 
 
 def file_record(path: Path) -> dict[str, Any]:
@@ -174,9 +222,13 @@ def verify_binaries(paths: list[Path]) -> dict[str, Any]:
         behavior = helper.run_security_regressions(module)
         if behavior.get("passed") is not True:
             raise FrozenRuntimeError(f"Sicherheitsregression im eingefrorenen Code fehlgeschlagen: {path.name}")
+        application = verify_application_code(path) if path.name in EXECUTABLE_NAMES[:2] else None
         if file_record(path) != before:
             raise FrozenRuntimeError(f"Artefaktdatei wurde während der Codeprüfung verändert: {path.name}")
-        records.append({**before, "code_sha256": expected_digest, "behavior": behavior})
+        record = {**before, "code_sha256": expected_digest, "behavior": behavior}
+        if application is not None:
+            record["application"] = application
+        records.append(record)
     return {
         "schema_version": 1,
         "passed": True,

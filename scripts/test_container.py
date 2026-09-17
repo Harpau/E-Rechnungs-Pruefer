@@ -55,12 +55,16 @@ def request(
         return response.status, {key.lower(): value for key, value in response.headers.items()}, response.read()
 
 
-def multipart(xml: bytes, *, official: bool) -> tuple[str, bytes]:
+def multipart(xml: bytes, *, official: bool | None) -> tuple[str, bytes]:
     boundary = f"einvoice-smoke-{uuid4().hex}"
+    options = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="official"\r\n\r\n{str(official).lower()}\r\n'
+        if official is not None
+        else ""
+    )
     payload = (
         (
-            f'--{boundary}\r\nContent-Disposition: form-data; name="official"\r\n\r\n{str(official).lower()}\r\n'
-            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="synthetic-demo.xml"\r\n'
+            options + f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="synthetic-demo.xml"\r\n'
             "Content-Type: application/xml\r\n\r\n"
         ).encode()
         + xml
@@ -125,7 +129,8 @@ def run_smoke(base_url: str, *, expect_kosit: bool) -> dict[str, Any]:
             )
         else:
             _require(official["status"] == "not-requested", f"{syntax}: Unangeforderte KoSIT-Prüfung.")
-        status, headers, exported = request(f"{base_url}/api/xml", payload, content_type)
+        xml_type, xml_payload = multipart(xml, official=None)
+        status, headers, exported = request(f"{base_url}/api/xml", xml_payload, xml_type)
         _require(status == 200 and exported == xml, f"{syntax}: XML-Export ist nicht byteidentisch.")
         _require("application/xml" in headers.get("content-type", ""), f"{syntax}: Falscher XML-Medientyp.")
         pdf_type, pdf_payload = multipart(xml, official=False)

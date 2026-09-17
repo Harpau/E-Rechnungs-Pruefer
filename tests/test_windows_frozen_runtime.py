@@ -98,6 +98,7 @@ def verified_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "read_frozen_code",
         lambda path: compile(source.read_bytes(), str(path), "exec", dont_inherit=True, optimize=1),
     )
+    monkeypatch.setattr(frozen, "verify_application_code", lambda path: {"passed": True, "modules": []}, raising=False)
     return helper, paths, source, calls
 
 
@@ -111,6 +112,46 @@ def test_exact_three_frozen_artifacts_are_verified_and_bound(verified_source) ->
         assert record["name"] == path.name
         assert record["size"] == path.stat().st_size
         assert record["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert ("application" in record) is (path.name != frozen.EXECUTABLE_NAMES[2])
+
+
+@pytest.mark.parametrize("change", [None, "changed-code", "missing-module"])
+def test_frozen_processing_module_is_bound_to_exact_source_without_execution(tmp_path, monkeypatch, change):
+    source = tmp_path / "app/processing/worker.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("raise RuntimeError('must never execute app code')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        frozen, "APPLICATION_MODULES", {"app.processing.worker": "app/processing/worker.py"}, raising=False
+    )
+
+    def read(_path, module_name="urllib.request"):
+        assert module_name == "app.processing.worker"
+        if change == "missing-module":
+            raise frozen.FrozenRuntimeError("Modul fehlt")
+        raw = source.read_bytes() if change is None else b"raise RuntimeError('different')\n"
+        return compile(raw, "different-build/worker.py", "exec", dont_inherit=True, optimize=1)
+
+    monkeypatch.setattr(frozen, "read_frozen_code", read)
+    if change is None:
+        result = frozen.verify_application_code(tmp_path / "desktop.exe", source_root=tmp_path)
+        assert result["passed"] is True
+        assert result["modules"][0]["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    else:
+        with pytest.raises(frozen.FrozenRuntimeError):
+            frozen.verify_application_code(tmp_path / "desktop.exe", source_root=tmp_path)
+
+
+@pytest.mark.parametrize("changed", ["app.main", "app.report_templates", "app.server_runtime"])
+def test_unused_new_modules_cannot_hide_an_old_http_entry_rendering_or_stop_path(tmp_path, monkeypatch, changed):
+    def read(_path, module_name="urllib.request"):
+        source = (ROOT / frozen.APPLICATION_MODULES[module_name]).read_bytes()
+        if module_name == changed:
+            source = b"obsolete_code = True\n"
+        return compile(source, module_name, "exec", dont_inherit=True, optimize=1)
+
+    monkeypatch.setattr(frozen, "read_frozen_code", read)
+    with pytest.raises(frozen.FrozenRuntimeError, match="Anwendungscode"):
+        frozen.verify_application_code(tmp_path / "desktop.exe")
 
 
 def test_real_upstream_backport_code_runs_real_security_regressions(verified_source, monkeypatch) -> None:

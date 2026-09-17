@@ -31,6 +31,31 @@ MAX_MEMBERS = 20_000
 RUNTIME_REQUIRED = {
     "app/__init__.py",
     "app/main.py",
+    "app/configuration.py",
+    "app/http_upload.py",
+    "app/report_templates.py",
+    "app/server_runtime.py",
+    "app/upload_ingress.py",
+    "app/processing/__init__.py",
+    *(
+        f"app/processing/{name}.py"
+        for name in (
+            "bootstrap",
+            "budgets",
+            "kosit_runtime",
+            "manager",
+            "native",
+            "operations",
+            "posix",
+            "protocol",
+            "ready",
+            "result",
+            "supervisor",
+            "watchdog",
+            "windows",
+            "worker",
+        )
+    ),
     "app/presentation_contract.json",
     "app/templates/index.html",
     "app/templates/report.html",
@@ -80,6 +105,11 @@ SOURCE_REQUIRED = {
     "scripts/install_inno_setup.ps1",
     "scripts/build_windows.ps1",
     "scripts/build_release.py",
+    "scripts/processing_probe.py",
+    "scripts/processing_smoke.py",
+    "scripts/processing_lifecycle_probe.py",
+    "scripts/test_processing_package.py",
+    "scripts/test_processing_package.ps1",
     "scripts/check.sh",
     "scripts/check.ps1",
     "scripts/verify_version.py",
@@ -350,7 +380,7 @@ def check_artifacts(dist: Path, version: str) -> dict[str, Any]:
 
 
 SMOKE_CODE = r"""
-import hashlib, importlib.metadata, importlib.resources, json, pathlib, sys
+import collections, hashlib, importlib.metadata, importlib.resources, json, os, pathlib, sys
 version, source_root = sys.argv[1:]
 expected = json.load(sys.stdin)
 import app
@@ -368,6 +398,23 @@ for relative, digest in expected.items():
     assert hashlib.sha256(installed.read_bytes()).hexdigest() == digest, "Installed bytes differ from candidate wheel: " + relative
 from fastapi.testclient import TestClient
 from app.main import app as api
+from app.processing import manager as controller
+native_children = []
+real_spawn = controller.spawn_role
+def recorded_spawn(role, **kwargs):
+    child = real_spawn(role, **kwargs)
+    assert child.pid != os.getpid(), "Processing role ran in the HTTP parent"
+    record = {"role": role, "pid": child.pid, "reaped": False}
+    native_children.append(record)
+    real_wait = child.process.wait
+    def recorded_wait(*args, **options):
+        result = real_wait(*args, **options)
+        record["reaped"] = True
+        record["returncode"] = result
+        return result
+    child.process.wait = recorded_wait
+    return child
+controller.spawn_role = recorded_spawn
 syntax = []
 with TestClient(api) as client:
     health = client.get("/api/health")
@@ -390,7 +437,16 @@ with TestClient(api) as client:
         exported = client.post("/api/xml", files=request["files"])
         assert exported.status_code == 200 and exported.content == payload, "Original XML was changed"
         syntax.append(expected_syntax)
-print(json.dumps({"version": version, "syntax": syntax, "installed_app": str(loaded), "verified_app_files": len(expected)}))
+role_counts = dict(collections.Counter(record["role"] for record in native_children))
+expected_roles = {"supervisor": 8, "worker": 8}
+if sys.platform == "darwin":
+    expected_roles["watchdog"] = 8
+assert role_counts == expected_roles, "Every HTTP operation must start its actual native roles"
+assert all(record["reaped"] for record in native_children), "Native role exit was not confirmed"
+assert controller.manager.active_count == 0, "Processing lease was not released after response cleanup"
+print(json.dumps({"version": version, "syntax": syntax, "installed_app": str(loaded), "verified_app_files": len(expected),
+    "native_processing": {"jobs": 8, "role_counts": role_counts, "all_reaped": True, "leases_remaining": 0,
+                          "children": native_children}}))
 """
 
 
@@ -423,6 +479,16 @@ def wheel_smoke(python: str, wheel: Path, version: str) -> dict[str, Any]:
     receipt = json.loads(result.stdout)
     if receipt.get("version") != version or receipt.get("syntax") != ["CII", "UBL"]:
         raise ArtifactError("Wheel-Smoke lieferte keinen vollständigen Nachweis.")
+    proof = receipt.get("native_processing")
+    if (
+        not isinstance(proof, dict)
+        or proof.get("jobs") != 8
+        or proof.get("all_reaped") is not True
+        or proof.get("leases_remaining") != 0
+        or proof.get("role_counts")
+        not in ({"supervisor": 8, "worker": 8}, {"supervisor": 8, "worker": 8, "watchdog": 8})
+    ):
+        raise ArtifactError("Wheel-Smoke lieferte keinen vollständigen nativen Prozessnachweis.")
     return receipt
 
 

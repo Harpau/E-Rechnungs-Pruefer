@@ -4,6 +4,22 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Begrenzte HTTP-Verarbeitung für 2.0.3
+
+- Die vier Upload-Endpunkte prüfen Header und Authentifizierung vor der Bodyverarbeitung. Genau eine Datei,
+  höchstens 25 MiB und ein zusätzliches Multipart-Budget von 64 KiB sind zulässig; Übergröße endet früh mit
+  `413 upload_limit_error` statt der bisherigen späten 422-Antwort.
+- Zwei Auftragsplätze je Backendprozess umfassen jetzt auch Upload, XML-Export, Ergebnisversand und Cleanup.
+  Überlast wird ohne Warteschlange mit `503` und `Retry-After` abgewiesen. Upload, Verarbeitung und Antwortversand
+  erhalten eigene Fristen; Verbindungsabbrüche lösen die begrenzte Prozessbereinigung aus.
+- HTTP-Rechnungsanalyse, PDF-Extraktion und Berichtrendering laufen in frischen, begrenzten Prozessen. Der Backend-
+  Controller besitzt alle Rollenkinder und ihre Betriebssystembindungen bereits während des Starts. Nur vollständig
+  bestätigte Ergebnisse gelangen als Schema 2, HTML/PDF beziehungsweise byteidentisches XML in die Antwort.
+- pypdf-Dekoder verwenden das verbleibende Anhangsbudget; PDF-Strukturstreams und Seitenbaumknoten besitzen eigene
+  Grenzen. Technische Ressourcenabbrüche werden separat ausgewiesen und gelten nie als offizielle Rechnungsablehnung.
+- Für diese neue Prozessarchitektur sind native Plattform-, Frozen-/Installations- und Shutdownabnahmen erforderlich.
+  Diese Änderungen ersetzen keine Sicherheitsupdates und ändern das bestehende Dependency-/Container-Freigabegate nicht.
+
 ## 2.0.3 – 2026-09-16
 
 ### Sicherheitswartung und Abhängigkeiten

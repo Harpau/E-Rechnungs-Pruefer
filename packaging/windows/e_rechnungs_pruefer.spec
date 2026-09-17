@@ -36,7 +36,16 @@ hidden_imports = sorted(
     set(
         collect_submodules("pystray")
         + collect_submodules("uvicorn")
-        + ["PIL.Image", "PIL.ImageDraw"]
+        + [
+            "PIL.Image", "PIL.ImageDraw",
+            "app.processing.bootstrap",
+            "app.processing.worker",
+            "app.processing.supervisor",
+            "app.processing.operations",
+            "app.processing.native",
+            "app.processing.watchdog",
+            "app.processing.windows",
+        ]
     )
 )
 

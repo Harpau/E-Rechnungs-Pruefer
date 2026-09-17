@@ -55,6 +55,37 @@ erfordert. Reine Parser- und Renderingänderungen mit ausreichenden Regressionst
 Drei-Formate-Sichtprüfung aus. Dasselbe gilt für KoSIT-Annahme, -Ablehnung und technische Startfehler: Die
 automatisierten Fälle genügen, solange keine neue, nur visuell beurteilbare Darstellung betroffen ist.
 
+### Gate für Upload- und Workergrenzen
+
+Die neue HTTP-Prozessarchitektur benötigt eigene native Nachweise; erfolgreiche Tests einer vorherigen
+Thread-/Java-Integration oder eines anderen Betriebssystems dürfen nicht übernommen werden. Die folgenden
+Prüfungen sind vor ihrer Freigabe offen, bis aktuelle, artefakt- und kontextgebundene Evidence sie bestätigt:
+
+- Source/Wheel und finale Linux-Container je unterstützter Architektur: echte frische Rollenkinder, gesetzte
+  Speicher-/Zeitgrenzen vor Rechnungseingang, Schema 2, HTML/PDF, ursprüngliche XML-Bytes, beide Plätze und
+  Überlast ohne Warteschlange. 25-MiB-Export und begrenzte größere synthetische CII-/UBL-Beispiele kalibrieren
+  zulässige Arbeit; sie beweisen nicht die Verarbeitbarkeit beliebiger Dokumente bis zur Dateigrenze.
+- Gepackte Windows-EXEs sowie installierter Desktop und Dienst unter ihrer tatsächlichen Identität:
+  Rollenstart ohne Tray/SCM-Rekursion, Jobbindung bereits bei Erzeugung, Kaltstart, Service-SID-Tempzugriff,
+  offizielle CII-/UBL-Annahme und -Ablehnung sowie technische Java-/Timeoutfehler ohne erfundenes Rechnungsurteil.
+- Begrenzte synthetische Negativfälle für Timeout, Worker-/Supervisor-/Parentverlust, Startup-Abbruch,
+  Clientdisconnect, Sendetimeout und Shutdown. Alle bekannten Kinder müssen über gebundene Handles/PIDs und
+  Pipe-EOF beendet bestätigt sein; unklarer Zustand sperrt den Platz. Keine Host-DoS-Proben, keine fremden PIDs
+  oder unbegrenzten Lastgeneratoren. Jeder native Testhelfer besitzt einen eigenen äußeren Stop.
+- Reale HTTP-Verbindungen: 413/503/Authfehler vor `100 Continue`, Headergrenzen, Keep-alive nach abgewiesenen
+  Uploads, zwei blockierte Uploads bei weiterhin erreichbarem Healthcheck und Freigabe nach Disconnect.
+  Die Loopbacktests `tests/test_http_transport.py` benötigen eine Umgebung mit erlaubten lokalen Sockets;
+  ihre synthetischen Leases beweisen Transportverhalten, nicht native Workergrenzen.
+- Kontrollierter Stopp schließt vor dem Uvicorn-Drain die Annahme und beendet Aufträge einschließlich
+  Antwortversand und KoSIT-Dateizugriff. Standard-SCM-Wartegrenze: 60 + 15 = 75 Sekunden. Tempcleanup und
+  Wiederanlauf müssen sowohl beim Erfolg als auch bei den begrenzten Abbruchfällen nachgewiesen sein.
+
+PR-/CI-Teilabnahmen verwenden ausschließlich die tatsächlich gebundenen unsigned Artefakte und einen eigenen
+Controllerplan vor Produktmutationen. Signierte Main-/Client-/Reboot-Releaseabnahmen folgen erst nach der
+separaten Gate-/Mergeentscheidung; ein unsigned Server-Runner ersetzt keine signierte Client-Abnahme. Vorhandene
+versiegelte Evidence bleibt unverändert. Offene Dependency-/OS-Befunde und das Nullbefund-Gate bleiben von diesen
+Ressourcengrenzen unabhängig; es entstehen weder Ausnahme noch automatischer Merge-/Tag-/Publikationsschritt.
+
 ### Analyseschema-2-Gate
 
 Analyseschema 2 ist ein sofortiger Breaking Change am bestehenden Endpunkt. Vor einem Release müssen Server,

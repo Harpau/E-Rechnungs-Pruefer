@@ -1193,6 +1193,81 @@ if ($Rejected.schema_version -ne 2 -or
     throw "Realer KoSIT-Ablehnungsfall fehlgeschlagen."
 }
 
+if ($env:GITHUB_ACTIONS -eq "true") {
+    . (Join-Path $PSScriptRoot "test_processing_package.ps1")
+    $ProcessingService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+    $ProcessingParent = [Diagnostics.Process]::GetProcessById([int]$ProcessingService.ProcessId)
+    $ProcessingServiceSid = ([Security.Principal.NTAccount]"NT SERVICE\ERechnungsPrueferService").Translate(
+        [Security.Principal.SecurityIdentifier]
+    ).Value
+    $StartProcessingService = {
+        param($PreviousId, $PreviousCreated)
+        $StateDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        do {
+            $CurrentService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+            if ($CurrentService.State -in @("Running", "Stopped")) { break }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $StateDeadline)
+        if ($CurrentService.State -eq "Stopped" -and [int]$CurrentService.ProcessId -eq 0) {
+            # Send only this exact SCM start through our bounded command process.
+            # Recovery may already have started a new instance; that branch is
+            # rebound below and by the native PID/EXE/SID/port guard.
+            $StartCommand = Start-Process -FilePath (Join-Path $env:SystemRoot "System32\sc.exe") `
+                -ArgumentList @("start", $ServiceName) -NoNewWindow -PassThru
+            try {
+                if (-not $StartCommand.WaitForExit(10000)) {
+                    $StartCommand.Kill()
+                    [void]$StartCommand.WaitForExit(5000)
+                    throw "Der eigene SCM-Startbefehl überschritt die feste Frist; keine Wiederholung."
+                }
+                if ($StartCommand.ExitCode -ne 0) { throw "SCM-Start war nicht eindeutig erfolgreich; keine Wiederholung." }
+            } finally { $StartCommand.Dispose() }
+            $StateDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+                $CurrentService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+                if ($CurrentService.State -eq "Running") { break }
+                Start-Sleep -Milliseconds 100
+            } while ([DateTime]::UtcNow -lt $StateDeadline)
+        }
+        if ($CurrentService.State -ne "Running" -or [int]$CurrentService.ProcessId -le 0 -or
+            [int]$CurrentService.ProcessId -eq $PreviousId) {
+            throw "Kein eindeutig neuer SCM-Dienstprozess; Zustand bleibt erhalten."
+        }
+        $NextProcess = [Diagnostics.Process]::GetProcessById([int]$CurrentService.ProcessId)
+        $NextProcess.Refresh()
+        if ($NextProcess.HasExited -or $NextProcess.StartTime.ToUniversalTime().ToFileTimeUtc() -le $PreviousCreated -or
+            -not [string]::Equals($NextProcess.MainModule.FileName, $ServiceExe, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "SCM-Neustart hat eine abweichende native Prozessidentität."
+        }
+        $ReadyDeadline = [DateTime]::UtcNow.AddSeconds(30)
+        do {
+            Start-Sleep -Milliseconds 100
+            $ReadyHealth = $null
+            try { $ReadyHealth = Invoke-RestMethod "http://127.0.0.1:$Port/api/health" -TimeoutSec 1 } catch {}
+        } until (($null -ne $ReadyHealth -and $ReadyHealth.status -eq "ok") -or $NextProcess.HasExited -or [DateTime]::UtcNow -ge $ReadyDeadline)
+        if ($NextProcess.HasExited -or $null -eq $ReadyHealth -or $ReadyHealth.status -ne "ok") {
+            throw "Der native Dienst-Neustart wurde nicht betriebsbereit; keine Wiederholung."
+        }
+        return $NextProcess
+    }
+    $StopProcessingService = {
+        param($BoundProcess, [scriptblock]$AssertStopAllowed)
+        $CurrentService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+        $BoundProcess.Refresh()
+        if ($BoundProcess.HasExited -or [int]$CurrentService.ProcessId -ne $BoundProcess.Id) {
+            throw "SCM und gebundener Dienstprozess stimmen vor Stop nicht überein."
+        }
+        & $AssertStopAllowed
+        Stop-Service $ServiceName -NoWait
+    }
+    $ProcessingParent = Invoke-BoundProcessingPackageTests -Mode service -ParentProcess $ProcessingParent `
+        -Executable $ServiceExe `
+        -ExpectedExecutable (Join-Path $ProjectRoot "build\windows\bundle\E-Rechnungs-Pruefer-Dienst\E-Rechnungs-Pruefer-Dienst.exe") `
+        -Port $Port -TokenFile $TokenFile -OwnerSid "S-1-5-19" -ServiceSid $ProcessingServiceSid `
+        -StartBackend $StartProcessingService -StopBackend $StopProcessingService
+    $ProcessingParent.Dispose()
+}
+
 $TokenBeforeRestart = $Token
 Stop-Service $ServiceName
 Wait-ServiceState -Name $ServiceName -State "Stopped"

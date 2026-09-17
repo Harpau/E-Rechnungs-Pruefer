@@ -82,6 +82,7 @@ class LoopbackServer:
                 access_log=False,
                 log_config=None,
                 log_level="warning",
+                timeout_graceful_shutdown=0,
             )
             self.server = self.server_factory(config)
             self.thread = Thread(
@@ -111,8 +112,15 @@ class LoopbackServer:
         raise RuntimeError("Der lokale Webserver konnte nicht gestartet werden.")
 
     def request_stop(self) -> None:
-        if self.server is not None:
-            self.server.should_exit = True
+        # Close admission and cancel active trees before Uvicorn waits for
+        # request completion. Import lazily so internal roles never start HTTP.
+        try:
+            from .processing.manager import manager
+
+            manager.shutdown()
+        finally:
+            if self.server is not None:
+                self.server.should_exit = True
 
     def wait(self, timeout: float | None = None) -> bool:
         if self.thread is None:

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _client_lifespan():
+    # Real startup/stop per test; never inherit another client's closed admission.
+    with client:
+        yield
 
 
 def test_analyze_returns_only_closed_schema_two_contract(cii_path) -> None:

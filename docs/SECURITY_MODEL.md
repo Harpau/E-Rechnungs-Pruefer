@@ -38,13 +38,70 @@ Kennwortgeschützte PDFs werden abgelehnt. Verschlüsselte PDFs, die sich mit ei
 
 ### Ressourcenverbrauch
 
-Uploadgröße, XML-Strukturposten, technische Zeilenanzahl, technische Tabellenzeit und KoSIT-Laufzeit sind
-begrenzt. Der XML-Preflight greift vor dem vollständigen Baumaufbau; die technische Pfadbildung arbeitet linear,
-und Namespacezeilen teilen sich dasselbe Zeilenbudget. Bei Hybrid-PDFs gilt `MAX_UPLOAD_BYTES` sowohl für die
-ausgewählte Rechnungs-XML als auch für die Summe der dekodierten Anhänge; zusätzlich werden höchstens 100
-eingebettete Dateien verarbeitet. Das Dekompressionslimit von pypdf 6 bildet eine weitere Obergrenze. Da solche
-Prüfungen nicht jede Speicherallokation vor dem ersten Parsercallback verhindern können, sind für den
-Netzwerkbetrieb weiterhin Prozess-, Speicher- und Parallelitätslimits notwendig.
+Der HTTP-Verarbeitungspfad schützt `/api/analyze`, `/api/xml`, `/api/report` und `/api/report/pdf` gemeinsam.
+Begrenzte und eindeutige HTTP-Header werden vor der bisherigen Browser-/Bearer-Authentifizierung geprüft.
+Erst danach werden Requestrepräsentation und Konfiguration validiert und einer von zwei Auftragsplätzen
+reserviert. Eine abgewiesene Anfrage liest keinen Body und löst deshalb kein `100 Continue` aus. Es gibt keine
+automatische FastAPI-Multipart-Verarbeitung oder temporäre Upload-Spooldatei. Der Receivekanal hat jeweils genau
+einen Leser; nach vollständigem Body übernimmt dieser Controller die Disconnectüberwachung.
+
+| Grenze | Festgelegter Standard |
+|---|---|
+| Datei | 25 MiB; `MAX_UPLOAD_BYTES` darf nur auf eine positive kleinere Grenze gesetzt werden |
+| Gesamter Multipart-Body / Nicht-Dateianteil | Dateilimit + 64 KiB / höchstens 64 KiB |
+| Dateiparts | genau eine Datei; nur die zur Route gehörenden optionalen Felder, keine Duplikate |
+| HTTP-Header nach ASGI-Übergabe | 64 Header, zusammen 16 KiB, Einzelwert 8 KiB; Content-Type 1 KiB |
+| Partheader / Dateiname / Feldwert / Parserfeed | 4 KiB / 1.024 Byte / 64 Byte / 64 KiB |
+| Upload | 120 s insgesamt, höchstens 15 s bis zum nächsten Receiveereignis |
+| Prozessstart / reine Pythonphase | 15 s / 30 s; KoSIT-Wartezeit zählt nicht zur Pythonphase |
+| Verarbeitung insgesamt | 60 s + angeforderte KoSIT-Frist; standardmäßig 120 s, höchstens 360 s |
+| KoSIT-Frist | 1..300 s, Standard 60 s |
+| Abbruch-Cleanup / Antwortversand | 5 s / 30 s |
+| JSON / HTML / PDF / XML-Ausgabe | 128 MiB / 128 MiB / 64 MiB / 25 MiB |
+| Java stdout / stderr / gesammelte VARL-Dateien | 2 MiB / 2 MiB / 2 MiB insgesamt bei höchstens 8 Kandidaten |
+
+Ein Platz bleibt von Uploadbeginn bis zum belegten Prozessende und vollständigem Antwortversand beziehungsweise
+Abbruch belegt. Volle Kapazität führt ohne Warteschlange zu `503 analysis_capacity_error`, auch beim XML-Export;
+der Healthcheck bleibt unabhängig. Nicht bestätigtes Cleanup sperrt den betroffenen Platz. Diese Grenzen gelten
+**je Backendprozess**: Mehrere Uvicorn-Worker oder mehrere Instanzen vervielfachen Kapazität und Speicherbedarf.
+Die Antwort wird vollständig innerhalb ihres Budgets gesammelt und der kleine Metadatenvertrag geprüft, bevor
+HTTP 200 beginnt. Nach begonnenem Versand kann ein Disconnect/Sendetimeout nur noch die Verbindung beenden.
+
+Der Backend-Controller startet und besitzt Python-Worker, IPC-Supervisor, optionalen Java-Launcher und auf macOS
+den unabhängigen Wächter direkt. Rechnungsbytes werden erst nach bestätigter Start-/Limitbindung freigegeben.
+Die einmal im Parent gewählten Profile werden als konkrete Werte an die Rollen übergeben. Linux erhält
+2.048 MiB für vertrauenswürdige Python-Imports, danach 768 MiB für den Worker und 512 MiB für den Supervisor.
+macOS erhält dafür 4.096 / 1.536 / 1.024 MiB. Java erhält 4.096 MiB bei 512 MiB Java-Heap, der macOS-Wächter
+separat 64 MiB. Auf POSIX sind diese Werte zusätzlicher virtueller Adressraum über einer geprüften Basis;
+insbesondere macOS besitzt große gemeinsame Adressabbildungen. Das ist weder eine RSS-Grenze noch eine Zusage
+über den physischen RAM-Verbrauch. Das macOS-Profil wurde anhand wiederholter vollständiger synthetischer
+25-MiB-Exporte und CII-PDF-Berichte kalibriert; die kleineren Profile verarbeiteten diese regulären Fälle
+nicht zuverlässig. Die gemessenen RSS-Spitzen dieser sechs Proben waren rund 142 MiB für den Worker und
+23 MiB für den Supervisor; sie sind keine Zusage für beliebige Dokumente.
+
+Windows verwendet dagegen Job-/Commitgrenzen: Worker 2.048 MiB beim Import und danach 768 MiB, Supervisor
+512 MiB und zusammen 4.096 MiB für Java-Launcher und JVM. Der äußere Auftragsjob ist insgesamt auf 6,5 GiB
+begrenzt. Diese Windowswerte benötigen ihre eigene native Kalibrierung; aus einem macOS-AS-Test folgt kein
+Windows-Commit- oder Linux-Nachweis. Java-Heap und gesamter JVM-Bedarf sind unterschiedliche Größen.
+Die äußere monotone Frist bleibt maßgeblich; ein Thread-Timeout allein beendet keine Verarbeitung.
+
+Der XML-Preflight greift weiterhin vor dem vollständigen Baumaufbau. Bei Hybrid-PDFs gilt das Dateibudget für die
+ausgewählte XML und die Summe aller dekodierten Anhänge, bei höchstens 100 Anhängen. Jede Dekoderstufe verwendet
+das verbleibende Gesamtbudget; bei Nullrest startet kein weiterer Dekoder. Strukturstreams verwenden unabhängig
+davon höchstens 25 MiB. Der Seitenbaum ist auf 10.000 Einträge (auch innere Knoten) und Tiefe 64 begrenzt. Diese
+Grenzen wählen keine Anhänge stillschweigend ab und führen keine neue fachliche Positionsgrenze ein. Sie ersetzen
+nicht das native Speicher-/Zeitlimit: Nicht jeder Dekoder verhindert jede Allokation bereits vor seinem Callback.
+
+Geltungsbereich ist der HTTP-Aufruf über den Manager. Direkte Bibliotheksaufrufe und CLI-Analysen erhalten damit
+nicht automatisch native Prozessisolation. Die neue Architektur ist keine vollständige Betriebssystem-Sandbox;
+Dateisystem-/Netzwerkrechte, JVM-/Containerquoten des Deployments und ein gesamtsystemweites Speicherbudget
+werden dadurch nicht zugesagt. Das gilt insbesondere für Java-Tempdaten trotz geschützter Pfade und begrenzter
+Ein-/Ausgaben. Die gesonderte Betriebshärtung ist nicht Teil dieser Änderung. Offene Dependency-/OS-Befunde bleiben
+unverändert freigaberelevant; Prozessgrenzen begründen keine CVE-Ausnahme.
+
+Die nativen Windows-/Linux-, installierten Dienst-/Desktop- und Frozen-Nachweise für diese neue Architektur
+müssen vor Freigabe nach [`RELEASE.md`](RELEASE.md) erbracht werden. Ein bestandener Unit- oder macOS-Quelltest
+ist kein Nachweis für diese anderen Auslieferungsformen.
 
 ### Cross-Site Scripting
 
@@ -52,7 +109,8 @@ Jinja2 escaped standardmäßig; die JavaScript-Oberfläche verwendet `escapeHtml
 
 ### Geschlossener Analysevertrag und Feldabdeckung
 
-`POST /api/analyze` validiert das Ergebnis gegen das geschlossene Analyseschema 2. Zusätzliche Parser- oder
+`POST /api/analyze` lässt das Ergebnis im begrenzten Worker gegen das geschlossene Analyseschema 2 validieren.
+Der HTTP-Parent deserialisiert dieses vollständige Modell nicht erneut. Zusätzliche Parser- oder
 Validatorfelder dürfen nicht versehentlich in die API gelangen. Die explizite Abbildung deckt Dokument,
 Capabilities, Parteien, Rollen, Zeiträume, Referenzen, Positionen, Nachlässe/Zuschläge, Steuern, Summen,
 Zahlungsanweisungen, Quelle, technische Darstellung und Laufzeit ab. Nicht verstandene XML-Daten werden nicht
@@ -236,13 +294,23 @@ Dieser Bootstrap wird gegen ein zeitlich begrenztes
 URL, Browser-Speicher, Cookie noch normalen Logs. Die Tabellen sind auf 32 ausstehende Bootstraplinks und 128
 aktive Browsersitzungen begrenzt; der jeweils älteste Eintrag wird bei voller Kapazität verdrängt.
 
-SCM-Kommandos steuern Start und Stopp. Vor dem ersten Java-Kindprozess tritt der Dienst einem
-Kill-on-close-Job-Objekt bei, das alle späteren Java-Prozesse bereits bei ihrer Erzeugung erben. Beim Stoppen werden
-Listener und IPC geordnet geschlossen und aktive KoSIT-Prozesse nur innerhalb einer dokumentierten Grenze beendet;
-ein harter Dienstabbruch schließt den Job und beendet den gesamten Kindprozessbaum. Konsolenausgabe und Prüfbericht
-werden bereits beim Lesen durch feste Bytebudgets begrenzt. Die temporäre Rechnungs-XML wird exklusiv angelegt und
-im `finally`-Pfad jeder kontrollierten Ausführung gelöscht. Sie verwendet unter Windows ausdrücklich kein
+SCM-Kommandos steuern Start und Stopp. Der Server schließt zuerst die HTTP-Auftragsannahme und signalisiert
+Upload-, Prozess- und Antwortaufträgen den Abbruch, bevor Uvicorn auf ihre Beendigung wartet. Die neuen
+Rollenkinder erhalten zusätzlich ihre auftragsbezogenen Jobbindungen bereits bei der Erzeugung.
+Der HTTP-Backendprozess hält die einzigen Handles der äußeren Auftragsjobs und der Rollenjobs. Jede Rolle wird
+bereits bei Erzeugung in diese Jobs aufgenommen; der JVM-Prozess gehört zum Job seines gebundenen Launchers.
+Beim Stoppen werden Listener und IPC geordnet geschlossen und alle Auftragsprozesse innerhalb der begrenzten
+Bereinigung beendet. Ein harter Dienstabbruch schließt die Parent-Handles der Kill-on-close-Jobs und beendet
+deren Prozesse. Der neue HTTP-Pfad setzt keinen nachträglichen Selbstbeitritt des SCM-Hosts zu einem Job voraus. Konsolenausgabe und Prüfbericht
+werden bereits beim Lesen durch feste Bytebudgets begrenzt. Die temporäre Rechnungs-XML wird exklusiv angelegt
+und nach bestätigtem Ende aller zugreifenden Prozesse gelöscht. Bei unbestätigtem Prozesscleanup bleiben der
+Auftragsplatz gesperrt und der gebundene Tempkontext zur sicheren Klärung erhalten; Dateien unter einer
+möglicherweise noch aktiven JVM werden nicht vorzeitig gelöscht. Sie verwendet unter Windows ausdrücklich kein
 Delete-on-close, weil der dafür erforderliche Delete-Share-Modus den Datei-Open des Java-Prozesses verhindern kann.
+Ein hartes Ende des Backendprozesses kann deshalb einen geschützten KoSIT-Tempbaum hinterlassen, obwohl die
+Prozessbindung seine Kinder beendet. Die Anwendung behauptet für diesen Fall keine nachträgliche Dateilöschung.
+Eine Bereinigung benötigt den belegten Prozessabschluss und eine Prüfung von Herkunft, Eigentümer, Rechten und
+Links des exakten Tempbaums; fremde oder nicht eindeutig zuordenbare Verzeichnisse werden nicht entfernt.
 Im Dienstmodus wird zuerst der private ProgramData-Elternpfad mit seiner administrativen, service-spezifischen
 DACL erneut verifiziert. Darunter wird der gesamte zufällige KoSIT-Tempbaum atomar mit einer geschützten,
 vererbbaren DACL für Service-SID, `SYSTEM` und Administratoren sowie einem begrenzenden `OWNER RIGHTS`-ACE
@@ -257,8 +325,8 @@ Normale Dienstlogs enthalten weder Tokens, Authorization-Header, Rechnungsbytes 
 ### Pfad- und Dateinamenmanipulation
 
 Upload- und Downloadnamen werden mit `Path(...).name` und einer Zeichen-Whitelist bereinigt. Temporäre
-KoSIT-Dateien bleiben unter einem neu angelegten, zufälligen Tempverzeichnis und werden nach der kontrollierten
-Ausführung entfernt; im Dienstmodus liegt dieser Baum unter dem verifizierten privaten ProgramData-Verzeichnis
+KoSIT-Dateien bleiben unter einem neu angelegten, zufälligen Tempverzeichnis und werden erst nach bestätigtem
+Ende aller zugreifenden Prozesse entfernt; im Dienstmodus liegt dieser Baum unter dem verifizierten privaten ProgramData-Verzeichnis
 und ist bereits ab seiner atomaren Erstellung durch die service-spezifische DACL geschützt.
 
 ### Falsche Validierungsentscheidung
@@ -274,6 +342,7 @@ Ein Prozessfehler ohne validen VARL-Bericht ist kein Rechnungsurteil. Eine vorha
 - netzwerk- oder mehrbenutzerfähige Benutzer-/Rollen-Authentifizierung, Autorisierung oder Mandantentrennung
 - Malware-Scanning beliebiger PDF-Inhalte
 - digitale Signaturprüfung
-- Hardware-Isolation des Java-Prozesses
+- vollständige Betriebssystem-Sandbox, JVM-/Container-Deploymentquoten oder Hardware-Isolation des Java-Prozesses
+- native Workergrenzen bei direkten Bibliotheks-/CLI-Aufrufen außerhalb des HTTP-Managers
 - Schutz gegen einen bereits kompromittierten lokalen Rechner
 - rechtssichere Langzeitarchivierung

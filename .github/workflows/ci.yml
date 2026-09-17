@@ -72,6 +72,10 @@ jobs:
         run: |
           python -m mypy
           python -m mypy scripts/dependency_lock.py scripts/dependency_audit.py scripts/acceptance_context.py scripts/test_container.py scripts/test_kosit_components.py scripts/check_source_artifacts.py scripts/docker_runtime_lock.py scripts/build_container_rootfs.py scripts/check_container_coverage.py scripts/test_container_runtime.py scripts/check_container_mounts.py scripts/cpython_security.py packaging/windows/verify_frozen_runtime.py
+          python -m mypy scripts/processing_probe.py
+          python -m mypy scripts/processing_smoke.py
+          python -m mypy scripts/processing_lifecycle_probe.py
+          python -m mypy scripts/test_processing_package.py
       - name: Tests with coverage
         run: python -m pytest --cov=app --cov-report=term-missing --cov-report=xml
       - name: Package metadata
@@ -127,6 +131,81 @@ jobs:
       - name: Run tests
         run: python -m pytest
 
+  macos-processing:
+    if: inputs.prepare_dependencies != true && inputs.container_only != true
+    name: Native macOS processing lifecycle
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: Prepare private CPython security backport
+        run: |
+          python scripts/cpython_security.py clone --destination "$RUNNER_TEMP/einvoice-cpython-security" --output .cache/macos-processing/cpython-security.json
+          echo "$RUNNER_TEMP/einvoice-cpython-security/bin" >> "$GITHUB_PATH"
+      - name: Create fresh synthetic test environment
+        run: |
+          python -m venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0
+          python -m pip install --no-build-isolation -e '.[dev]'
+          python -m pip check
+          python -m pip freeze --all > .cache/macos-processing/installed.txt
+      - name: Record native address space baseline before limits
+        run: |
+          python - <<'PY' > .cache/macos-processing/native-baseline.json
+          import json
+          import platform
+          import sys
+          from app.processing.posix import virtual_memory_bytes
+          print(json.dumps({
+              "system": platform.system(),
+              "machine": platform.machine(),
+              "python_version": platform.python_version(),
+              "python_build": platform.python_build(),
+              "python_executable": sys.executable,
+              "virtual_memory_bytes": virtual_memory_bytes(),
+          }, indent=2))
+          PY
+      - name: Native bounded synthetic lifecycle tests
+        run: >-
+          python -m pytest --junitxml=.cache/macos-processing/tests.xml
+          tests/test_upload_ingress.py tests/test_http_upload.py tests/test_http_transport.py
+          tests/test_processing_protocol.py tests/test_processing_ready.py
+          tests/test_processing_manager.py tests/test_processing_lifecycle.py
+          tests/test_processing_faults.py
+          tests/test_processing_shutdown.py tests/test_cli.py
+          tests/test_processing_watchdog.py tests/test_processing_probe.py
+          tests/test_processing_limits.py tests/test_processing_entrypoints.py
+      - name: Complete native macOS processing catalog
+        run: >-
+          python scripts/processing_smoke.py
+          --case small --case xml_25mib --case cii_large --case ubl_large --case hybrid_pdf --case parallel
+          --output .cache/macos-processing/catalog.json
+          > .cache/macos-processing/catalog.stdout
+          2> .cache/macos-processing/catalog.stderr
+      - name: Active native macOS cancellation and role-death catalog
+        run: >-
+          python scripts/processing_lifecycle_probe.py --output .cache/macos-processing/active-lifecycle.json
+          > .cache/macos-processing/active-lifecycle.stdout
+          2> .cache/macos-processing/active-lifecycle.stderr
+      - name: Preserve native macOS evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-processing-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+          path: .cache/macos-processing/
+
   windows-smoke:
     if: inputs.prepare_dependencies != true && inputs.container_only != true
     name: Windows package and smoke test
@@ -163,7 +242,8 @@ jobs:
           python -m pip check
       - name: API, PDF, KoSIT, settings and CLI integration tests
         run: >-
-          python -m pytest tests/test_api.py tests/test_pdf.py tests/test_kosit.py
+          python -m pytest --junitxml=.cache/dependency-evidence/integration-tests.xml
+          tests/test_api.py tests/test_pdf.py tests/test_kosit.py
           tests/test_settings.py tests/test_xml_utils.py tests/test_parser_namespaces.py tests/test_validation.py
           tests/test_analysis_schema_v2.py tests/test_assessment_contract.py tests/test_ui_contract.py
           tests/test_frontend_schema_v2.py tests/test_cli.py tests/test_desktop_security.py tests/test_windows_launcher.py
@@ -175,6 +255,21 @@ jobs:
           tests/test_windows_install_transaction.py
           tests/test_windows_install_recovery.py tests/test_windows_install_reconcile.py
           tests/test_windows_open_client_transaction.py tests/test_windows_native_adapters.py tests/test_acceptance_context.py tests/test_cpython_security.py tests/test_windows_frozen_runtime.py
+          tests/test_upload_ingress.py tests/test_http_upload.py tests/test_http_transport.py
+          tests/test_processing_protocol.py tests/test_processing_ready.py tests/test_processing_manager.py
+          tests/test_processing_lifecycle.py tests/test_processing_entrypoints.py tests/test_processing_windows.py
+          tests/test_processing_faults.py
+          tests/test_processing_limits.py tests/test_processing_kosit_runtime.py tests/test_processing_probe.py
+      - name: Complete native Windows source processing catalog
+        shell: pwsh
+        run: |
+          python scripts/processing_smoke.py --case small --case xml_25mib --case cii_large --case ubl_large --case hybrid_pdf --case parallel --output .cache/dependency-evidence/processing-catalog.json > .cache/dependency-evidence/processing-catalog.stdout 2> .cache/dependency-evidence/processing-catalog.stderr
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Active native Windows cancellation and role-death catalog
+        shell: pwsh
+        run: |
+          python scripts/processing_lifecycle_probe.py --output .cache/dependency-evidence/active-lifecycle.json > .cache/dependency-evidence/active-lifecycle.stdout 2> .cache/dependency-evidence/active-lifecycle.stderr
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Native Windows evidence hashing regression
         run: python -m pytest tests/test_release_evidence.py -k native_evidence_bytes_with_executable_extension_are_read_not_run
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -218,7 +313,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action desktop --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" --script scripts/test_windows_package.ps1 --evidence .cache/acceptance-logs/desktop.log -- pwsh -NoProfile -File scripts/test_windows_package.ps1 -ConfirmIsolatedEnvironment -Setup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe"
+          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action desktop --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" --artifact scripts/test_processing_package.py --artifact scripts/test_processing_package.ps1 --artifact scripts/processing_smoke.py --artifact "build/windows/bundle/E-Rechnungs-Pruefer/E-Rechnungs-Pruefer.exe" --script scripts/test_windows_package.ps1 --evidence .cache/acceptance-logs/desktop.log -- pwsh -NoProfile -File scripts/test_windows_package.ps1 -ConfirmIsolatedEnvironment -Setup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test mutual exclusion of desktop and service modes
         shell: pwsh
@@ -230,7 +325,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action service-recovery --artifact "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" --script scripts/test_windows_service_package.ps1 --evidence .cache/acceptance-logs/service-recovery.log -- pwsh -NoProfile -File scripts/test_windows_service_package.ps1 -ConfirmIsolatedEnvironment -Setup "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
+          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action service-recovery --artifact "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" --artifact scripts/test_processing_package.py --artifact scripts/test_processing_package.ps1 --artifact scripts/processing_smoke.py --artifact "build/windows/bundle/E-Rechnungs-Pruefer-Dienst/E-Rechnungs-Pruefer-Dienst.exe" --script scripts/test_windows_service_package.ps1 --evidence .cache/acceptance-logs/service-recovery.log -- pwsh -NoProfile -File scripts/test_windows_service_package.ps1 -ConfirmIsolatedEnvironment -Setup "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify package evidence and unchanged dependency inventory
         shell: pwsh

@@ -107,6 +107,34 @@ Consumer MUSS für eine maschinenlesbare Fundstelle `occurrence.json_pointer` un
 `xml_location.path` beziehungsweise `xml_location.line` verwenden. Fehlen diese Angaben, darf aus `BG-16` keine
 technische Position konstruiert werden.
 
+## Begrenzter Uploadvertrag
+
+Die vier Endpunkte `/api/analyze`, `/api/xml`, `/api/report` und `/api/report/pdf` erwarten genau einen
+Multipart-Dateipart `file`. `/api/analyze` erlaubt zusätzlich `official`; HTML/PDF erlauben `official` und
+`scope`. `/api/xml` akzeptiert keine zusätzlichen Felder. Fehlende beziehungsweise bisher als Default behandelte
+leere optionale Felder behalten `official=true` und `scope=readable`; doppelte Datei-/Feldparts und unbekannte
+Felder sind unzulässig. Metadaten und Dateinamen bestimmen niemals einen freien lokalen Dateipfad.
+
+Standardmäßig sind 25 MiB Datei und höchstens 64 KiB zusätzlicher Multipart-Body zulässig; kleinere positive
+`MAX_UPLOAD_BYTES`-Werte sind unterstützt, größere nicht. `Content-Length` ersetzt nicht das Zählen tatsächlich
+empfangener Bytes. Requestkompression und zusätzliche Transferkodierungen sind nicht unterstützt; normales
+HTTP-Chunked-Framing bleibt möglich. Die OpenAPI-Beschreibung enthält die routenspezifischen Formularfelder und
+Fehlerantworten. Headerprüfung und Browser-/Bearer-Authentifizierung liegen vor dem Bodylesen, Kapazitätsprüfung
+vor dem Upload. Zwei Plätze je Backendprozess umfassen auch XML-Export, Antwortpuffer und Versand; weitere
+Uploads erhalten sofort 503. Mehrere Serverprozesse vervielfachen diese Kapazität.
+
+Die Uploadfrist beträgt 120 Sekunden insgesamt und höchstens 15 Sekunden zwischen Receiveereignissen. Die
+Verarbeitungsfrist beträgt 60 Sekunden plus angeforderte KoSIT-Frist (Standard 60, zulässig 1..300 Sekunden);
+Upload und maximal 30 Sekunden Antwortversand kommen getrennt hinzu. Clients müssen ihre eigene kürzere Frist
+bewusst wählen: Ein Clientabbruch beendet die Verarbeitung und liefert kein gültiges Rechnungsergebnis.
+
+Schema 2 und die Erfolgsheader bleiben unverändert. Der Server beginnt HTTP 200 erst nach vollständig
+empfangenen, begrenzten Ergebnisbytes und bestätigtem Prozesscleanup. JSON/HTML sind auf jeweils 128 MiB,
+PDF auf 64 MiB und Original-XML auf 25 MiB begrenzt. Eine überschrittene Ausgabegrenze ist ein technischer
+422-Fehler; JSON und Original-XML werden nicht still abgeschnitten. Nach Beginn des Versands kann ein Abbruch nur
+noch die Verbindung beenden. Consumer müssen vollständige Antwortbytes empfangen und dürfen eine unvollständige
+200-Antwort nicht als Erfolg quittieren.
+
 ## Transportvertrag für HTML- und PDF-Berichte
 
 `POST /api/report` liefert den eigenständigen HTML-Bericht für Browser und bestehende Integrationen.
@@ -153,15 +181,34 @@ abgeschlossener Verarbeitung weiterhin einen erfolgreichen Berichts-Response erh
 | `2xx` mit Syntax `CII` oder `UBL` | erfolgreich erkannte E-Rechnung | Schema prüfen und die drei Bewertungsachsen getrennt routen |
 | `2xx` mit Syntax `UNKNOWN` | terminaler Kandidatenfehler | Kandidat ist keine unterstützte E-Rechnung; weitere Kandidaten prüfen |
 | `413` oder `422` | terminaler Kandidatenfehler | Kandidat unzulässig, strukturell oder in einem öffentlichen Feld zu groß, unlesbar, unsicher oder ohne Rechnungs-XML; weitere Kandidaten prüfen |
-| `400`, `404` oder `405` | Integrations- oder Konfigurationsfehler | nicht automatisch wiederholen; in technischen Fehlerpfad geben |
+| `400`, `404`, `405`, `415` oder `431` | Integrations-, Konfigurations- oder Protokollfehler | nicht automatisch wiederholen; in technischen Fehlerpfad geben |
 | `401` oder `403` | Authentifizierungs- oder Berechtigungsfehler | nicht automatisch wiederholen; Zugangskonfiguration korrigieren |
 | `408`, `429` oder `5xx` | vorübergehender Betriebsfehler | begrenzt wiederholen |
 | Verbindungsfehler oder Client-Timeout | vorübergehender Betriebsfehler | begrenzt wiederholen |
 | unerwartete Antwort, Schema ungleich `2`, fehlende Pflicht-Header oder nicht lesbarer Bericht | Protokollfehler | nicht als Rechnungsergebnis werten; technischen Fehlerpfad verwenden |
 
-Bei einem zukünftigen API-Fehlerformat SOLL `detail` eine deutsche, für Menschen geeignete Beschreibung und
-`type` einen stabilen maschinenlesbaren Fehlercode enthalten. Der Flow DARF fachliche Entscheidungen nicht durch
-Textsuche in `detail` treffen.
+Die Upload-/Verarbeitungsfehler enthalten `detail` und einen stabilen maschinenlesbaren `type`. `detail` ist ein
+begrenzter deutscher Text; bei ungültigen Formularfeldern enthält es eine FastAPI-artige Liste mit Feldpfad.
+Der Flow DARF fachliche Entscheidungen nicht durch Textsuche in `detail` treffen.
+
+| HTTP | `type` | Bedeutung |
+|---|---|---|
+| 400 | `multipart_input_error` | mehrdeutige, zusätzliche oder beschädigte Multipart-Struktur |
+| 408 | `upload_timeout_error` | zulässige Uploadfrist überschritten |
+| 413 | `upload_limit_error` | Datei-/Gesamtbody-/Metadatenbudget überschritten; bisherige späte 422-Übergröße entfällt |
+| 415 | `upload_media_type_error` | nicht unterstützte Requestrepräsentation |
+| 422 | `request_validation_error` | erforderliches Feld fehlt oder `official`/`scope` ist ungültig |
+| 422 | `invoice_input_error` | Rechnung strukturell/fachlich nicht verarbeitbar |
+| 422 | `processing_limit_error` | bestätigtes Verarbeitungs-/Ergebnisbudget überschritten; kein KoSIT-Reject |
+| 431 | `request_header_limit_error` | HTTP-Headerbudget nach ASGI-Übergabe überschritten |
+| 503 | `analysis_capacity_error` | beide Auftragsplätze belegt; begrenztes `Retry-After` beachten |
+| 503 | `processing_unavailable_error` | Schutzmechanismus, gültiges Profil oder Workerstart nicht verfügbar |
+| 504 | `processing_timeout_error` | reine Pythonphase oder gesamte Verarbeitungsfrist überschritten |
+| 500 | `processing_worker_error` | unerwarteter Workerabbruch oder Protokollfehler |
+
+HTTP-Server können ungültiges Framing schon vor ASGI abweisen; solche Antworten müssen nicht dieses JSON-Format
+haben. 413/422 werden nicht automatisch mit unveränderten Bytes wiederholt. Für 503 gilt die vorhandene begrenzte
+Wiederholungsstrategie, bei Kapazitätsfehlern mit `Retry-After`; es gibt kein unbegrenztes Browser-Retry.
 
 Der Browser-interne Header `X-Einvoice-UI-Revision` gehört nicht zum Automatisierungsvertrag. Ein korrekt
 Bearer-authentifizierter Node-RED-Aufruf sendet ihn nicht und bleibt damit von Browsercache- und
@@ -262,7 +309,8 @@ API und Flow MÜSSEN mindestens folgende anonymisierte Fälle automatisiert absi
 10. `processing` mit `complete`, `limited` und `incomplete` sowie die Invariante
     `internal=not-run`/`processing=complete`;
 11. fehlende, frühere und unbekannte Schemaversionen sowie fehlende oder unbekannte Pflicht-Header;
-12. API-Verbindungsfehler, Timeout, `401`/`403`, `422`, `429` und `5xx`;
+12. API-Verbindungsfehler, Timeout, `400`, `401`/`403`, `413`, `415`, `422`, `431`, `429` und `5xx`,
+    einschließlich früher Ablehnung vor `100 Continue` und unvollständigem Antwortversand;
 13. SMTP-Fehler nach erfolgreicher Prüfung;
 14. Wiederholung ohne unkontrollierten doppelten Bericht;
 15. Quittierung ausschließlich nach einem definierten Abschlusszustand;

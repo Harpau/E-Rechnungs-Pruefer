@@ -4,8 +4,6 @@ import sys
 from collections.abc import Sequence
 from ctypes import wintypes
 
-from app.windows_service import DIRECT_START_EXIT_CODE, main
-
 _DIRECT_START_MESSAGE = (
     "Der E-Rechnungs-Prüfer-Dienst wird von der Windows-Dienstverwaltung gestartet "
     "und kann nicht direkt ausgeführt werden.\n\n"
@@ -71,6 +69,14 @@ def _show_direct_start_notice() -> None:
 
 
 def _run(argv: Sequence[str]) -> int:
+    from app.processing.bootstrap import dispatch_if_requested
+
+    status = dispatch_if_requested(argv)
+    if status is not None:
+        return status
+
+    from app.windows_service import DIRECT_START_EXIT_CODE, main
+
     exit_code = main(argv)
     if exit_code == DIRECT_START_EXIT_CODE:
         _show_direct_start_notice()

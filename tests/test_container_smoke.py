@@ -55,6 +55,15 @@ def test_multipart_preserves_the_uploaded_xml_bytes() -> None:
     assert b'name="official"\r\n\r\nfalse\r\n' in payload
 
 
+def test_xml_export_multipart_has_only_the_file_field() -> None:
+    original = b"<Invoice>synthetic-export</Invoice>"
+    content_type, payload = smoke.multipart(original, official=None)
+    assert content_type.startswith("multipart/form-data; boundary=")
+    assert original in payload
+    assert b'name="official"' not in payload
+    assert payload.count(b"Content-Disposition:") == 1
+
+
 def test_container_workflow_reads_tmpfs_evidence_and_scans_compiled_java() -> None:
     workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/docker.yml").read_text()
     # Docker's archive API does not expose tmpfs contents; execute Python in the

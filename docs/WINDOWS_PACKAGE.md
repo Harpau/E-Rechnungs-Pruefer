@@ -33,6 +33,26 @@ Der Serverlebenszyklus aktiviert die jeweilige Konfiguration vor dem Import von 
 Sicherheitsmiddleware beim Import ausgewertet werden. Es gibt keinen HTTP-Shutdown-Endpunkt. Uploads,
 Prüfberichte und Original-XML werden auch in den installierten Betriebsarten nicht dauerhaft gespeichert.
 
+### Begrenzte HTTP-Aufträge im Paket
+
+Die gemeinsame HTTP-Verarbeitung nutzt zwei Plätze für Upload, Prozessstart, Rechnungsanalyse beziehungsweise
+XML-Export, Berichtsversand und Cleanup. Header-/Authentifizierungsfehler sowie Überlast werden vor dem ersten
+Bodylesen abgewiesen. Die Standarddateigrenze beträgt 25 MiB; kleinere positive Quellkonfigurationen sind zulässig.
+Die weiteren festen Budgets und HTTP-Fehler stehen in [`SECURITY_MODEL.md`](SECURITY_MODEL.md#ressourcenverbrauch)
+und [`AUTOMATION_INTEGRATION.md`](AUTOMATION_INTEGRATION.md#http--und-betriebsfehler).
+
+Die eingefrorene Desktop-/Dienst-EXE besitzt einen internen Rollenstart vor Tray-/SCM-/Webimporten. Nur die
+gebundenen privaten Protokollkanäle dürfen diesen Pfad benutzen. Der Backendprozess besitzt Worker, Supervisor
+und optionalen Java-Launcher direkt; auf Windows werden Rollen bereits bei der angehaltenen Prozesserzeugung
+an auftragsbezogene Job-Objekte gebunden. Worker starten weder eine zweite Oberfläche noch einen zweiten Dienst
+und erhalten keine Browser-/API-Tokens oder `.env`-Konfiguration. Die bestehende LocalService-/Service-SID- und
+ProgramData-Temp-ACL-Grenze bleibt für offizielle Prüfungen erforderlich.
+
+Für diese neue Architektur sind der gepackte Rollenstart, Kaltstart, die native Job-/Speicherbindung sowie Abbruch,
+Shutdown und KoSIT-Tempbereinigung unter der tatsächlich installierten Desktop- beziehungsweise Service-SID
+separat nachzuweisen. Ein Unit-Test oder ein erfolgreiches Quellprogramm unter macOS ersetzt diesen Nachweis
+nicht. Solange diese neuen Abnahmen fehlen, enthält diese Dokumentation keine Windows-Freigabe.
+
 ## Desktop-/Tray-Modus
 
 `app/windows_launcher.py` startet Uvicorn mit dem vorab reservierten Loopback-Socket und öffnet den Standardbrowser
@@ -125,18 +145,23 @@ Anfragen hart begrenzt.
 ### SCM-Start und -Stopp
 
 Der Dienst meldet `START_PENDING`, `RUNNING`, `STOP_PENDING` und `STOPPED` an den Service Control Manager. Beim
-Stoppen werden IPC und Server geordnet beendet. Aktive KoSIT-Unterprozesse erhalten eine begrenzte
-Beendigungsphase und werden nötigenfalls beendet; die gesamte SCM-Wartegrenze beträgt die konfigurierte
-KoSIT-Zeitgrenze plus 15 Sekunden. Die Dienstkonfiguration begrenzt die KoSIT-Zeitgrenze auf höchstens 300
-Sekunden. Vor dem ersten Java-Start ordnet sich der Dienst einem Windows-Job-Objekt mit
-`KILL_ON_JOB_CLOSE` zu; dadurch gehört bereits die Prozesserzeugung zum Job und ein harter Dienstabbruch beendet
-auch den vollständigen Java-Prozessbaum. stdout, stderr und der XML-Prüfbericht besitzen feste Bytebudgets.
+Stoppen schließt der Server zuerst die Auftragsannahme und signalisiert auch wartenden Uploads und laufenden
+Antworten den Abbruch, bevor Uvicorn seine Aufträge abwartet. IPC und Server werden anschließend geordnet
+beendet. Aktive Rollenkinder und KoSIT-Unterprozesse erhalten eine begrenzte Bereinigungsphase; fehlende
+Endebestätigungen geben keinen Auftragsplatz frei. Die gesamte SCM-Wartegrenze bleibt die konfigurierte
+KoSIT-Zeitgrenze plus 15 Sekunden, standardmäßig also 75 Sekunden. Die Dienstkonfiguration begrenzt die
+KoSIT-Zeitgrenze auf höchstens 300 Sekunden. Der HTTP-Backendprozess besitzt die äußeren Auftragsjobs und die
+Rollenjobs mit `KILL_ON_JOB_CLOSE`. Die Rollenerzeugung bindet beide Jobs atomisch; der JVM-Prozess bleibt im
+Job seines Launchers. Bei hartem Dienstabbruch schließen die nur im Parent gehaltenen Handles und beenden die
+gebundenen Prozesse. Dieser HTTP-Pfad benötigt keinen nachträglichen Selbstbeitritt des Diensthosts zu einem Job. stdout, stderr und der XML-Prüfbericht besitzen feste Bytebudgets.
 
 Die Dienst-EXE ist kein interaktiver Anwendungsstarter. Wird sie aus einer angemeldeten Windows-Sitzung direkt
 ausgeführt, endet sie kontrolliert und verweist auf `E-Rechnungs-Pruefer-Oeffnen.exe`. Beim SCM-Start in Session 0
 wird keine Meldung angezeigt.
 Die materialisierte Rechnungs-XML wird exklusiv neu angelegt, bleibt für den Java-Prozess lesbar und wird nach
-jeder regulären, fehlgeschlagenen oder abgebrochenen Prüfung im `finally`-Pfad entfernt. Windows-Delete-on-close
+bestätigtem Ende aller zugreifenden Prozesse entfernt. Bei unbestätigtem Cleanup bleiben der Auftragsplatz
+und der gebundene Tempkontext gesperrt beziehungsweise zur sicheren Klärung erhalten; unter möglicherweise
+aktiven Prozessen wird nicht bereinigt. Windows-Delete-on-close
 wird bewusst nicht verwendet, weil dessen Delete-Sharing den normalen Datei-Open des Java-Prozesses blockiert.
 Im Dienstmodus liegt der zufällige KoSIT-Tempbaum unter dem zuvor erneut verifizierten, privaten
 `%ProgramData%\E-Rechnungs-Pruefer\runtime`-Elternpfad und wird dort atomar mit einer geschützten, vererbbaren DACL

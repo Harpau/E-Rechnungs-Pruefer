@@ -181,6 +181,18 @@ Flow-Vorlage verlässt sich dabei bewusst nicht auf ein gleichnamiges, von aktue
 ausgewertetes Editor-Feld. HTTP-Weiterleitungen sind sowohl im Request-Knoten als auch pro Nachricht
 deaktiviert; der temporäre Steuerwert wird nach jedem Versuch entfernt.
 
+Diese bestehenden 90 Sekunden sind eine bewusste Clientgrenze und kürzer als die neue maximale HTTP-
+Verarbeitungsfrist von standardmäßig 120 Sekunden zuzüglich Upload und Versand. Die Vorlage wird dadurch nicht
+stillschweigend verlängert. Ein Clienttimeout bleibt ein technischer Betriebsfehler; der Prüfdienst bricht die
+Arbeit bei erkanntem Disconnect ab. Betreiber müssen die Clientfrist bei einer höheren KoSIT-Konfiguration
+bewusst mit ihrer bestehenden begrenzten Wiederholungsstrategie abstimmen.
+
+Die API akzeptiert genau eine Datei bis 25 MiB plus höchstens 64 KiB Multipart-Overhead und vergibt zwei Plätze
+je Backendprozess bereits vor dem Upload. 413/422 bleiben im Flow terminale Kandidatenfehler; 503 wird begrenzt
+wiederholt und berücksichtigt `Retry-After`. Zusätzliche 415-/431-Antworten gelangen in der unveränderten Vorlage
+als Protokollfehler ohne automatisches Retry in den technischen Fehlerpfad. Eine unvollständig empfangene Antwort
+oder ein reiner Worker-/Budgetfehler darf nicht als KoSIT-Ablehnung oder erfolgreicher Bericht quittiert werden.
+
 Am enthaltenen IMAP-Eingang müssen `Attachments` aktiviert und `Seen` auf „Only without flag“ belassen werden;
 die Vorlage setzt dafür `includeAttachments=true` und `seenSelection=exclude`. Fehlt die Attachment-Eigenschaft
 trotzdem vollständig, gilt dies als Konfigurationsfehler: Die Nachricht geht ohne Quittierung in den technischen

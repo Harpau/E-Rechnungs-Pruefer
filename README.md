@@ -141,6 +141,12 @@ python -m app --reload
 python -m app --reload
 ```
 
+Der Start über `python -m app` begrenzt auch den Abbruch laufender Verarbeitung bei Stop oder Reload.
+Wer Uvicorn direkt aufruft, muss dieselbe Einstellung angeben:
+`uvicorn app.main:app --timeout-graceful-shutdown 0`.
+Dadurch werden laufende Requests vor dem Anwendungsshutdown abgebrochen; der Prozessmanager
+wendet anschließend sein begrenztes Cleanupbudget an. Ein unbestätigter Prozessabbruch bleibt ein Fehler.
+
 Vollständige Qualitätsprüfung:
 
 ```sh

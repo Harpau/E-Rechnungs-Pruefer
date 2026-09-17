@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from decimal import Decimal
 from typing import Any
@@ -9,13 +10,13 @@ from lxml import etree
 
 from . import __version__
 from .analysis_builder import build_analysis_response
+from .configuration import Settings
 from .parsers.cii import parse_cii
 from .parsers.common import empty_party
 from .parsers.namespaces import CII_ROOT_NAMESPACE, UBL_ROOT_NAMESPACES
 from .parsers.ubl import parse_ubl
 from .profiles import OfficialValidationCapability, resolve_profile
-from .settings import Settings, settings
-from .source import ExtractedSource, extract_source
+from .source import ExtractedSource, PdfResourceLimits, extract_source
 from .validators.builtin import validate_builtin
 from .validators.kosit import KositValidator
 from .xml_utils import (
@@ -91,8 +92,15 @@ def analyze_bytes(
     media_type: str | None = None,
     *,
     run_official_validation: bool = True,
-    app_settings: Settings = settings,
+    app_settings: Settings | None = None,
+    official_validator: Callable[[bytes, str], dict[str, Any]] | None = None,
+    official_state: Mapping[str, Any] | None = None,
+    resource_limits: PdfResourceLimits | None = None,
 ) -> dict[str, Any]:
+    if app_settings is None:
+        from .settings import settings
+
+        app_settings = settings
     started = time.perf_counter()
     if len(data) > app_settings.max_upload_bytes:
         limit_mb = app_settings.max_upload_bytes / (1024 * 1024)
@@ -103,6 +111,7 @@ def analyze_bytes(
         filename,
         media_type,
         max_embedded_bytes=app_settings.max_upload_bytes,
+        resource_limits=resource_limits,
     )
     if len(source.xml_bytes) > app_settings.max_upload_bytes:
         raise InvoiceInputError("Die eingebettete XML-Datei überschreitet die zulässige Größenbegrenzung.")
@@ -161,9 +170,10 @@ def analyze_bytes(
         and app_settings.kosit_enabled
         and profile_capability is OfficialValidationCapability.BUNDLED
     ):
-        official = kosit.validate(source.xml_bytes, source.xml_filename)
+        validate = official_validator if official_validator is not None else kosit.validate
+        official = validate(source.xml_bytes, source.xml_filename)
     else:
-        state = kosit.configuration_state()
+        state = dict(official_state) if official_state is not None else kosit.configuration_state()
         if not run_official_validation:
             summary = "Offizielle KoSIT-Prüfung wurde für diesen Aufruf nicht ausgeführt."
         elif profile_capability is OfficialValidationCapability.NOT_BUNDLED:
