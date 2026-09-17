@@ -42,7 +42,7 @@ def main(arguments: list[str]) -> int:
         if sys.platform != "win32":
             return 70
         from app.processing import supervisor
-        from app.processing.native import child_environment, inherited_file
+        from app.processing.native import child_environment, inherited_file, python_executable
         from app.processing.protocol import read_control, write_control
 
         def launcher(incoming, outgoing, setup, stdout_handle, stderr_handle):
@@ -61,7 +61,7 @@ def main(arguments: list[str]) -> int:
                 # The fixed child inherits the actual outer/role Windows jobs
                 # atomically. Its six-second self-exit is only a test guard.
                 subprocess.Popen(
-                    [sys.executable, "-I", "-c", "import time; time.sleep(6)"],
+                    [python_executable(), "-I", "-c", "import time; time.sleep(6)"],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

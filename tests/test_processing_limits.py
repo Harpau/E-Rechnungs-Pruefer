@@ -1,10 +1,44 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 
+from app.processing import posix
 from app.processing.budgets import ProcessingBudgets
+
+
+def test_linux_namespace_init_can_own_worker(monkeypatch):
+    monkeypatch.setattr(posix.sys, "platform", "linux")
+    getppid = Mock(side_effect=[1, 1])
+    prctl = Mock(return_value=0)
+    monkeypatch.setattr(posix.os, "getppid", getppid)
+    monkeypatch.setattr(posix.ctypes, "CDLL", Mock(return_value=Mock(prctl=prctl)))
+    # Windows can run this platform-independent binding regression too.
+    monkeypatch.setattr(posix.signal, "SIGKILL", 9, raising=False)
+    posix.bind_parent(1)
+    prctl.assert_called_once_with(1, 9, 0, 0, 0)
+    assert getppid.call_count == 2
+
+
+@pytest.mark.parametrize("platform,parent", [("linux", 0), ("linux", -1), ("linux", True), ("darwin", 1)])
+def test_invalid_parent_identity_is_rejected_before_native_binding(monkeypatch, platform, parent):
+    monkeypatch.setattr(posix.sys, "platform", platform)
+    monkeypatch.setattr(posix.os, "getppid", lambda: parent)
+    monkeypatch.setattr(posix.ctypes, "CDLL", lambda *_a, **_k: pytest.fail("Invalid parent reached native binding"))
+    with pytest.raises(OSError):
+        posix.bind_parent(parent)
+
+
+@pytest.mark.parametrize("parents", [[1], [123, 1]])
+def test_linux_parent_loss_and_adoption_by_init_are_rejected(monkeypatch, parents):
+    monkeypatch.setattr(posix.sys, "platform", "linux")
+    monkeypatch.setattr(posix.os, "getppid", Mock(side_effect=parents))
+    monkeypatch.setattr(posix.ctypes, "CDLL", Mock(return_value=Mock(prctl=Mock(return_value=0))))
+    monkeypatch.setattr(posix.signal, "SIGKILL", 9, raising=False)
+    with pytest.raises(OSError):
+        posix.bind_parent(123)
 
 
 @pytest.mark.parametrize(

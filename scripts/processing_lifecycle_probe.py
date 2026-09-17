@@ -68,7 +68,7 @@ def directory_identity(path: Path) -> dict[str, Any]:
     information = path.lstat()
     if not stat.S_ISDIR(information.st_mode) or getattr(information, "st_file_attributes", 0) & 0x400:
         raise RuntimeError("temporary directory identity is not regular")
-    if os.name == "posix" and (information.st_uid != os.getuid() or information.st_mode & 0o077):
+    if sys.platform != "win32" and (information.st_uid != os.getuid() or information.st_mode & 0o077):
         raise RuntimeError("temporary directory permissions are not private")
     return {
         "path": str(path),
@@ -105,7 +105,7 @@ def cleanup_owned_temp(
                 stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
             ):
                 raise RuntimeError("temporary payload contains unsafe link or type")
-            if os.name == "posix" and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+            if sys.platform != "win32" and (info.st_uid != os.getuid() or info.st_mode & 0o077):
                 raise RuntimeError("temporary payload permissions changed")
             entries.append(
                 {
@@ -286,12 +286,13 @@ def java_role(directory: Path, arguments: list[str]) -> int:
         return 70
     from app.processing import kosit_runtime
     from app.processing.bootstrap import dispatch_if_requested
+    from app.processing.native import python_executable
 
     original = kosit_runtime.prepare_java_command
 
     def command(settings: Any, temp_directory: Path, budgets: Any) -> list[str]:
         original(settings, temp_directory, budgets)
-        return [sys.executable, "-I", str(SCRIPT), "--java-stub", str(directory), str(temp_directory)]
+        return [python_executable(), "-I", str(SCRIPT), "--java-stub", str(directory), str(temp_directory)]
 
     kosit_runtime.prepare_java_command = command
     result = dispatch_if_requested(arguments)
@@ -338,7 +339,7 @@ async def controller(case: str, directory: Path) -> dict[str, Any]:
     def command(role: str, arguments: Any) -> list[str]:
         if role == "java":
             return [
-                sys.executable,
+                native.python_executable(),
                 "-I",
                 str(SCRIPT),
                 "--java-role",
@@ -444,7 +445,7 @@ def wait_record(path: Path, process: subprocess.Popen[bytes], deadline: float) -
 
 
 def run_case(case: str, directory: Path) -> dict[str, Any]:
-    from app.processing.native import child_environment
+    from app.processing.native import child_environment, python_executable
 
     directory.mkdir(mode=0o700)
     binding: BoundExits | None = None
@@ -453,7 +454,7 @@ def run_case(case: str, directory: Path) -> dict[str, Any]:
     report: dict[str, Any] = {"case": case, "passed": False}
     with (directory / "stdout.txt").open("xb") as stdout, (directory / "stderr.txt").open("xb") as stderr:
         process = subprocess.Popen(
-            [sys.executable, "-I", str(SCRIPT), "--controller", case, str(directory)],
+            [python_executable(), "-I", str(SCRIPT), "--controller", case, str(directory)],
             stdin=subprocess.DEVNULL,
             stdout=stdout,
             stderr=stderr,

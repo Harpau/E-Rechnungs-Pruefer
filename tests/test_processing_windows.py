@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from dataclasses import replace
 
 import pytest
 
-from app.processing import windows
+from app.processing import native, windows
 
 
 class FakeAPI:
@@ -318,19 +319,32 @@ def test_invalid_limits_fail_before_creating_job(api, kwargs):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="real Windows creation-time job containment")
-def test_native_creation_time_membership_stdio_and_kill_on_close():
+def test_native_creation_time_membership_stdio_and_kill_on_close(tmp_path):
     code = "import ctypes; k=ctypes.WinDLL('kernel32',use_last_error=True); ok=ctypes.c_int(); k.IsProcessInJob(ctypes.c_void_p(-1),None,ctypes.byref(ok)); raise SystemExit(23 if ok.value else 24)"
     with windows.WindowsJob(512 * 1024**2, active_processes=2) as owner:
-        process = owner.spawn([sys.executable, "-I", "-c", code], dict(os.environ))
+        process = owner.spawn([native.python_executable(), "-I", "-c", code], native.child_environment())
         try:
             assert process.wait(10) == 23
         finally:
             process.close()
-        sleeping = owner.spawn([sys.executable, "-I", "-c", "import time; time.sleep(60)"], dict(os.environ))
-        owner.close()
+        ready_file = tmp_path / "synthetic-running-pid.txt"
+        sleeping_code = (
+            "import os,time; from pathlib import Path; "
+            f"Path({str(ready_file)!r}).write_text(str(os.getpid()),encoding='ascii'); time.sleep(10)"
+        )
+        launched = time.monotonic()
+        sleeping = owner.spawn([native.python_executable(), "-I", "-c", sleeping_code], native.child_environment())
         try:
-            assert sleeping.wait(10) != 0
+            assert _wait_control_file(ready_file, sleeping) == sleeping.pid
+            assert sleeping.poll() is None
+            owner.close()
+            # Kill-on-close promises termination, not a particular exit code.
+            # A zero exit value is valid when the held handle confirms exit.
+            sleeping.wait(5)
+            assert sleeping.returncode is not None
+            assert time.monotonic() - launched < 10, "natural sleeper exit is not kill-on-close evidence"
         finally:
+            owner.close()
             sleeping.close()
 
 
@@ -364,23 +378,29 @@ def test_native_nested_job_keeps_descendants_in_outer_kill_on_close(tmp_path):
     code = (
         "import sys,time; from pathlib import Path; "
         f"sys.path.insert(0,{source_root!r}); "
-        "from app.processing.windows import WindowsJob; "
+        "from app.processing.windows import WindowsJob; from app.processing import native; "
         "import os; inner=WindowsJob(256*1024**2,active_processes=1); "
-        "child=inner.spawn([sys.executable,'-I','-c','import time; time.sleep(60)'],dict(os.environ)); "
+        "child=inner.spawn([native.python_executable(),'-I','-c','import time; time.sleep(10)'],native.child_environment()); "
         f"Path({str(pid_file)!r}).write_text(str(child.pid),encoding='ascii'); "
-        "time.sleep(60)"
+        "time.sleep(10)"
     )
     with windows.WindowsJob(768 * 1024**2, active_processes=3) as owner:
-        process = owner.spawn([sys.executable, "-I", "-c", code], dict(os.environ))
+        launched = time.monotonic()
+        process = owner.spawn([native.python_executable(), "-I", "-c", code], native.child_environment())
         descendant_handle = None
         try:
             descendant = _wait_control_file(pid_file, process)
             api, descendant_handle = _native_open_process(descendant)
             assert descendant_handle and not api.wait(descendant_handle, 0)
             assert descendant in owner.process_ids() and owner.active_process_count() == 2
+            deadline = time.monotonic() + 5
             owner.close()
-            assert process.wait(10) != 0
-            assert api.wait(descendant_handle, 10000)
+            process.wait(max(0, deadline - time.monotonic()))
+            assert process.returncode is not None
+            assert api.wait(descendant_handle, max(0, int((deadline - time.monotonic()) * 1000)))
+            observed = time.monotonic()
+            assert observed <= deadline
+            assert observed - launched < 10, "natural helper exit is not nested-job termination evidence"
         finally:
             if descendant_handle:
                 api.close_handle(descendant_handle)
@@ -398,7 +418,7 @@ def test_native_parent_death_after_create_before_resume_leaves_no_unbound_child(
 import os, sys
 from pathlib import Path
 sys.path.insert(0, {source_root!r})
-from app.processing import windows
+from app.processing import native, windows
 original = windows._Win32.create_process
 def die_before_resume(self, **kwargs):
     result = original(self, **kwargs)
@@ -406,9 +426,15 @@ def die_before_resume(self, **kwargs):
     os._exit(0)
 windows._Win32.create_process = die_before_resume
 owner = windows.WindowsJob(256 * 1024**2, active_processes=1)
-owner.spawn([sys.executable, "-I", "-c", {f'from pathlib import Path; Path({str(marker)!r}).write_text("unexpected")'!r}], dict(os.environ))
+owner.spawn([native.python_executable(), "-I", "-c", {f'from pathlib import Path; Path({str(marker)!r}).write_text("unexpected")'!r}], native.child_environment())
 """
-    completed = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, timeout=15, check=False)
+    completed = subprocess.run(
+        [native.python_executable(), "-I", "-c", code],
+        env=native.child_environment(),
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
     assert completed.returncode == 0, completed.stderr.decode(errors="replace")
     assert not marker.exists()
     api, handle = _native_open_process(int(pid_file.read_text(encoding="ascii")))
@@ -445,7 +471,11 @@ assert k.WriteFile({selected}, b"ok", 2, ctypes.byref(written), None) and writte
 assert not k.WriteFile({other}, b"unexpected", 10, ctypes.byref(written), None)
 """
         with windows.WindowsJob(256 * 1024**2, active_processes=1) as owner:
-            process = owner.spawn([sys.executable, "-I", "-c", code], dict(os.environ), inherited_handles=(selected,))
+            process = owner.spawn(
+                [native.python_executable(), "-I", "-c", code],
+                native.child_environment(),
+                inherited_handles=(selected,),
+            )
             assert process.wait(10) == 0
             os.close(selected_write)
             selected_write = -1
@@ -520,3 +550,43 @@ def test_raw_ctypes_startup_attributes_include_atomic_jobs_and_allowlist(monkeyp
             (0x20002, (40, 41), ctypes.sizeof(ctypes.c_void_p) * 2),
         ]
     assert calls[-1] == "delete"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="actual Windows source interpreter and venv identity")
+def test_native_direct_interpreter_pid_and_venv_packages_are_exact(tmp_path):
+    import json
+
+    import fastapi
+
+    path = tmp_path / "synthetic-interpreter-identity.json"
+    code = (
+        "import os,sys,json,time,fastapi; from pathlib import Path; "
+        "record={'pid':os.getpid(),'prefix':sys.prefix,'base_prefix':sys.base_prefix,"
+        "'executable':sys.executable,'fastapi':fastapi.__file__}; "
+        f"Path({str(path)!r}).write_text(json.dumps(record),encoding='utf-8'); time.sleep(10)"
+    )
+    with windows.WindowsJob(512 * 1024**2, active_processes=1) as owner:
+        process = owner.spawn([native.python_executable(), "-I", "-c", code], native.child_environment())
+        try:
+            import time
+
+            deadline = time.monotonic() + 8
+            while not path.exists():
+                assert process.poll() is None, "direct interpreter exited before identity proof"
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            value = json.loads(path.read_text(encoding="utf-8"))
+            assert value["pid"] == process.pid
+            assert owner.process_ids() == (process.pid,)
+            assert owner.active_process_count() == 1
+            for name, expected in (
+                ("prefix", sys.prefix),
+                ("base_prefix", sys.base_prefix),
+                ("executable", sys.executable),
+                ("fastapi", fastapi.__file__),
+            ):
+                assert os.path.normcase(value[name]) == os.path.normcase(expected)
+        finally:
+            owner.terminate()
+            process.wait(5)
+            process.close()

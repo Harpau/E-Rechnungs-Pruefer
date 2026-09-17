@@ -296,6 +296,7 @@ def test_watchdog_installed_after_cancel_is_terminated_instead_of_surviving_last
     group_kill = Mock()
     monkeypatch.setattr(native.os, "killpg", group_kill, raising=False)
     monkeypatch.setattr(native, "ExitBindings", Mock())
+    monkeypatch.setattr(native.signal, "SIGKILL", 9, raising=False)
     supervisor = SimpleNamespace(pid=12345, kill=Mock())
     watcher = SimpleNamespace(pid=12346, kill=Mock())
     tree = native.ProcessTree()

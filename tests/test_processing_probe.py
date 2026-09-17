@@ -16,6 +16,14 @@ probe = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(probe)
 
 
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_kqueue_watcher_rejects_other_platforms_before_using_descriptors(monkeypatch, platform):
+    monkeypatch.setattr(probe.sys, "platform", platform)
+    monkeypatch.setattr(probe.os, "fdopen", lambda *_a, **_k: pytest.fail("Unexpected descriptor access"))
+    with pytest.raises(probe.ProbeError, match="macOS"):
+        probe.watcher(123, 456)
+
+
 def cpu_result() -> dict:
     return {
         "case": "cpu",

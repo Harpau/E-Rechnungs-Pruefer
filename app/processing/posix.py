@@ -42,7 +42,11 @@ def virtual_memory_bytes() -> int:
 
 
 def bind_parent(expected_parent: int) -> None:
-    if expected_parent <= 1 or os.getppid() != expected_parent:
+    # A container backend can itself be its Linux PID namespace's init. Its
+    # death tears down that namespace; adoption of a different parent still
+    # fails the exact identity checks before and after PR_SET_PDEATHSIG.
+    minimum_parent = 1 if sys.platform.startswith("linux") else 2
+    if type(expected_parent) is not int or expected_parent < minimum_parent or os.getppid() != expected_parent:
         raise OSError("Der gebundene Elternprozess ist nicht mehr vorhanden.")
     if sys.platform.startswith("linux"):
         library = ctypes.CDLL(None, use_errno=True)

@@ -112,10 +112,13 @@ def observe_process(process: Any, record: dict[str, Any], *, platform: str) -> N
         process.close = close
     elif platform in {"darwin", "linux"}:
         original_wait = process._try_wait
+        wait4 = getattr(os, "wait4", None)
+        if wait4 is None:
+            raise OSError("Native POSIX reaping counters are unavailable")
 
         def native_wait(flags: int) -> tuple[int, int]:
             try:
-                pid, status, usage = os.wait4(process.pid, flags)
+                pid, status, usage = wait4(process.pid, flags)
             except ChildProcessError:
                 record["status"] = "unavailable_already_reaped"
                 return cast(tuple[int, int], original_wait(flags))
@@ -493,11 +496,11 @@ async def run_case(case: str, raw_directory: Path) -> dict[str, Any]:
 
 
 def run_bounded(case: str, raw_directory: Path) -> dict[str, Any]:
-    from app.processing.native import child_environment
+    from app.processing.native import child_environment, python_executable
 
     process = subprocess.Popen(
         [
-            sys.executable,
+            python_executable(),
             "-I",
             str(Path(__file__).resolve()),
             "--child-case",

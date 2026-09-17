@@ -143,13 +143,29 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14.7"
-      - name: Prepare private CPython security backport
+      - name: Prepare native macOS source test environment
         run: |
-          python scripts/cpython_security.py clone --destination "$RUNNER_TEMP/einvoice-cpython-security" --output .cache/macos-processing/cpython-security.json
-          echo "$RUNNER_TEMP/einvoice-cpython-security/bin" >> "$GITHUB_PATH"
-      - name: Create fresh synthetic test environment
-        run: |
-          python -m venv .venv
+          mkdir -p .cache/macos-processing
+          python - <<'PY' > .cache/macos-processing/startup-inventory.json 2> .cache/macos-processing/preparation.stderr
+          import json
+          import os
+          import platform
+          import sys
+          print(json.dumps({
+              "schema_version": 1,
+              "scope": "native macOS source processing probe; no release runtime backport receipt",
+              "cpython_security_backport_applied": False,
+              "github_context": {name: os.environ[name] for name in (
+                  "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB",
+              )},
+              "system": platform.system(),
+              "machine": platform.machine(),
+              "python_version": platform.python_version(),
+              "python_executable": sys.executable,
+              "python_base_prefix": sys.base_prefix,
+          }, indent=2))
+          PY
+          python -m venv .venv > .cache/macos-processing/preparation.stdout 2>> .cache/macos-processing/preparation.stderr
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
       - name: Install test dependencies
@@ -258,6 +274,7 @@ jobs:
           tests/test_upload_ingress.py tests/test_http_upload.py tests/test_http_transport.py
           tests/test_processing_protocol.py tests/test_processing_ready.py tests/test_processing_manager.py
           tests/test_processing_lifecycle.py tests/test_processing_entrypoints.py tests/test_processing_windows.py
+          tests/test_processing_python_launcher.py
           tests/test_processing_faults.py
           tests/test_processing_limits.py tests/test_processing_kosit_runtime.py tests/test_processing_probe.py
       - name: Complete native Windows source processing catalog

@@ -296,6 +296,8 @@ def command(role: str, *arguments: str) -> list[str]:
 
 
 def watcher(control_fd: int, liveness_fd: int) -> None:
+    if sys.platform != "darwin":
+        raise ProbeError("The kqueue watcher requires macOS")
     with os.fdopen(control_fd, "rb", closefd=True) as control:
         configuration = read_record(control)
     mode = configuration["mode"]

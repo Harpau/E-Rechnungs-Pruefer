@@ -156,10 +156,26 @@ jobs:
         if: always() && steps.runtime.outcome == 'success'
         run: |
           container_id='${{ steps.runtime.outputs.container_id }}'
+          capture_backend_memory() {
+            docker exec "$container_id" python -c '
+          from pathlib import Path
+          fields = ("Name", "Pid", "PPid", "VmPeak", "VmSize", "VmHWM", "VmRSS", "Threads")
+          values = {line.partition(":")[0]: line for line in Path("/proc/1/status").read_text().splitlines() if line.partition(":")[0] in fields}
+          if set(values) != set(fields) or values["Pid"].partition(":")[2].strip() != "1":
+              raise SystemExit("Incomplete bound backend memory inventory")
+          print("\n".join(values[field] for field in fields))
+          '
+          }
           status=0
+          evidence_status=0
+          # This is the actual PID-1 HTTP backend, not the separate test harness.
+          # /proc reports virtual and resident memory separately, in kernel kB.
+          capture_backend_memory > .cache/docker-evidence/backend-memory-before.txt || evidence_status=$?
           docker exec "$container_id" python scripts/test_container.py --expect-kosit --output /tmp/http-smoke.json || status=$?
-          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/http-smoke.json').read_text())" > .cache/docker-evidence/http-smoke.json
-          exit "$status"
+          capture_backend_memory > .cache/docker-evidence/backend-memory-after.txt || evidence_status=$?
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/http-smoke.json').read_text())" > .cache/docker-evidence/http-smoke.json || evidence_status=$?
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          exit "$evidence_status"
       - name: Real bound KoSIT acceptance, rejection and technical-failure smoke
         if: always() && steps.runtime.outcome == 'success'
         run: |

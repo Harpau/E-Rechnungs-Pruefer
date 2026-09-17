@@ -10,11 +10,45 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, BinaryIO, cast
 
 ROLE_FLAG = "--einvoice-processing"
 _select_api: Any = select
+
+
+def _windows_venv_interpreter() -> tuple[str, str] | None:
+    if sys.platform != "win32" or getattr(sys, "frozen", False) or sys.prefix == sys.base_prefix:
+        return None
+    executable = sys.executable
+    base = getattr(sys, "_base_executable", None)
+    if not isinstance(base, str):
+        raise OSError("Der gebundene Windows-Basisinterpreter fehlt.")
+    for path in (executable, base):
+        if (
+            not isinstance(path, str)
+            or not path
+            or "\0" in path
+            or not PureWindowsPath(path).is_absolute()
+            or not os.path.isfile(path)
+        ):
+            raise OSError("Der gebundene Windows-Venv-Interpreter ist nicht verfügbar.")
+    if PureWindowsPath(executable) == PureWindowsPath(base):
+        raise OSError("Windows-Venv und Basisinterpreter sind nicht eindeutig gebunden.")
+    return base, executable
+
+
+def python_executable() -> str:
+    """Preserve exact role PID ownership by bypassing Windows venv redirectors.
+
+    CPython's own multiprocessing uses the base executable together with a
+    derived __PYVENV_LAUNCHER__ to preserve the current environment's packages:
+    https://github.com/python/cpython/blob/v3.14.7/Lib/multiprocessing/popen_spawn_win32.py
+    The redirector creates another process, violating our fixed role/job count:
+    https://github.com/python/cpython/blob/v3.14.7/PC/venvlauncher.c
+    """
+    selected = _windows_venv_interpreter()
+    return selected[0] if selected is not None else sys.executable
 
 
 def child_environment() -> dict[str, str]:
@@ -25,6 +59,10 @@ def child_environment() -> dict[str, str]:
                 result[name] = value
     if getattr(sys, "frozen", False):
         result["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    elif selected := _windows_venv_interpreter():
+        # Never forward an ambient launcher variable. This path belongs to the
+        # currently running interpreter and retains its exact venv site-packages.
+        result["__PYVENV_LAUNCHER__"] = selected[1]
     return result
 
 
@@ -34,7 +72,7 @@ def role_command(role: str, arguments: Sequence[str]) -> list[str]:
     if getattr(sys, "frozen", False):
         prefix = [sys.executable]
     else:
-        prefix = [sys.executable, "-I", str(Path(__file__).with_name("bootstrap.py"))]
+        prefix = [python_executable(), "-I", str(Path(__file__).with_name("bootstrap.py"))]
     return [*prefix, ROLE_FLAG, role, *arguments]
 
 

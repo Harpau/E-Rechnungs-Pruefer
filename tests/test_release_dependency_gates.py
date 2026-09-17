@@ -1,5 +1,9 @@
 """Release jobs must use the reviewed dependency set before package mutations."""
 
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -63,18 +67,70 @@ def test_ci_runs_new_windows_native_job_and_ingress_regressions_before_package_m
     assert commands.index("tests/test_processing_windows.py") < commands.index("acceptance_context.py init-ci")
 
 
-def test_ci_has_bounded_native_macos_job_with_private_interpreter_and_preserved_evidence() -> None:
+def test_ci_has_bounded_native_macos_source_job_and_preserved_evidence() -> None:
     job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["macos-processing"]
     assert job["runs-on"] == "macos-14"
     assert job["timeout-minutes"] <= 20
     commands = "\n".join(step.get("run", "") for step in job["steps"])
-    assert "cpython_security.py clone" in commands and "-m venv" in commands
+    setup = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/setup-python@"))
+    assert setup["with"]["python-version"] == "3.14.7"
+    assert "cpython_security.py" not in commands and "-m venv" in commands
     assert "tests/test_processing_lifecycle.py" in commands and "tests/test_processing_watchdog.py" in commands
     assert "--junitxml=" in commands
     uploads = [step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@")]
     assert len(uploads) == 1 and uploads[0]["if"] == "always()"
     assert uploads[0]["with"]["include-hidden-files"] is True
     assert uploads[0]["with"]["retention-days"] == 14
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="macOS workflow uses the POSIX bash runner")
+def test_macos_venv_failure_preserves_bound_startup_inventory_and_diagnostics(tmp_path: Path) -> None:
+    job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["macos-processing"]
+    command = next(step["run"] for step in job["steps"] if "startup-inventory.json" in step.get("run", ""))
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    python = fake_bin / "python"
+    python.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "if sys.argv[1:3] == ['-m', 'venv']:\n"
+        "    print('synthetic venv preparation failure', file=sys.stderr)\n"
+        "    raise SystemExit(42)\n"
+        f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n"
+    )
+    python.chmod(0o755)
+    context = {
+        "GITHUB_REPOSITORY": "synthetic/invoice-checker",
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_RUN_ID": "12345",
+        "GITHUB_RUN_ATTEMPT": "2",
+        "GITHUB_JOB": "macos-processing",
+    }
+    path_file = tmp_path / "github-path"
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", command],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            **context,
+            "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+            "GITHUB_PATH": str(path_file),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 42
+    evidence = tmp_path / ".cache/macos-processing"
+    inventory = json.loads((evidence / "startup-inventory.json").read_text())
+    assert inventory["github_context"] == context
+    assert inventory["scope"] == "native macOS source processing probe; no release runtime backport receipt"
+    assert inventory["cpython_security_backport_applied"] is False
+    assert inventory["python_version"] == sys.version.split()[0]
+    assert inventory["python_executable"] == sys.executable
+    assert inventory["python_base_prefix"] == sys.base_prefix
+    assert "synthetic venv preparation failure" in (evidence / "preparation.stderr").read_text()
+    assert not path_file.exists()
 
 
 def test_macos_records_native_address_space_baseline_before_bounded_roles_start() -> None:

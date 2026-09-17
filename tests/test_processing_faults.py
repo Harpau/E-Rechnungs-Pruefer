@@ -26,7 +26,7 @@ def _fault_command(monkeypatch, mode):
 
     def command(role, arguments):
         if role == "worker" or (mode == "java_lingering_child" and role == "java"):
-            return [sys.executable, "-I", str(HELPER), mode, native.ROLE_FLAG, role, *arguments]
+            return [native.python_executable(), "-I", str(HELPER), mode, native.ROLE_FLAG, role, *arguments]
         return ordinary(role, arguments)
 
     monkeypatch.setattr(native, "role_command", command)
