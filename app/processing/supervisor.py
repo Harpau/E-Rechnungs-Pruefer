@@ -65,6 +65,8 @@ def run_java_launcher(
         if sys.platform == "win32":
             # Atomic inherited Job membership covers the fixed JVM too. The
             # only outer/role job handles remain in the backend parent.
+            # Detaching avoids an extra conhost job member; all three standard
+            # streams are supplied explicitly and require no console.
             process = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
@@ -73,7 +75,7 @@ def run_java_launcher(
                 close_fds=True,
                 env=child_environment(),
                 cwd=setup["temporary_directory"],
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                creationflags=subprocess.DETACHED_PROCESS,
             )
             return process.wait(timeout=settings.kosit_timeout_seconds + 1)
         os.dup2(stdout.fileno(), 1)

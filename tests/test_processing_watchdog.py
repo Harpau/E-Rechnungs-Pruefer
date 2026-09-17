@@ -124,6 +124,48 @@ def test_absolute_deadline_kills_the_bound_group(native_fakes):
     assert ready[0]["supervisor_pid"] == 200
 
 
+@pytest.mark.parametrize("parent_pgid", [0, 1, 90])
+@pytest.mark.parametrize("session_id", [0, 1, 90])
+def test_darwin_comparison_ids_include_initial_session_and_group(native_fakes, parent_pgid, session_id):
+    spec, native, _queue, kills, ready, _clock, _writer = native_fakes
+    native.getsid = lambda _pid: session_id
+    native.getpgid = lambda pid: parent_pgid if pid == spec["parent_pid"] else spec["supervisor_pid"]
+    with pytest.raises(watchdog.WatchdogError):
+        watchdog.run_watchdog(**(spec | {"parent_pgid": parent_pgid, "session_id": session_id}))
+    assert len(ready) == 1
+    assert kills == [(200, signal.SIGKILL)]  # Comparison IDs are never signal targets.
+
+
+@pytest.mark.parametrize("field", ["parent_pgid", "session_id"])
+@pytest.mark.parametrize("value", [True, False, -1, 2**31, 0.0, "0"])
+def test_comparison_ids_still_require_nonnegative_exact_int(native_fakes, field, value):
+    spec, _native, _queue, kills, ready, _clock, _writer = native_fakes
+    with pytest.raises(watchdog.WatchdogError):
+        watchdog.run_watchdog(**(spec | {field: value}))
+    assert ready == kills == []
+
+
+@pytest.mark.parametrize("field", ["parent_pid", "supervisor_pid"])
+@pytest.mark.parametrize("value", [0, 1, True, -1, 2**31])
+def test_actual_process_ids_still_exclude_kernel_and_init(native_fakes, field, value):
+    spec, _native, _queue, kills, ready, _clock, _writer = native_fakes
+    with pytest.raises(watchdog.WatchdogError):
+        watchdog.run_watchdog(**(spec | {field: value}))
+    assert ready == kills == []
+
+
+@pytest.mark.parametrize("mismatch", ["parent_group", "parent_session", "supervisor_session", "watcher_session"])
+def test_zero_session_still_requires_every_actual_identity_binding(native_fakes, mismatch):
+    spec, native, _queue, kills, ready, _clock, _writer = native_fakes
+    native.getpgid = lambda pid: (1 if mismatch == "parent_group" else 0) if pid == 100 else 200
+    wrong_pid = {"parent_session": 100, "supervisor_session": 200, "watcher_session": 0}.get(mismatch)
+    native.getsid = lambda pid: int(pid == wrong_pid)
+    with pytest.raises(watchdog.WatchdogError):
+        watchdog.run_watchdog(**(spec | {"parent_pgid": 0, "session_id": 0}))
+    assert ready == []
+    assert kills == ([] if mismatch == "watcher_session" else [(200, signal.SIGKILL)])
+
+
 def test_eof_before_ready_kills_group_without_claiming_ready(native_fakes):
     spec, native, _queue, kills, ready, _clock, _writer = native_fakes
     native.read = lambda *_args: b""

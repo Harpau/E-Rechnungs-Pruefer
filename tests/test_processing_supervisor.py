@@ -25,6 +25,67 @@ class FailedConsole(OpenBuffer):
         raise OSError("synthetic console read failure")
 
 
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_windows_java_launcher_uses_detached_default_after_go_with_explicit_streams(tmp_path, monkeypatch, returncode):
+    incoming, outgoing = OpenBuffer(), OpenBuffer()
+    stdout, stderr = OpenBuffer(), OpenBuffer()
+    write_control(incoming, {"type": "go"})
+    incoming.seek(0)
+    command = [r"C:\Synthetic\java.exe", "-Xmx512m", "-jar", r"C:\Synthetic\validator.jar"]
+    settings = Settings(kosit_timeout_seconds=11)
+    budgets = ProcessingBudgets()
+    setup = {
+        "settings": settings_to_snapshot(settings),
+        "budgets": asdict(budgets),
+        "temporary_directory": str(tmp_path),
+    }
+    environment = {"SystemRoot": r"C:\Windows"}
+    events = []
+
+    def prepare(observed_settings, directory, observed_budgets):
+        assert observed_settings == settings and directory == tmp_path and observed_budgets == budgets
+        return command
+
+    def popen(actual_command, **options):
+        assert incoming.tell() == len(incoming.getvalue()), "the fixed GO must be consumed before CreateProcess"
+        assert read_control(io.BytesIO(outgoing.getvalue())) == {
+            "type": "ready",
+            "role": "java",
+            "protocol": 1,
+            "limits": {"job_memory_bytes": budgets.java_memory_bytes},
+        }
+        assert actual_command == command
+        assert options == {
+            "stdin": -3,
+            "stdout": stdout,
+            "stderr": stderr,
+            "close_fds": True,
+            "env": environment,
+            "cwd": str(tmp_path),
+            "creationflags": 0x00000008,
+        }
+        events.append("spawn")
+
+        def wait(*, timeout):
+            assert timeout == 12, "keep the existing configured Java wait bound"
+            events.append("wait")
+            return returncode
+
+        return SimpleNamespace(wait=wait)
+
+    monkeypatch.setattr("app.processing.kosit_runtime.prepare_java_command", prepare)
+    monkeypatch.setattr(supervisor, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(supervisor, "inherited_file", lambda handle, _mode: {40: stdout, 41: stderr}[handle])
+    monkeypatch.setattr(supervisor, "child_environment", lambda: environment)
+    monkeypatch.setattr(
+        supervisor,
+        "subprocess",
+        SimpleNamespace(Popen=popen, DEVNULL=-3, CREATE_NO_WINDOW=0x08000000, DETACHED_PROCESS=0x00000008),
+    )
+    assert supervisor.run_java_launcher(incoming, outgoing, setup, 40, 41) == returncode
+    assert events == ["spawn", "wait"]
+
+
 def _varl(decision: str) -> bytes:
     return (
         '<rep:report xmlns:rep="http://www.xoev.de/de/validator/varl/1" valid="true">'

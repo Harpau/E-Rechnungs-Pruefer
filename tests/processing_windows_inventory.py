@@ -183,23 +183,3 @@ def capture_inventory(owner: JobOwner, *, api: InventoryAPI | None = None) -> di
                 result["errors"].append({"pid": pid, "stage": "close", "error_type": type(error).__name__})
     result["complete"] = bool(result["processes"]) and not result["errors"]
     return result
-
-
-def comparison_can_continue(record: dict[str, Any]) -> bool:
-    """An unexpected *bound* inventory is diagnostic; uncertain cleanup stops."""
-    inventory = record.get("inventory")
-    errors = record.get("errors")
-    active = record.get("owned_job_active_after_cleanup")
-    return (
-        record.get("owned_process_exit_confirmed") is True
-        and type(active) is int
-        and active == 0
-        and record.get("cleanup_within_deadline") is True
-        and isinstance(inventory, dict)
-        and inventory.get("complete") is True
-        and isinstance(errors, list)
-        and all(
-            isinstance(error, str) and not error.startswith(("cleanup:", "close:", "descriptor_close:"))
-            for error in errors
-        )
-    )

@@ -116,9 +116,11 @@ def run_watchdog(
     """Emit READY only after binding; any later termination kills this exact job group."""
     if sys.platform != "darwin":
         raise WatchdogError("Dieser Wächter benötigt die native macOS-kqueue-Prozessüberwachung.")
-    if any(
-        type(value) is not int or not 1 < value < 2**31
-        for value in (parent_pid, parent_pgid, supervisor_pid, session_id)
+    # Darwin's initial session/process group can be 0. These are compared
+    # identities only; the exclusive group we may signal remains a PID > 1.
+    # https://github.com/apple-oss-distributions/xnu/blob/xnu-10063.121.3/bsd/kern/bsd_init.c
+    if any(type(value) is not int or not 1 < value < 2**31 for value in (parent_pid, supervisor_pid)) or any(
+        type(value) is not int or not 0 <= value < 2**31 for value in (parent_pgid, session_id)
     ):
         raise WatchdogError("Ungültige Kontrollprozessidentität.")
     now = monotonic()

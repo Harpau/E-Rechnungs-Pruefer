@@ -41,7 +41,7 @@ _STARTF_USESTDHANDLES = 0x100
 _CREATE_SUSPENDED = 0x4
 _CREATE_UNICODE_ENVIRONMENT = 0x400
 _EXTENDED_STARTUPINFO_PRESENT = 0x80000
-_CREATE_NO_WINDOW = 0x8000000
+_DETACHED_PROCESS = 0x8
 _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 258
 _INFINITE = 0xFFFFFFFF
@@ -400,7 +400,10 @@ class _Win32:
             info = _ProcessInformation()
             command_buffer = ctypes.create_unicode_buffer(command_line)
             environment_buffer = ctypes.create_unicode_buffer(environment)
-            flags = _CREATE_SUSPENDED | _CREATE_NO_WINDOW | _CREATE_UNICODE_ENVIRONMENT | _EXTENDED_STARTUPINFO_PRESENT
+            # A hidden console can still add conhost.exe to the job. Detached
+            # roles need no console; stdio remains the explicit HANDLE_LIST.
+            # https://learn.microsoft.com/windows/win32/procthread/process-creation-flags
+            flags = _CREATE_SUSPENDED | _DETACHED_PROCESS | _CREATE_UNICODE_ENVIRONMENT | _EXTENDED_STARTUPINFO_PRESENT
             self._check(
                 self.dll.CreateProcessW(
                     application,

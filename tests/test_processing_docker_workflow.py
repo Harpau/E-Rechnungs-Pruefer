@@ -70,3 +70,17 @@ def test_source_platforms_preserve_active_lifecycle_proof_with_existing_job_arti
         assert any(
             s.get("if") == "always()" and f".cache/{folder}/" in s.get("with", {}).get("path", "") for s in steps
         )
+
+
+def test_macos_checks_inherited_watchdog_startup_before_invoice_catalogs() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["macos-processing"]["steps"]
+    probe = next(step for step in steps if "scripts/processing_watchdog_probe.py" in step.get("run", ""))
+    assert probe["timeout-minutes"] == 1
+    assert "continue-on-error" not in probe and "if" not in probe
+    assert "--output .cache/macos-processing/watchdog-startup.json" in probe["run"]
+    assert "watchdog-startup.stdout" in probe["run"] and "watchdog-startup.stderr" in probe["run"]
+    assert "setsid" not in probe["run"]
+    for step in steps:
+        if "python -m pytest" in step.get("run", "") or "scripts/processing_smoke.py" in step.get("run", ""):
+            assert steps.index(probe) < steps.index(step)

@@ -197,6 +197,13 @@ jobs:
           --output .cache/macos-processing/address-space.json
           > .cache/macos-processing/address-space.stdout
           2> .cache/macos-processing/address-space.stderr
+      - name: Verify watchdog startup in inherited and new sessions
+        timeout-minutes: 1
+        run: >-
+          python scripts/processing_watchdog_probe.py
+          --output .cache/macos-processing/watchdog-startup.json
+          > .cache/macos-processing/watchdog-startup.stdout
+          2> .cache/macos-processing/watchdog-startup.stderr
       - name: Native bounded synthetic lifecycle tests
         run: >-
           python -m pytest --junitxml=.cache/macos-processing/tests.xml

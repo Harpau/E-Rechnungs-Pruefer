@@ -126,34 +126,6 @@ def test_inventory_changed_job_snapshot_is_incomplete():
     assert api.closed == [1020, 1010]
 
 
-@pytest.mark.parametrize(
-    "changed",
-    [
-        {},
-        {"owned_process_exit_confirmed": False},
-        {"owned_job_active_after_cleanup": 1},
-        {"owned_job_active_after_cleanup": False},
-        {"cleanup_within_deadline": False},
-        {"inventory": {"complete": False}},
-        {"errors": ["close:OSError"]},
-        {"errors": ["cleanup:TimeoutExpired"]},
-        {"errors": ["descriptor_close:OSError"]},
-    ],
-)
-def test_comparison_continues_only_after_bound_inventory_and_confirmed_cleanup(changed):
-    from processing_windows_inventory import comparison_can_continue
-
-    record = {
-        "owned_process_exit_confirmed": True,
-        "owned_job_active_after_cleanup": 0,
-        "cleanup_within_deadline": True,
-        "inventory": {"complete": True, "snapshot_pids": [10, 20]},
-        "errors": [],
-    }
-    record.update(changed)
-    assert comparison_can_continue(record) is (not changed)
-
-
 class FakeAPI:
     def __init__(self):
         self.events = []
@@ -642,15 +614,11 @@ assert not k.WriteFile({other}, b"unexpected", 10, ctypes.byref(written), None)
 
 
 @pytest.mark.parametrize("fail_update", [False, True])
-@pytest.mark.parametrize("test_flag,expected_flags", [(0x08000000, 0x08080404), (0x00000008, 0x0008040C)])
-def test_raw_ctypes_startup_attributes_include_atomic_jobs_and_allowlist(
-    monkeypatch, fail_update, test_flag, expected_flags
-):
+def test_raw_ctypes_startup_attributes_include_atomic_jobs_and_allowlist(monkeypatch, fail_update):
     import ctypes
     from types import SimpleNamespace
 
     calls = []
-    monkeypatch.setattr(windows, "_CREATE_NO_WINDOW", test_flag)
 
     def initialize(storage, count, flags, size):
         assert count == 2 and flags == 0
@@ -666,7 +634,7 @@ def test_raw_ctypes_startup_attributes_include_atomic_jobs_and_allowlist(
     ):
         assert application == r"C:\Python\python.exe" and command.value == application
         assert process_security is thread_security is None
-        assert inherit and flags == expected_flags  # test flag | EX | UNICODE | SUSPENDED
+        assert inherit and flags == 0x0008040C  # DETACHED | EX | UNICODE | SUSPENDED; no NO_WINDOW
         value = ctypes.cast(startup, ctypes.POINTER(windows._StartupInfoEx)).contents
         assert value.StartupInfo.cb == ctypes.sizeof(windows._StartupInfoEx)
         assert value.StartupInfo.dwFlags == 0x100 and value.lpAttributeList
@@ -766,22 +734,20 @@ def test_native_direct_interpreter_pid_and_venv_packages_are_exact(tmp_path, rec
                 process.close()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="bounded native NO_WINDOW / DETACHED_PROCESS comparison")
-def test_native_console_flag_comparison_preserves_pid_venv_and_handle_job_bindings(
-    tmp_path, monkeypatch, record_property
-):
-    """Only the test replaces the flag; both variants use the same fixed program.
+@pytest.mark.skipif(sys.platform != "win32", reason="native detached production default and exact role inventory")
+def test_native_production_default_preserves_pid_venv_and_handle_job_bindings(tmp_path, record_property):
+    """Exercise the unmodified production flags with one exact process per role.
 
-    The shared 24-second deadline includes both readiness and owned-job cleanup.
-    Natural ten-second sleeper termination is never containment evidence.
-    No unexpected PID is a termination target: only the held owned job is killed.
+    READY and owned-job cleanup share 13 seconds. Natural ten-second sleeper
+    termination is never containment evidence. Only the held owned job is
+    terminated; no observed PID is used as a mutation target.
     """
     if sys.platform != "win32":
         pytest.skip("requires native Windows process and handle APIs")
     import msvcrt
 
     import fastapi
-    from processing_windows_inventory import capture_inventory, comparison_can_continue
+    from processing_windows_inventory import capture_inventory
 
     program = """
 import ctypes, json, os, sys, time
@@ -809,107 +775,89 @@ time.sleep(10)
         "executable": sys.executable,
         "fastapi": fastapi.__file__,
     }
-    assert windows._CREATE_NO_WINDOW == 0x08000000
-    common_deadline = time.monotonic() + 24
-    variants: list[dict[str, Any]] = []
-    for label, flag in (("CREATE_NO_WINDOW", 0x08000000), ("DETACHED_PROCESS", 0x00000008)):
-        record: dict[str, Any] = {
-            "variant": label,
-            "test_creation_flag": flag,
-            "expected_identity": expected_identity,
-            "errors": [],
-        }
-        variants.append(record)
-        selected_read, selected_write = os.pipe()
-        other_read, other_write = os.pipe()
-        owner = None
-        process = None
-        launched = time.monotonic()
+    assert windows._DETACHED_PROCESS == 0x00000008
+    launched = time.monotonic()
+    common_deadline = launched + 13
+    record: dict[str, Any] = {
+        "production_creation_flag": windows._DETACHED_PROCESS,
+        "expected_identity": expected_identity,
+        "shared_deadline_seconds": 13,
+        "errors": [],
+    }
+    selected_read, selected_write = os.pipe()
+    other_read, other_write = os.pipe()
+    owner = None
+    process = None
+    try:
+        selected = msvcrt.get_osfhandle(selected_write)
+        forbidden = msvcrt.get_osfhandle(other_write)
+        os.set_handle_inheritable(selected, True)
+        os.set_handle_inheritable(forbidden, True)
+        path = tmp_path / "synthetic-production-identity.json"
+        owner = windows.WindowsJob(512 * 1024**2, active_processes=1)
+        process = owner.spawn(
+            [native.python_executable(), "-I", "-c", program, str(path), str(selected), str(forbidden)],
+            native.child_environment(),
+            inherited_handles=(selected,),
+        )
+        record["held_pid"] = process.pid
+        ready_deadline = launched + 8
+        while not path.is_file():
+            assert process.poll() is None, "fixed helper exited before atomic identity receipt"
+            assert time.monotonic() < ready_deadline, "fixed helper missed bounded READY"
+            time.sleep(0.01)
+        assert path.stat().st_size <= 65536
+        value = json.loads(path.read_text(encoding="utf-8"))
+        record["child_identity"] = value
+        record["inventory"] = capture_inventory(owner)
+        record["identity_matches"] = value["pid"] == process.pid and all(
+            os.path.normcase(value[name]) == os.path.normcase(expected) for name, expected in expected_identity.items()
+        )
+        record["handle_allowlist_matches"] = value["selected_handle_written"] and not value["unselected_handle_written"]
+    except (AssertionError, OSError, ValueError) as error:
+        record["errors"].append(type(error).__name__)
+    finally:
         try:
-            assert common_deadline - launched > 5, "insufficient remaining shared cleanup budget"
-            selected = msvcrt.get_osfhandle(selected_write)
-            forbidden = msvcrt.get_osfhandle(other_write)
-            os.set_handle_inheritable(selected, True)
-            os.set_handle_inheritable(forbidden, True)
-            path = tmp_path / f"synthetic-{label}-identity.json"
-            owner = windows.WindowsJob(512 * 1024**2, active_processes=1)
-            with monkeypatch.context() as local_patch:
-                local_patch.setattr(windows, "_CREATE_NO_WINDOW", flag)
-                process = owner.spawn(
-                    [native.python_executable(), "-I", "-c", program, str(path), str(selected), str(forbidden)],
-                    native.child_environment(),
-                    inherited_handles=(selected,),
-                )
-            record["held_pid"] = process.pid
-            ready_deadline = min(launched + 8, common_deadline - 5)
-            while not path.is_file():
-                assert process.poll() is None, "fixed helper exited before atomic identity receipt"
-                assert time.monotonic() < ready_deadline, "fixed helper missed bounded READY"
-                time.sleep(0.01)
-            assert path.stat().st_size <= 65536
-            value = json.loads(path.read_text(encoding="utf-8"))
-            record["child_identity"] = value
-            record["inventory"] = capture_inventory(owner)
-            record["identity_matches"] = value["pid"] == process.pid and all(
-                os.path.normcase(value[name]) == os.path.normcase(expected)
-                for name, expected in expected_identity.items()
-            )
-            record["handle_allowlist_matches"] = (
-                value["selected_handle_written"] and not value["unselected_handle_written"]
-            )
-        except (AssertionError, OSError, ValueError) as error:
-            record["errors"].append(type(error).__name__)
+            if owner is not None:
+                stop_started = time.monotonic()
+                cleanup_deadline = min(stop_started + 5, common_deadline)
+                owner.terminate()
+                if process is not None:
+                    process.wait(max(0, cleanup_deadline - time.monotonic()))
+                    observed = time.monotonic()
+                    record["owned_process_exit_confirmed"] = process.returncode is not None
+                    record["observed_end_after_launch_seconds"] = observed - launched
+                    record["observed_end_after_terminate_seconds"] = observed - stop_started
+                    while owner.active_process_count():
+                        if time.monotonic() >= cleanup_deadline:
+                            raise subprocess.TimeoutExpired("owned diagnostic job cleanup", 5)
+                        time.sleep(0.01)
+                    observed = time.monotonic()
+                    record["owned_job_active_after_cleanup"] = owner.active_process_count()
+                    record["observed_job_end_after_terminate_seconds"] = observed - stop_started
+                    record["cleanup_within_deadline"] = observed <= cleanup_deadline and observed - launched < 10
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            record["errors"].append(f"cleanup:{type(error).__name__}")
         finally:
-            try:
-                if owner is not None:
-                    stop_started = time.monotonic()
-                    cleanup_deadline = min(stop_started + 5, common_deadline)
-                    owner.terminate()
-                    if process is not None:
-                        process.wait(max(0, cleanup_deadline - time.monotonic()))
-                        observed = time.monotonic()
-                        record["owned_process_exit_confirmed"] = process.returncode is not None
-                        record["observed_end_after_launch_seconds"] = observed - launched
-                        record["observed_end_after_terminate_seconds"] = observed - stop_started
-                        while owner.active_process_count():
-                            if time.monotonic() >= cleanup_deadline:
-                                raise subprocess.TimeoutExpired("owned diagnostic job cleanup", 5)
-                            time.sleep(0.01)
-                        observed = time.monotonic()
-                        record["owned_job_active_after_cleanup"] = owner.active_process_count()
-                        record["observed_job_end_after_terminate_seconds"] = observed - stop_started
-                        record["cleanup_within_deadline"] = observed <= cleanup_deadline and observed - launched < 10
-            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-                record["errors"].append(f"cleanup:{type(error).__name__}")
-            finally:
-                for resource in (owner, process):
-                    if resource is not None:
-                        try:
-                            resource.close()
-                        except (OSError, ValueError) as error:
-                            record["errors"].append(f"close:{type(error).__name__}")
-                for descriptor in (selected_read, selected_write, other_read, other_write):
+            for resource in (owner, process):
+                if resource is not None:
                     try:
-                        os.close(descriptor)
-                    except OSError as error:
-                        record["errors"].append(f"descriptor_close:{type(error).__name__}")
-        # Record each completed variant immediately; a later failure must not
-        # discard the independent observation of the first flag.
-        record["safe_to_continue"] = comparison_can_continue(record)
-        record_property(f"windows_console_flag_{label}", json.dumps(record, sort_keys=True))
-        if not record["safe_to_continue"]:
-            break
-    assert windows._CREATE_NO_WINDOW == 0x08000000
-    diagnostic = json.dumps({"variants": variants, "shared_deadline_seconds": 24}, sort_keys=True)
-    record_property("windows_console_flag_comparison", diagnostic)
+                        resource.close()
+                    except (OSError, ValueError) as error:
+                        record["errors"].append(f"close:{type(error).__name__}")
+            for descriptor in (selected_read, selected_write, other_read, other_write):
+                try:
+                    os.close(descriptor)
+                except OSError as error:
+                    record["errors"].append(f"descriptor_close:{type(error).__name__}")
+    diagnostic = json.dumps(record, sort_keys=True)
+    record_property("windows_production_default_bindings", diagnostic)
     assert time.monotonic() <= common_deadline, diagnostic
-    assert len(variants) == 2, diagnostic
-    for record in variants:
-        assert not record["errors"], diagnostic
-        assert record.get("identity_matches") and record.get("handle_allowlist_matches"), diagnostic
-        assert record.get("owned_process_exit_confirmed") and record.get("cleanup_within_deadline"), diagnostic
-        assert record["owned_job_active_after_cleanup"] == 0, diagnostic
-        inventory = record["inventory"]
-        assert inventory["complete"], diagnostic
-        assert inventory["snapshot_pids"] == [record["held_pid"]], diagnostic
-        assert inventory["active_process_count"] == 1, diagnostic
+    assert not record["errors"], diagnostic
+    assert record.get("identity_matches") and record.get("handle_allowlist_matches"), diagnostic
+    assert record.get("owned_process_exit_confirmed") and record.get("cleanup_within_deadline"), diagnostic
+    assert record["owned_job_active_after_cleanup"] == 0, diagnostic
+    inventory = record["inventory"]
+    assert inventory["complete"], diagnostic
+    assert inventory["snapshot_pids"] == [record["held_pid"]], diagnostic
+    assert inventory["active_process_count"] == 1, diagnostic
