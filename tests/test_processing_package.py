@@ -1007,7 +1007,9 @@ def test_powershell_resolves_exactly_first_python_application_not_concatenated_p
         [powershell, "-NoProfile", "-NonInteractive", "-File", str(harness)],
         capture_output=True,
         text=True,
-        timeout=10,
+        # Covers external PowerShell/.NET cold startup on shared CI runners;
+        # this resolver assertion is not a product processing-time measurement.
+        timeout=30,
         check=False,
     )
     assert completed.returncode == 0, completed.stderr

@@ -111,6 +111,8 @@ unverändert freigaberelevant; Prozessgrenzen begründen keine CVE-Ausnahme.
 Die nativen Windows-/Linux-, installierten Dienst-/Desktop- und Frozen-Nachweise für diese neue Architektur
 müssen vor Freigabe nach [`RELEASE.md`](RELEASE.md) erbracht werden. Ein bestandener Unit- oder macOS-Quelltest
 ist kein Nachweis für diese anderen Auslieferungsformen.
+Der [Abnahmestand mit nativen Messwerten](UPLOAD_WORKER_ACCEPTANCE.md) dokumentiert die bestandenen
+Teilprüfungen und die noch offene Windows-Paketabnahme; die technische Gesamtfreigabe bleibt ausstehend.
 
 ### Cross-Site Scripting
 
