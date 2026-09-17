@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import email.parser
 import hashlib
+import importlib.util
 import json
 import os
 import posixpath
@@ -20,6 +21,7 @@ import re
 import stat
 import sys
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 from typing import Any, cast
 
 MANIFEST_PATH = "/usr/share/e-rechnung-pruefer/runtime-rootfs-manifest.json"
@@ -30,6 +32,17 @@ RUNTIME_ROOTS = ("/usr", "/opt", "/etc", "/var", "/lib", "/lib64", "/bin", "/sbi
 BOOTSTRAP_NAMES = {"pip", "setuptools", "wheel", "packaging", "pkg-resources", "ensurepip", "-distutils-hack"}
 PYTHON_VERSION = "3.14.7"
 PYTHON_COUNT = 27
+SECURITY_RECEIPT = "/usr/local/share/e-rechnung-pruefer/cpython-security.json"
+SECURITY_TARGET = "/usr/local/lib/python3.14/urllib/request.py"
+SECURITY_FIELDS = (
+    "advisory",
+    "upstream_commit",
+    "input_sha256",
+    "output_sha256",
+    "patch_sha256",
+    "metadata_sha256",
+    "helper_sha256",
+)
 
 
 class CoverageError(ValueError):
@@ -38,6 +51,77 @@ class CoverageError(ValueError):
 
 def sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def security_support() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("cpython_security", Path(__file__).with_name("cpython_security.py"))
+    if spec is None or spec.loader is None:
+        raise CoverageError("CPython security verifier could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def security_origins(binding: dict[str, Any], base: str) -> dict[str, dict[str, Any]]:
+    common = {
+        "version": PYTHON_VERSION,
+        "base_image": base,
+        "receipt_sha256": binding["receipt_sha256"],
+        **{key: binding["receipt"][key] for key in SECURITY_FIELDS},
+    }
+    return {
+        SECURITY_TARGET: {"kind": "cpython-security-backport", **common},
+        SECURITY_RECEIPT: {"kind": "cpython-security-receipt", **common},
+    }
+
+
+def manifest_security(manifest: dict[str, Any]) -> dict[str, Any]:
+    binding = manifest.get("cpython_security")
+    if not isinstance(binding, dict) or set(binding) != {"receipt_path", "receipt_sha256", "receipt"}:
+        raise CoverageError("Missing or malformed CPython security binding")
+    if binding["receipt_path"] != SECURITY_RECEIPT:
+        raise CoverageError("CPython security receipt is not at its bound runtime path")
+    require_digest(binding["receipt_sha256"])
+    try:
+        security_support().validate_receipt(binding["receipt"])
+        if binding["receipt"]["line_endings"] != "lf":
+            raise CoverageError("Linux CPython backport must use canonical LF bytes")
+        origins = security_origins(binding, manifest["base_image"])
+        for path, expected_hash in (
+            (SECURITY_TARGET, binding["receipt"]["output_sha256"]),
+            (SECURITY_RECEIPT, binding["receipt_sha256"]),
+        ):
+            entry = manifest["files"].get(path, {})
+            if (
+                entry.get("type") != "file"
+                or entry.get("elf") is not False
+                or entry.get("sha256") != expected_hash
+                or entry.get("provenance") != origins[path]
+            ):
+                raise CoverageError(f"CPython backport file provenance differs: {path}")
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        raise CoverageError(f"Unproved CPython security binding: {exc}") from exc
+    return binding
+
+
+def verify_security_runtime(binding: dict[str, Any], root: Path) -> dict[str, Any]:
+    result: dict[str, Any] = {"behavior_checked": False, "receipt_sha256": binding["receipt_sha256"]}
+    if root != Path("/"):
+        return result  # An offline filesystem check cannot prove loaded-code behavior.
+    try:
+        runtime = security_support().verify_runtime()
+        if (
+            runtime.get("behavior_passed") is not True
+            or runtime.get("module_path") != SECURITY_TARGET
+            or runtime.get("relative_file") != "urllib/request.py"
+            or runtime.get("output_sha256") != binding["receipt"]["output_sha256"]
+            or runtime.get("receipt_sha256") != binding["receipt_sha256"]
+            or runtime.get("receipt") != binding["receipt"]
+        ):
+            raise CoverageError("Loaded CPython backport behavior/file/receipt binding differs")
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        raise CoverageError(f"CPython runtime security verification failed: {exc}") from exc
+    return {**result, "behavior_checked": True, "runtime": runtime}
 
 
 def require_digest(value: Any) -> None:
@@ -166,6 +250,8 @@ def manifest_inventory(manifest: dict[str, Any]) -> tuple[set[tuple[str, ...]], 
     packages, files = manifest.get("packages"), manifest.get("files")
     if not isinstance(packages, dict) or not packages or not isinstance(files, dict) or not files:
         raise CoverageError("Empty Debian or file manifest")
+    security = manifest_security(manifest)
+    patched_origins = security_origins(security, base)
     expected_os = set()
     for key, package in packages.items():
         identity = package_identity(package)
@@ -235,6 +321,9 @@ def manifest_inventory(manifest: dict[str, Any]) -> tuple[set[tuple[str, ...]], 
                 if name in records or entry.get("sha256") != origin["record_sha256"]:
                     raise CoverageError("Duplicate or unbound installed RECORD")
                 records[name] = path
+        elif origin_kind in {"cpython-security-backport", "cpython-security-receipt"}:
+            if patched_origins.get(path) != origin:
+                raise CoverageError(f"CPython security provenance at unexpected path: {path}")
         elif origin_kind in {"cpython", "cpython-venv", "merged-usr-layout"}:
             if origin.get("base_image") != base or (
                 origin_kind != "merged-usr-layout" and origin.get("version") != PYTHON_VERSION
@@ -360,6 +449,7 @@ def check_coverage(manifest: dict[str, Any], scan: dict[str, Any], inventory: di
         "python_distributions": len(expected_python),
         "cpython_version": PYTHON_VERSION,
         "cpython_vulnerability_coverage": "not_provided_by_this_check",
+        "cpython_security_receipt_sha256": manifest["cpython_security"]["receipt_sha256"],
         "architecture": architecture,
         "image_id": image_id,
         "trivy_image_vulnerabilities": findings,
@@ -492,6 +582,7 @@ def verify_payload(manifest: dict[str, Any], root: Path = Path("/")) -> dict[str
                     raise CoverageError(f"Unmanifested runtime payload found: {path}")
     return {
         "payload_passed": True,
+        "cpython_security": verify_security_runtime(manifest["cpython_security"], root),
         "files_verified": len(files) - sum(path in files for path in ENGINE_NETWORK_FILES),
         "engine_network_exceptions": [path for path in ENGINE_NETWORK_FILES if path in files],
         "engine_symlink_exceptions": engine_symlinks,

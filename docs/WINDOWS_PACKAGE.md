@@ -292,16 +292,40 @@ Voraussetzungen sind Windows-x64-CPython 3.14.7 und Netzwerkzugriff beim Vorbere
 des auf Inno Setup 7.1.0 x64 festgeschriebenen Installercompilers:
 
 ```powershell
-py -3.14 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --require-hashes --only-binary=:all: -r packaging\windows\requirements-release.txt
-python -m pip install --no-deps --no-build-isolation -e .
-python scripts\dependency_lock.py verify --lock packaging\windows\requirements-release.txt --installed
-python -m pip check
-python scripts\prepare_windows_components.py
+$BuildContext = Join-Path $env:TEMP ("einvoice-windows-build-" + [guid]::NewGuid().ToString("N"))
+$PrivateRuntime = Join-Path $BuildContext "runtime"
+$BuildVenv = Join-Path $BuildContext "venv"
+py -3.14 scripts\cpython_security.py clone --destination $PrivateRuntime
+if ($LASTEXITCODE -ne 0) { throw "Private CPython-Vorbereitung fehlgeschlagen." }
+& (Join-Path $PrivateRuntime "python.exe") -m venv $BuildVenv
+if ($LASTEXITCODE -ne 0) { throw "Private Buildumgebung konnte nicht angelegt werden." }
+$Python = Join-Path $BuildVenv "Scripts\python.exe"
+& $Python -m pip install --force-reinstall --require-hashes --only-binary=:all: -r packaging\windows\requirements-release.txt
+& $Python -m pip install --no-deps --no-build-isolation -e .
+& $Python scripts\dependency_lock.py verify --lock packaging\windows\requirements-release.txt --installed
+& $Python -m pip check
+& $Python scripts\prepare_windows_components.py
 $InnoSetupCompiler = .\scripts\install_inno_setup.ps1
-.\scripts\build_windows.ps1 -InnoSetupCompiler $InnoSetupCompiler
+.\scripts\build_windows.ps1 -Python $Python -InnoSetupCompiler $InnoSetupCompiler
 ```
+
+Der private Klon enthält den ausdrücklich freigegebenen Standardbibliotheks-Backport für
+**CVE-2026-15806**. Er wird vor der virtuellen Buildumgebung erzeugt; ein bestehendes Ziel wird nicht
+wiederverwendet. Weder der gemeinsame `setup-python`-Interpreter noch eine vorhandene lokale `.venv`
+werden verändert. Interpreter und Buildumgebung liegen außerhalb von `build/windows`, weil dieser
+Ausgabeordner bei jedem Paketbau neu angelegt wird. Der Klon besitzt ein gehashtes Herkunfts-/Patchreceipt;
+die Laufzeit bleibt CPython 3.14.7 mit dokumentiertem Backport und wird nicht als neue Upstreamversion
+ausgegeben.
+
+`build_windows.ps1` prüft die korrigierte Build-Laufzeit vor dem Löschen alter Buildausgaben. Anschließend
+liest `packaging/windows/verify_frozen_runtime.py` den tatsächlichen `urllib.request`-Code aus den PYZ-Archiven
+aller drei erzeugten EXEs. Pythonmagic, vollständiger Code einschließlich verschachtelter Konstanten und die
+synthetischen Sicherheitsregressionen müssen stimmen; ausschließlich der buildabhängige Quelldateipfad wird
+beim Codevergleich ausgenommen. Erst danach dürfen Signierung und Installerbau beginnen. Die EXEs werden für
+diese Prüfung nicht gestartet. Fehlendes, veraltetes oder abweichendes Frozen-Modul beendet den Build.
+`build/windows/security/cpython-runtime.json` und `frozen-runtime.json` halten die Laufzeit- und
+Artefaktbindungen fest. Die Frozen-EXE-Hashes beziehen sich auf den Stand vor der Authenticode-Signierung;
+die fertigen Veröffentlichungsdateien erhalten weiterhin ihr separates abschließendes SHA256-Manifest.
 
 Für lokale und signierte GitHub-Builds gilt der vollständige, gehashte Windows-x64-Lock
 `packaging\windows\requirements-release.txt` zusammen mit CPython 3.14.7. Der Workflow installiert diesen Lock

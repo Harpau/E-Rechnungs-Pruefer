@@ -47,6 +47,10 @@ jobs:
         with:
           python-version: "3.14.7"
           cache: pip
+      - name: Prepare private CPython security backport
+        run: |
+          python scripts/cpython_security.py clone --destination "$RUNNER_TEMP/einvoice-cpython-security" --output .cache/source-evidence/cpython-security.json
+          echo "$RUNNER_TEMP/einvoice-cpython-security/bin" >> "$GITHUB_PATH"
       - name: Create fresh build environment
         run: |
           python -m venv .venv
@@ -61,13 +65,13 @@ jobs:
       - name: Verify versions
         run: python scripts/verify_version.py
       - name: Ruff lint
-        run: python -m ruff check app tests scripts
+        run: python -m ruff check app tests scripts packaging/windows/verify_frozen_runtime.py
       - name: Ruff format
-        run: python -m ruff format --check app tests scripts
+        run: python -m ruff format --check app tests scripts packaging/windows/verify_frozen_runtime.py
       - name: Mypy
         run: |
           python -m mypy
-          python -m mypy scripts/dependency_lock.py scripts/dependency_audit.py scripts/acceptance_context.py scripts/test_container.py scripts/test_kosit_components.py scripts/check_source_artifacts.py scripts/docker_runtime_lock.py scripts/build_container_rootfs.py scripts/check_container_coverage.py scripts/test_container_runtime.py scripts/check_container_mounts.py
+          python -m mypy scripts/dependency_lock.py scripts/dependency_audit.py scripts/acceptance_context.py scripts/test_container.py scripts/test_kosit_components.py scripts/check_source_artifacts.py scripts/docker_runtime_lock.py scripts/build_container_rootfs.py scripts/check_container_coverage.py scripts/test_container_runtime.py scripts/check_container_mounts.py scripts/cpython_security.py packaging/windows/verify_frozen_runtime.py
       - name: Tests with coverage
         run: python -m pytest --cov=app --cov-report=term-missing --cov-report=xml
       - name: Package metadata
@@ -136,6 +140,13 @@ jobs:
           python-version: "3.14.7"
           cache: pip
           cache-dependency-path: packaging/windows/requirements-release.txt
+      - name: Prepare private CPython security backport
+        shell: pwsh
+        run: |
+          $privatePython = Join-Path $env:RUNNER_TEMP "einvoice-cpython-security"
+          python scripts/cpython_security.py clone --destination $privatePython --output .cache/dependency-evidence/cpython-security.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $privatePython | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Create fresh Windows build environment
         shell: pwsh
         run: |
@@ -163,7 +174,7 @@ jobs:
           tests/test_windows_install_conflicts.py
           tests/test_windows_install_transaction.py
           tests/test_windows_install_recovery.py tests/test_windows_install_reconcile.py
-          tests/test_windows_open_client_transaction.py tests/test_windows_native_adapters.py tests/test_acceptance_context.py
+          tests/test_windows_open_client_transaction.py tests/test_windows_native_adapters.py tests/test_acceptance_context.py tests/test_cpython_security.py tests/test_windows_frozen_runtime.py
       - name: Native Windows evidence hashing regression
         run: python -m pytest tests/test_release_evidence.py -k native_evidence_bytes_with_executable_extension_are_read_not_run
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -242,6 +253,7 @@ jobs:
             .cache/acceptance/
             .cache/acceptance-logs/
             .cache/dependency-evidence/
+            build/windows/security/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-x64-package-${{ github.sha }}

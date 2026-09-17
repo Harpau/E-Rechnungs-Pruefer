@@ -12,6 +12,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
+RUN python scripts/cpython_security.py apply-current --prefix /usr/local \
+    --receipt /usr/local/share/e-rechnung-pruefer/cpython-security.json
 # This build chroot has no /proc/self/exe for Java's $ORIGIN lookup. Java,
 # its truststore and KoSIT are checked in the actual container with /proc.
 RUN test "$TARGETARCH" = "amd64" -o "$TARGETARCH" = "arm64" \

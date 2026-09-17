@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "cpython_version": "3.14.7",
+  "advisory": "CVE-2026-15806",
+  "upstream_commit": "a0d023fbd23773e24b35d8368789470e22cda5d8",
+  "relative_file": "urllib/request.py",
+  "before_sha256": "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430",
+  "after_sha256": "48fcaa1b047f09f53abf37a36184686a96d56ddaacc63ae6f9ebe9db1827f784",
+  "patch_file": "urllib-request-CVE-2026-15806.patch",
+  "patch_sha256": "ef82a430e0f017af34c0500559dc26a1dc32b4affde4a1f3579bc688686d6453",
+  "source_url": "https://raw.githubusercontent.com/python/cpython/v3.14.7/Lib/urllib/request.py",
+  "fix_url": "https://github.com/python/cpython/commit/a0d023fbd23773e24b35d8368789470e22cda5d8",
+  "before_crlf_sha256": "946659003d316161d74644f5f647dd58fea15718085e9431c28fb48f750bcc1a",
+  "after_crlf_sha256": "7ec6f61ad17cb155dbd9dffe9e7fd547e6ed2dc642e9f2a12f598ed84f7bacac"
+}

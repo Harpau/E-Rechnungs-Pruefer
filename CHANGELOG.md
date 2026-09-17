@@ -20,6 +20,9 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   der CreditNote-Syntax zu; interne Hinweise und offizielle Regelbefunde berücksichtigen diesen Stand.
 - Windows-Laufzeit und Dockerbasis auf Python 3.14.7 aktualisiert; Quellinstallationen unterstützen weiterhin
   Python ab 3.11. Java, Installer- und CI-Werkzeuge werden mit verifizierten Versionen und Hashes gebunden.
+- CPython 3.14.7 erhält in Docker und den Windows-Paketen den gezielten Upstream-Sicherheitsfix für
+  CVE-2026-15806: Für HTTPS gespeicherte urllib-Zugangsdaten werden nicht mehr für HTTP verwendet.
+  Private Build-Interpreter, exakte Quell-/Patchhashes und Prüfungen der ausgelieferten Laufzeit sichern den Backport.
 - Abnahme-Kontexte binden Commit, Lauf, Ziel und Artefakte vor Paketmutationen. Nutzerwarte-Kontexte sind
   120 Minuten gültig; alte oder bereits verbrauchte Kontexte werden zurückgewiesen.
 

@@ -35,12 +35,21 @@ $OpenClient = Join-Path $BundleRoot "E-Rechnungs-Pruefer-Oeffnen.exe"
 $DistRoot = Join-Path $ProjectRoot "dist"
 $PublishBundleRoot = Join-Path $BuildRoot "publish-bundle"
 $TestInstallerRoot = Join-Path $BuildRoot "test-installer"
+$SecurityEvidenceRoot = Join-Path $BuildRoot "security"
+$FrozenRuntimeVerifier = Join-Path $ProjectRoot "packaging\windows\verify_frozen_runtime.py"
 
 if (-not $IsWindows) {
     throw "Das Windows-Paket kann nur unter Windows gebaut werden."
 }
 if (-not [Environment]::Is64BitProcess) {
     throw "Der Build muss mit einem x64-Python-Prozess laufen."
+}
+
+# Verify the private, patched interpreter before removing build output or collecting code.
+# The helper never patches a runtime in verify-runtime mode.
+$RuntimeVerification = & $Python (Join-Path $ProjectRoot "scripts\cpython_security.py") verify-runtime
+if ($LASTEXITCODE -ne 0) {
+    throw "Die private CPython-Laufzeit enthält nicht den verifizierten Sicherheitsbackport."
 }
 
 $AzureSigningValues = @(
@@ -69,6 +78,8 @@ Remove-Item $BuildRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $BundleRoot -ItemType Directory -Force | Out-Null
 New-Item $WorkRoot -ItemType Directory -Force | Out-Null
 New-Item $DistRoot -ItemType Directory -Force | Out-Null
+New-Item $SecurityEvidenceRoot -ItemType Directory -Force | Out-Null
+$RuntimeVerification | Set-Content -LiteralPath (Join-Path $SecurityEvidenceRoot "cpython-runtime.json") -Encoding utf8
 
 & $Python -m PyInstaller `
     --clean `
@@ -106,6 +117,17 @@ foreach ($ExpectedExecutable in @($DesktopExecutable, $ServiceExecutable, $OpenC
     if (-not (Test-Path -LiteralPath $ExpectedExecutable)) {
         throw "Das erwartete PyInstaller-Artefakt wurde nicht erzeugt: $ExpectedExecutable"
     }
+}
+
+# Read all actual frozen PYZ payloads and run the synthetic security regressions
+# before any application binary is signed or included in an installer.
+& $Python $FrozenRuntimeVerifier `
+    --executable $DesktopExecutable `
+    --executable $ServiceExecutable `
+    --executable $OpenClient `
+    --output (Join-Path $SecurityEvidenceRoot "frozen-runtime.json")
+if ($LASTEXITCODE -ne 0) {
+    throw "Der Sicherheitsbackport fehlt in mindestens einem eingefrorenen Windows-Artefakt."
 }
 
 function Resolve-SignTool {

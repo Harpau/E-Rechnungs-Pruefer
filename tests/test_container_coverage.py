@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,6 +16,41 @@ SPEC = importlib.util.spec_from_file_location("check_container_coverage", ROOT /
 assert SPEC and SPEC.loader
 coverage = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(coverage)
+REAL_SECURITY_SUPPORT = coverage.security_support
+
+SECURITY_PATH = "/usr/local/share/e-rechnung-pruefer/cpython-security.json"
+SECURITY_TARGET = "/usr/local/lib/python3.14/urllib/request.py"
+SECURITY_CONTENT = b"# Synthetic security-backported stdlib fixture\n"
+
+
+def security_receipt() -> dict:
+    return {
+        "schema_version": 1,
+        "cpython_version": "3.14.7",
+        "advisory": "CVE-2026-15806",
+        "upstream_commit": "a0d023fbd23773e24b35d8368789470e22cda5d8",
+        "relative_file": "urllib/request.py",
+        "input_sha256": "1" * 64,
+        "output_sha256": hashlib.sha256(SECURITY_CONTENT).hexdigest(),
+        "canonical_before_sha256": "1" * 64,
+        "canonical_after_sha256": hashlib.sha256(SECURITY_CONTENT).hexdigest(),
+        "patch_sha256": "2" * 64,
+        "metadata_sha256": "3" * 64,
+        "helper_sha256": "4" * 64,
+        "line_endings": "lf",
+    }
+
+
+@pytest.fixture(autouse=True)
+def synthetic_security_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    # This suite tests integration with synthetic image bytes. The canonical
+    # helper separately tests the actual upstream patch and credential behavior.
+    def validate(receipt: dict, *, target: Path | None = None) -> dict:
+        if receipt != security_receipt() or (target is not None and target.read_bytes() != SECURITY_CONTENT):
+            raise RuntimeError("Synthetic canonical security receipt/file mismatch")
+        return receipt
+
+    monkeypatch.setattr(coverage, "security_support", lambda: SimpleNamespace(validate_receipt=validate), raising=False)
 
 
 def digest(value: bytes) -> str:
@@ -92,6 +128,29 @@ def fixture(tmp_path: Path) -> tuple[dict, dict, dict, Path]:
     python_origin = {"kind": "cpython", "version": "3.14.7", "base_image": manifest["base_image"]}
     put("/usr/local/bin/python3.14", b"\x7fELFsynthetic interpreter", python_origin, 0o755)
     put("/usr/local/lib/libpython3.14.so.1.0", b"\x7fELFsynthetic libpython", python_origin, 0o755)
+    receipt = security_receipt()
+    receipt_bytes = (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode()
+    binding = {"receipt_path": SECURITY_PATH, "receipt_sha256": digest(receipt_bytes), "receipt": receipt}
+    manifest["cpython_security"] = binding
+    common = {
+        "version": "3.14.7",
+        "base_image": manifest["base_image"],
+        "receipt_sha256": binding["receipt_sha256"],
+        **{
+            key: receipt[key]
+            for key in (
+                "advisory",
+                "upstream_commit",
+                "input_sha256",
+                "output_sha256",
+                "patch_sha256",
+                "metadata_sha256",
+                "helper_sha256",
+            )
+        },
+    }
+    put(SECURITY_TARGET, SECURITY_CONTENT, {"kind": "cpython-security-backport", **common})
+    put(SECURITY_PATH, receipt_bytes, {"kind": "cpython-security-receipt", **common})
     python_packages = []
     installed = []
     original = json.loads((ROOT / "packaging/docker/requirements-linux-amd64.txt.metadata.json").read_text())
@@ -162,6 +221,117 @@ def test_exact_runtime_manifest_inventory_and_trivy_coverage_pass(tmp_path: Path
     assert report["python_distributions"] == 27
     assert report["cpython_version"] == "3.14.7"
     assert coverage.verify_payload(manifest, image)["payload_passed"] is True
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing_binding",
+        "wrong_receipt_path",
+        "wrong_receipt_hash",
+        "wrong_policy",
+        "unmodified_origin",
+        "wrong_target_hash",
+        "wrong_receipt_type",
+        "backport_elsewhere",
+        "changed_receipt_bytes",
+        "changed_target_bytes",
+    ],
+)
+def test_cpython_backport_requires_exact_policy_receipt_payload_and_provenance(tmp_path: Path, change: str) -> None:
+    manifest, _, _, image = fixture(tmp_path)
+    binding = manifest["cpython_security"]
+    if change == "missing_binding":
+        del manifest["cpython_security"]
+    elif change == "wrong_receipt_path":
+        binding["receipt_path"] = "/etc/alternate-security.json"
+    elif change == "wrong_receipt_hash":
+        binding["receipt_sha256"] = "0" * 64
+    elif change == "wrong_policy":
+        binding["receipt"]["upstream_commit"] = "0" * 40
+    elif change == "unmodified_origin":
+        manifest["files"][SECURITY_TARGET]["provenance"]["kind"] = "cpython"
+    elif change == "wrong_target_hash":
+        manifest["files"][SECURITY_TARGET]["sha256"] = "0" * 64
+    elif change == "wrong_receipt_type":
+        manifest["files"][SECURITY_PATH]["type"] = "symlink"
+    elif change == "backport_elsewhere":
+        manifest["files"]["/usr/local/lib/python3.14/other.py"] = copy.deepcopy(manifest["files"][SECURITY_TARGET])
+    elif change == "changed_receipt_bytes":
+        (image / SECURITY_PATH.lstrip("/")).write_bytes(b"{}\n")
+    else:
+        (image / SECURITY_TARGET.lstrip("/")).write_bytes(b"unpatched source\n")
+    with pytest.raises(coverage.CoverageError):
+        coverage.verify_payload(manifest, image)
+
+
+def test_offline_payload_check_never_claims_native_cpython_behavior(tmp_path: Path) -> None:
+    manifest, _, _, image = fixture(tmp_path)
+    result = coverage.verify_payload(manifest, image)
+    assert result["cpython_security"]["behavior_checked"] is False
+
+
+def test_real_security_helper_accepts_only_the_canonical_patched_manifest_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, _, _, image = fixture(tmp_path)
+    security = REAL_SECURITY_SUPPORT()
+    before = (Path(__file__).parent / "fixtures/cpython3147/urllib-request.source").read_bytes()
+    after = security.patch_bytes(before)
+    receipt = security.make_receipt(before, after)
+    receipt_bytes = (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode()
+    binding = {"receipt_path": SECURITY_PATH, "receipt_sha256": digest(receipt_bytes), "receipt": receipt}
+    manifest["cpython_security"] = binding
+    for path, content in [(SECURITY_TARGET, after), (SECURITY_PATH, receipt_bytes)]:
+        (image / path.lstrip("/")).write_bytes(content)
+        entry = manifest["files"][path]
+        entry.update(sha256=digest(content), size=len(content))
+        entry["provenance"].update(receipt_sha256=binding["receipt_sha256"])
+        entry["provenance"].update({key: receipt[key] for key in coverage.SECURITY_FIELDS})
+    monkeypatch.setattr(coverage, "security_support", REAL_SECURITY_SUPPORT)
+    assert coverage.verify_payload(manifest, image)["payload_passed"] is True
+    binding["receipt"]["helper_sha256"] = "0" * 64
+    with pytest.raises(coverage.CoverageError, match="pinned provenance"):
+        coverage.verify_payload(manifest, image)
+
+
+@pytest.mark.parametrize("change", [None, "behavior", "module", "hash", "receipt_hash", "receipt", "error"])
+def test_native_cpython_behavior_is_bound_to_actual_module_and_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str | None
+) -> None:
+    manifest, _, _, _ = fixture(tmp_path)
+    binding = manifest["cpython_security"]
+    result = {
+        "behavior_passed": True,
+        "module_path": SECURITY_TARGET,
+        "relative_file": "urllib/request.py",
+        "output_sha256": security_receipt()["output_sha256"],
+        "receipt_sha256": binding["receipt_sha256"],
+        "receipt": security_receipt(),
+        "cases": [{"name": "synthetic behavior", "passed": True}],
+    }
+    field = {
+        "behavior": "behavior_passed",
+        "module": "module_path",
+        "hash": "output_sha256",
+        "receipt_hash": "receipt_sha256",
+        "receipt": "receipt",
+    }.get(change)
+    if field:
+        result[field] = False if change == "behavior" else "invalid"
+
+    def verify() -> dict:
+        if change == "error":
+            raise RuntimeError("Runtime security regression failed")
+        return result
+
+    monkeypatch.setattr(coverage, "security_support", lambda: SimpleNamespace(verify_runtime=verify))
+    if change is None:
+        report = coverage.verify_security_runtime(binding, Path("/"))
+        assert report["behavior_checked"] is True and report["runtime"] == result
+    else:
+        with pytest.raises(coverage.CoverageError):
+            coverage.verify_security_runtime(binding, Path("/"))
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,7 @@ import configparser
 import csv
 import email.parser
 import hashlib
+import importlib.util
 import json
 import os
 import posixpath
@@ -26,6 +27,7 @@ import sys
 import zipfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 from typing import Any
 
 DEFAULT_BASE_IMAGE = "python:3.14.7-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6"
@@ -35,10 +37,30 @@ PYTHON_STDLIB = "/usr/local/lib/python3.14"
 RUNTIME = "/opt/runtime"
 SITE_PACKAGES = RUNTIME + "/lib/python3.14/site-packages"
 BOOTSTRAP_PACKAGES = {"pip", "setuptools", "wheel", "packaging"}
+SECURITY_RECEIPT = "/usr/local/share/e-rechnung-pruefer/cpython-security.json"
+SECURITY_TARGET = PYTHON_STDLIB + "/urllib/request.py"
+SECURITY_FIELDS = (
+    "advisory",
+    "upstream_commit",
+    "input_sha256",
+    "output_sha256",
+    "patch_sha256",
+    "metadata_sha256",
+    "helper_sha256",
+)
 
 
 class RootfsError(RuntimeError):
     """Runtime closure or provenance could not be proved."""
+
+
+def security_support() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("cpython_security", Path(__file__).with_name("cpython_security.py"))
+    if spec is None or spec.loader is None:
+        raise RootfsError("CPython security verifier could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class ElfInspectionError(RootfsError):
@@ -378,6 +400,40 @@ class RootfsBuilder:
         self.entries: dict[str, dict[str, Any]] = {}
         self.packages: set[str] = set()
         self._copying: set[str] = set()
+        self.cpython_security: dict[str, Any] | None = None
+
+    def security_binding(self) -> dict[str, Any]:
+        """Validate the exact patch receipt and source bytes before attribution."""
+        receipt_path, target = image_path(self.source, SECURITY_RECEIPT), image_path(self.source, SECURITY_TARGET)
+        try:
+            if any(not stat.S_ISREG(path.lstat().st_mode) for path in (receipt_path, target)):
+                raise RootfsError("CPython backport and receipt must be regular files")
+            payload = receipt_path.read_bytes()
+            receipt = json.loads(payload)
+            security_support().validate_receipt(receipt, target=target)
+            if receipt["line_endings"] != "lf":
+                raise RootfsError("Linux CPython backport must preserve canonical LF bytes")
+            binding = {
+                "receipt_path": SECURITY_RECEIPT,
+                "receipt_sha256": hashlib.sha256(payload).hexdigest(),
+                "receipt": receipt,
+            }
+            if self.cpython_security is not None and binding != self.cpython_security:
+                raise RootfsError("CPython security receipt changed during rootfs assembly")
+            self.cpython_security = binding
+            return binding
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            raise RootfsError(f"Unproved CPython security backport: {exc}") from exc
+
+    def security_provenance(self, path: str) -> dict[str, Any]:
+        binding = self.security_binding()
+        return {
+            "kind": "cpython-security-backport" if path == SECURITY_TARGET else "cpython-security-receipt",
+            "version": PYTHON_VERSION,
+            "base_image": self.base_image,
+            "receipt_sha256": binding["receipt_sha256"],
+            **{key: binding["receipt"][key] for key in SECURITY_FIELDS},
+        }
 
     def package(self, name: str) -> str:
         matches = [key for key in self.statuses if key.split(":")[0] == name]
@@ -482,6 +538,9 @@ class RootfsBuilder:
         }
 
     def provenance(self, path: str, *, symlink: bool = False) -> dict[str, Any]:
+        if path in {SECURITY_TARGET, SECURITY_RECEIPT}:
+            # A patched stdlib file is not unmodified official-image payload.
+            return self.security_provenance(path)
         owners = self.owners.get(path, [])
         if owners:
             if any(owner not in self.statuses for owner in owners):
@@ -721,6 +780,7 @@ class RootfsBuilder:
         self.generated("/var/lib/dpkg/status", combined.encode(), "unmodified retained-package dpkg stanzas")
 
     def runtime_roots(self) -> None:
+        self.copy_path(SECURITY_RECEIPT)
         for path in ("/usr/local/bin/python", "/usr/local/bin/python3", "/usr/local/bin/python3.14"):
             self.copy_path(path)
         for library_path in sorted((self.source / "usr/local/lib").glob("libpython*.so*")):
@@ -802,6 +862,21 @@ class RootfsBuilder:
                 resolved = resolve_image(self.output, path)
                 if not image_path(self.output, resolved).exists():
                     raise RootfsError(f"Dangling output symlink: {path}")
+        binding = self.security_binding()
+        for path, expected_hash in (
+            (SECURITY_TARGET, binding["receipt"]["output_sha256"]),
+            (SECURITY_RECEIPT, binding["receipt_sha256"]),
+        ):
+            copied = image_path(self.output, path)
+            entry = self.entries.get(path, {})
+            if (
+                not copied.exists()
+                or not stat.S_ISREG(copied.lstat().st_mode)
+                or sha256(copied) != expected_hash
+                or entry.get("sha256") != expected_hash
+                or entry.get("provenance") != self.security_provenance(path)
+            ):
+                raise RootfsError(f"Copied CPython security binding differs: {path}")
         package_metadata = {}
         for package in sorted(self.packages):
             fields = email.parser.Parser().parsestr(self.statuses[package])
@@ -823,6 +898,7 @@ class RootfsBuilder:
             "schema_version": 1,
             "base_image": self.base_image,
             "cpython_version": PYTHON_VERSION,
+            "cpython_security": binding,
             "builder_script_sha256": sha256(Path(__file__)),
             "runtime_lock_sha256": sha256(lock),
             "runtime_metadata_sha256": sha256(metadata),

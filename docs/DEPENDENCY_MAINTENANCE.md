@@ -153,6 +153,11 @@ Distributionsergebnis allein belegt keine vollständige Unbetroffenheit des Imag
 
 ## Versionsentscheidungen und Dependabot
 
+Der gezielte CPython-3.14.7-Backport für CVE-2026-15806 und seine Grenzen für
+Quellinstallationen sind in [CPYTHON_SECURITY.md](CPYTHON_SECURITY.md) beschrieben.
+Docker-Dateimanifest und Windows-Frozen-Prüfung binden den tatsächlich korrigierten
+Standardbibliothekscode; ein Paketversionsaudit allein würde diesen Nachweis nicht liefern.
+
 Aktualisierungen wählen den neuesten gemeinsam verträglichen stabilen Stand.
 `Requires-Python`, Wheel-/ABI-Verfügbarkeit, Marker und gekoppelte Pins bleiben
 verbindlich; ein transitives Paket darf nicht gegen einen exakten Pin seines

@@ -8,6 +8,7 @@ import os
 import struct
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -638,3 +639,117 @@ def test_manifest_hashes_files_and_never_labels_unknown_payload_as_cpython(tmp_p
     put(build.source, "/usr/local/unapproved/foreign.so", b"unknown")
     with pytest.raises(rootfs.RootfsError, match="provenance"):
         build.copy_path("/usr/local/unapproved/foreign.so")
+
+
+def security_fixture(build, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str, dict]:
+    target = "/usr/local/lib/python3.14/urllib/request.py"
+    receipt_path = "/usr/local/share/e-rechnung-pruefer/cpython-security.json"
+    payload = b"# Synthetic corrected urllib module\n"
+    receipt = {
+        "schema_version": 1,
+        "cpython_version": "3.14.7",
+        "advisory": "CVE-2026-15806",
+        "upstream_commit": "a0d023fbd23773e24b35d8368789470e22cda5d8",
+        "relative_file": "urllib/request.py",
+        "input_sha256": "1" * 64,
+        "output_sha256": hashlib.sha256(payload).hexdigest(),
+        "canonical_before_sha256": "1" * 64,
+        "canonical_after_sha256": hashlib.sha256(payload).hexdigest(),
+        "patch_sha256": "2" * 64,
+        "metadata_sha256": "3" * 64,
+        "helper_sha256": "4" * 64,
+        "line_endings": "lf",
+    }
+    put(build.source, target, payload)
+    put(build.source, receipt_path, (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode())
+
+    def validate(value: dict, *, target: Path | None = None) -> dict:
+        # The canonical helper has its own exact upstream-byte/behavior tests;
+        # integration tests use synthetic bytes and still require the real file.
+        if value != receipt or target is None or target.read_bytes() != payload:
+            raise RuntimeError("Synthetic receipt/target validation failed")
+        return value
+
+    monkeypatch.setattr(rootfs, "security_support", lambda: SimpleNamespace(validate_receipt=validate), raising=False)
+    return target, receipt_path, receipt
+
+
+def test_backported_cpython_file_and_receipt_have_explicit_manifest_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = builder(tmp_path)
+    target, receipt_path, receipt = security_fixture(build, monkeypatch)
+    build.copy_path(target)
+    build.copy_path(receipt_path)
+    origin = build.entries[target]["provenance"]
+    assert origin["kind"] == "cpython-security-backport"
+    assert origin["output_sha256"] == build.entries[target]["sha256"]
+    assert origin["receipt_sha256"] == build.entries[receipt_path]["sha256"]
+    assert build.entries[receipt_path]["provenance"]["kind"] == "cpython-security-receipt"
+    lock, metadata = tmp_path / "lock", tmp_path / "metadata"
+    lock.write_bytes(b"synthetic lock")
+    metadata.write_bytes(b"synthetic metadata")
+    build.write_manifest(lock=lock, metadata=metadata)
+    manifest = json.loads((build.output / rootfs.MANIFEST_PATH.lstrip("/")).read_bytes())
+    assert manifest["cpython_security"] == {
+        "receipt_path": receipt_path,
+        "receipt_sha256": rootfs.sha256(build.output / receipt_path.lstrip("/")),
+        "receipt": receipt,
+    }
+    assert (build.output / receipt_path.lstrip("/")).read_bytes() == (
+        build.source / receipt_path.lstrip("/")
+    ).read_bytes()
+
+
+@pytest.mark.parametrize(
+    "change", ["missing_receipt", "receipt_symlink", "target_symlink", "receipt_content", "unpatched"]
+)
+def test_rootfs_never_labels_unproved_backport_as_official_cpython(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    build = builder(tmp_path)
+    target, receipt_path, _ = security_fixture(build, monkeypatch)
+    receipt_file, target_file = build.source / receipt_path.lstrip("/"), build.source / target.lstrip("/")
+    if change == "missing_receipt":
+        receipt_file.unlink()
+    elif change.endswith("symlink"):
+        path = receipt_file if change == "receipt_symlink" else target_file
+        saved = path.with_name(path.name + ".saved")
+        path.rename(saved)
+        path.symlink_to(saved)
+    elif change == "receipt_content":
+        receipt_file.write_bytes(b"{}\n")
+    else:
+        target_file.write_bytes(b"unpatched urllib module")
+    with pytest.raises(rootfs.RootfsError):
+        build.copy_path(target)
+
+
+@pytest.mark.parametrize("changed", ["target", "receipt"])
+def test_rootfs_rechecks_backport_bytes_after_copy_before_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    build = builder(tmp_path)
+    target, receipt_path, _ = security_fixture(build, monkeypatch)
+    build.copy_path(target)
+    build.copy_path(receipt_path)
+    (build.output / (target if changed == "target" else receipt_path).lstrip("/")).write_bytes(b"changed after copy")
+    with pytest.raises(rootfs.RootfsError):
+        build.write_manifest(lock=tmp_path / "unused", metadata=tmp_path / "unused")
+
+
+def test_rootfs_integration_validates_canonical_upstream_patch_with_real_helper(tmp_path: Path) -> None:
+    build = builder(tmp_path)
+    security = rootfs.security_support()
+    before = (Path(__file__).parent / "fixtures/cpython3147/urllib-request.source").read_bytes()
+    after = security.patch_bytes(before)
+    receipt = security.make_receipt(before, after)
+    put(build.source, rootfs.SECURITY_TARGET, after)
+    put(build.source, rootfs.SECURITY_RECEIPT, (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode())
+    build.copy_path(rootfs.SECURITY_TARGET)
+    build.copy_path(rootfs.SECURITY_RECEIPT)
+    assert build.entries[rootfs.SECURITY_TARGET]["sha256"] == security.AFTER
+    assert build.entries[rootfs.SECURITY_TARGET]["provenance"]["helper_sha256"] == receipt["helper_sha256"]
+    (build.source / rootfs.SECURITY_TARGET.lstrip("/")).write_bytes(before)
+    with pytest.raises(rootfs.RootfsError, match="target bytes"):
+        build.security_binding()

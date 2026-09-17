@@ -12,6 +12,7 @@ import shutil
 import socket
 import ssl
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -26,6 +27,11 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = PROJECT_ROOT / "scripts"
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from cpython_security import verify_runtime  # noqa: E402
 
 
 def require(value: bool, message: str) -> None:
@@ -93,6 +99,7 @@ def run_smoke() -> dict[str, Any]:
     font = PROJECT_ROOT / "app/assets/fonts/NotoSans-Regular.ttf"
     return {
         "passed": True,
+        "cpython_security": verify_runtime(),
         "uid": os.getuid(),
         "gid": os.getgid(),
         "ca_certificates": certificates,
