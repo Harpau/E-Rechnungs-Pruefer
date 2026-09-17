@@ -33,8 +33,11 @@ if str(ROOT) not in sys.path:
 from scripts import acceptance_context as acceptance  # noqa: E402
 from scripts.processing_smoke import large_example, maximum_xml, windows_memory_counters  # noqa: E402
 
-CASES = ("health", "worker-death", "supervisor-death", "parent-death", "controlled-stop", "xml25")
+CASES = ("held-responses", "health", "worker-death", "supervisor-death", "parent-death", "controlled-stop", "xml25")
 MAX_RESULT = 64 * 1024**2
+HELD_XML_BYTES = 25 * 1024**2
+HELD_SEND_SECONDS = 25.0  # Five seconds below the unchanged product send deadline.
+HELD_OBSERVE_SECONDS = 15.0
 _native_ctypes: Any = ctypes
 
 
@@ -411,6 +414,7 @@ class Request:
         self.record: dict[str, Any] = {}
         self.error: BaseException | None = None
         self.connection = http.client.HTTPConnection("127.0.0.1", port, timeout=45)
+        self._transport_socket: socket.socket | None = None
         self.thread = threading.Thread(target=self._run, args=(token, payload, export), daemon=True)
 
     def _run(self, token: str, payload: bytes, export: bool) -> None:
@@ -423,12 +427,15 @@ class Request:
                 {"Authorization": "Bearer " + token, "Content-Type": media},
             )
             del body
+            self._transport_socket = self.connection.sock
             response = self.connection.getresponse()
+            self._before_read(response, payload)
             digest = hashlib.sha256()
             size = 0
             prefix = b""
             tail = b""
-            while chunk := response.read(65536):
+            error_prefix = b""
+            while chunk := self._read_chunk(response):
                 if size + len(chunk) > MAX_RESULT:
                     raise ProbeError("Response exceeded the fixed test output bound.")
                 if export and response.status == 200 and payload[size : size + len(chunk)] != chunk:
@@ -437,6 +444,17 @@ class Request:
                 digest.update(chunk)
                 prefix = (prefix + chunk)[:8]
                 tail = (tail + chunk)[-1024:]
+                if response.status == 503:
+                    error_prefix = (error_prefix + chunk)[:4097]
+            error_type = None
+            if response.status == 503 and len(error_prefix) <= 4096:
+                try:
+                    envelope = json.loads(error_prefix)
+                    candidate = envelope.get("type") if isinstance(envelope, dict) else None
+                    if isinstance(candidate, str) and len(candidate) <= 80:
+                        error_type = candidate
+                except (ValueError, UnicodeError):
+                    pass
             self.record = {
                 "status": response.status,
                 "bytes": size,
@@ -444,6 +462,7 @@ class Request:
                 "media_type": response.getheader("Content-Type"),
                 "pdf_markers": prefix.startswith(b"%PDF-") and b"%%EOF" in tail,
                 "byte_identical": export and response.status == 200 and size == len(payload),
+                "error_type": error_type,
             }
         except BaseException as exc:
             self.error = exc
@@ -454,8 +473,147 @@ class Request:
     def start(self) -> None:
         self.thread.start()
 
+    def _before_read(self, response: http.client.HTTPResponse, payload: bytes) -> None:
+        pass
+
+    def _read_chunk(self, response: http.client.HTTPResponse) -> bytes:
+        return response.read(65536)
+
+    def abort(self) -> None:
+        # Keep the owned socket object, even if HTTPConnection detached it for
+        # a close-delimited response. Never act on a reused numeric descriptor.
+        channel = self._transport_socket or self.connection.sock
+        if channel is not None:
+            try:
+                channel.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        self.connection.close()
+
     def close(self) -> None:
         self.connection.close()
+
+
+class HeldHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, port: int) -> None:
+        super().__init__("127.0.0.1", port, timeout=20)
+        self.receive_buffer_bytes = 0
+
+    def connect(self) -> None:
+        channel = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            channel.settimeout(20)
+            channel.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            self.receive_buffer_bytes = channel.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+            if not 0 < self.receive_buffer_bytes <= 256 * 1024:
+                raise ProbeError("The fixed receive buffer could not be established.")
+            channel.connect(("127.0.0.1", self.port))
+            self.sock = channel
+        except BaseException:
+            channel.close()
+            raise
+
+
+class HeldResponseRequest(Request):
+    connection: HeldHTTPConnection
+
+    def __init__(self, port: int, token: str, payload: bytes) -> None:
+        if len(payload) != HELD_XML_BYTES:
+            raise ProbeError("Only the fixed 25MiB XML response case is permitted.")
+        super().__init__(port, token, payload, export=True)
+        self.connection = HeldHTTPConnection(port)
+        self.header_ready = threading.Event()
+        self.release_reading = threading.Event()
+        self.aborted = threading.Event()
+        self.header_received_at = 0.0
+        self.header_record: dict[str, Any] = {}
+        self.body_reads = 0
+        self.drain_deadline = 0.0
+
+    def _before_read(self, response: http.client.HTTPResponse, payload: bytes) -> None:
+        lengths = [value for key, value in response.getheaders() if key.lower() == "content-length"]
+        if response.status != 200 or lengths != [str(len(payload))]:
+            raise ProbeError("Complete maximum XML response headers missing.")
+        self.header_record = {"status": response.status, "content_length": len(payload)}
+        self.header_received_at = time.monotonic()
+        self.drain_deadline = self.header_received_at + HELD_SEND_SECONDS
+        self.header_ready.set()
+        if not self.release_reading.wait(HELD_OBSERVE_SECONDS) or self.aborted.is_set():
+            raise ProbeError("The bounded held-response observation was aborted or expired.")
+
+    def allow_reading(self, deadline: float) -> None:
+        if not self.header_ready.is_set() or not time.monotonic() < deadline <= self.drain_deadline:
+            raise ProbeError("The common response deadline cannot be extended.")
+        self.drain_deadline = deadline
+        self.release_reading.set()
+
+    def _read_chunk(self, response: http.client.HTTPResponse) -> bytes:
+        remaining = self.drain_deadline - time.monotonic()
+        if remaining <= 0 or self.aborted.is_set() or self._transport_socket is None:
+            raise ProbeError("The fixed response-drain deadline expired.")
+        self._transport_socket.settimeout(min(3.0, remaining))
+        self.body_reads += 1
+        chunk = response.read1(65536)
+        if time.monotonic() >= self.drain_deadline:
+            raise ProbeError("The fixed response-drain deadline expired.")
+        return chunk
+
+    def close(self) -> None:
+        self.aborted.set()
+        self.release_reading.set()
+        self.abort()
+
+
+def held_response_deadline(requests: list[HeldResponseRequest]) -> float:
+    if len(requests) != 2 or any(
+        not request.header_ready.is_set()
+        or request.done.is_set()
+        or request.error is not None
+        or request.body_reads != 0
+        or request.release_reading.is_set()
+        or request.header_record != {"status": 200, "content_length": HELD_XML_BYTES}
+        for request in requests
+    ):
+        raise Inconclusive("Both complete response bodies are not simultaneously held.")
+    first = min(request.header_received_at for request in requests)
+    last = max(request.header_received_at for request in requests)
+    if not 0 < first <= last <= time.monotonic() < first + HELD_OBSERVE_SECONDS or last - first >= 10:
+        raise Inconclusive("The shared response observation window expired.")
+    return first + HELD_SEND_SECONDS
+
+
+def validate_held_capacity(record: dict[str, Any], elapsed: float) -> None:
+    if record.get("status") != 503 or record.get("error_type") != "analysis_capacity_error" or not 0 <= elapsed < 1:
+        raise ProbeError("The third request did not prove two held leases within one second.")
+
+
+def validate_held_memory(metrics: dict[str, Any]) -> None:
+    observations = metrics.get("memory_observations", [])
+    if [item.get("phase") for item in observations] != ["bound", "both-held", "before-close"]:
+        raise ProbeError("Three bound backend memory observations are required.")
+    previous_peaks = (0, 0)
+    for item in observations:
+        fields = (
+            "sample_working_set_bytes",
+            "peak_working_set_bytes",
+            "sample_private_commit_bytes",
+            "peak_private_commit_bytes",
+        )
+        if (
+            item.get("status") != "observed"
+            or item.get("unit") != "bytes"
+            or item.get("method") != "K32GetProcessMemoryInfo"
+            or any(type(item.get(name)) is not int or item[name] <= 0 for name in fields)
+        ):
+            raise ProbeError("Actual backend byte counters are unavailable.")
+        peaks = (item[fields[1]], item[fields[3]])
+        if (
+            any(peak < prior for peak, prior in zip(peaks, previous_peaks, strict=True))
+            or item[fields[0]] > peaks[0]
+            or item[fields[2]] > peaks[1]
+        ):
+            raise ProbeError("Backend lifetime peak counters are inconsistent.")
+        previous_peaks = peaks
 
 
 def health(port: int) -> float:
@@ -580,6 +738,89 @@ def record_memory(api: WindowsAPI, handle: int, record: dict[str, Any], phase: s
     observations.append({"phase": phase, **value})
 
 
+def observe_held_responses(
+    api: WindowsAPI,
+    parent_handle: int,
+    parent_metrics: dict[str, Any],
+    binding: PackageBinding,
+    requests: list[HeldResponseRequest],
+    roles: list[int],
+    token: str,
+    started: float,
+    *,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    report = evidence if evidence is not None else {}
+    report["scope"] = "two held 25MiB XML responses; not the 128MiB JSON/HTML maxima"
+    while not all(request.header_ready.is_set() for request in requests):
+        known = [request.header_received_at for request in requests if request.header_ready.is_set()]
+        deadline = min(started + 20, min(known) + 10 if known else started + 20)
+        if any(request.done.is_set() for request in requests) or time.monotonic() >= deadline:
+            raise Inconclusive("Two timely held response headers could not be observed.")
+        time.sleep(0.002)
+    drain_deadline = held_response_deadline(requests)
+    # The product sends headers only after worker output and native cleanup.
+    # Independently confirm the held kernel identities ended before measuring.
+    if any(api.alive(handle) for handle in roles) or api.children(binding.parent_pid):
+        raise Inconclusive("Response headers overlap live processing roles.")
+    if not api.alive(parent_handle):
+        raise ProbeError("Bound backend ended before response measurement.")
+    api.listener(binding.port, binding.parent_pid)
+    report.update(
+        {
+            "response_bytes_each": HELD_XML_BYTES,
+            "total_response_payload_bytes": 2 * HELD_XML_BYTES,
+            "common_drain_deadline": drain_deadline,
+            "headers": [request.header_record for request in requests],
+            "headers_monotonic": [request.header_received_at for request in requests],
+            "receive_buffer_bytes": [request.connection.receive_buffer_bytes for request in requests],
+            "bound_roles_ended_before_measurement": True,
+        }
+    )
+    samples: list[float] = []
+    capacities: list[dict[str, Any]] = []
+    report["loaded_health_seconds"] = samples
+    report["capacity_before_and_after_measurement"] = capacities
+    for index in range(2):
+        held_response_deadline(requests)
+        capacity = Request(binding.port, token, b"<synthetic-capacity/>", export=True)
+        capacity_started = time.monotonic()
+        capacity.start()
+        try:
+            capacity.thread.join(1)
+            elapsed = time.monotonic() - capacity_started
+            held_response_deadline(requests)
+            if not capacity.done.is_set() or capacity.error is not None:
+                raise ProbeError("The third request exceeded its fixed capacity-probe deadline.")
+            validate_held_capacity(capacity.record, elapsed)
+            capacities.append({**capacity.record, "elapsed_seconds": elapsed})
+        finally:
+            capacity.abort()
+            capacity.thread.join(1)
+            if capacity.thread.is_alive():
+                raise ProbeError("The owned capacity client did not stop.")
+        if index == 0:
+            report["memory_query_started_monotonic"] = time.monotonic()
+            record_memory(api, parent_handle, parent_metrics, "both-held")
+            report["memory_query_finished_monotonic"] = time.monotonic()
+            for _ in range(3):
+                held_response_deadline(requests)
+                samples.append(health(binding.port))
+            validate_health(samples)
+    held_response_deadline(requests)
+    report["body_read_calls_before_release"] = [request.body_reads for request in requests]
+    report["released_monotonic"] = time.monotonic()
+    for request in requests:
+        request.allow_reading(drain_deadline)
+    for request in requests:
+        request.thread.join(max(0, drain_deadline - time.monotonic()))
+    if time.monotonic() >= drain_deadline or any(not request.done.is_set() or request.error for request in requests):
+        raise ProbeError("Both responses did not drain within the common 25-second deadline.")
+    report["drained_monotonic"] = time.monotonic()
+    report["drain_elapsed_since_first_header_seconds"] = report["drained_monotonic"] - min(report["headers_monotonic"])
+    return report
+
+
 def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
     probe_started = time.monotonic()
     if not args.confirm_isolated_environment:
@@ -635,10 +876,18 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             raise ProbeError("Token file invalid.")
         report["baseline_health_seconds"] = [health(b.port) for _ in range(3)]
         validate_health(report["baseline_health_seconds"])
-        payload, marker = (maximum_xml(), b"") if args.case == "xml25" else processing_fixture(nonce)
+        xml_export = args.case in {"xml25", "held-responses"}
+        payload, marker = (maximum_xml(), b"") if xml_export else processing_fixture(nonce)
         report["synthetic_input"] = {"size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
-        count = 2 if args.case == "health" else 1
-        requests = [Request(b.port, token, payload, export=args.case == "xml25") for _ in range(count)]
+        count = 2 if args.case in {"health", "held-responses"} else 1
+        held_requests = (
+            [HeldResponseRequest(b.port, token, payload) for _ in range(count)] if args.case == "held-responses" else []
+        )
+        requests = (
+            list(held_requests)
+            if held_requests
+            else [Request(b.port, token, payload, export=xml_export) for _ in range(count)]
+        )
         requests_started = time.monotonic()
         for request in requests:
             request.start()
@@ -665,7 +914,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                         time.monotonic() - requests_started
                     )
             workers = {pid for pid, (_, _, role) in held.items() if role == "worker"}
-            if len(held) == count * 2 and (args.case == "xml25" or (len(workers) == count and seen == workers)):
+            if len(held) == count * 2 and (xml_export or (len(workers) == count and seen == workers)):
                 break
             if any(r.done.is_set() for r in requests) or time.monotonic() >= deadline:
                 raise Inconclusive("Live role/active-input observation raced with completion or startup.")
@@ -674,11 +923,25 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
         report["processes"] = [
             {**p.public(), "role": role, "input_after_ready_observed": p.pid in seen} for _, p, role in held.values()
         ]
-        if args.case != "xml25":
+        if not xml_export:
             require_active(marker_seen=len(seen) == count, requests_done=any(r.done.is_set() for r in requests))
             if args.case == "controlled-stop":
                 report["ready_qpc_ticks"], report["qpc_frequency"] = api.qpc()
-        if args.case == "health":
+        if args.case == "held-responses":
+            held_evidence: dict[str, Any] = {}
+            report["held_responses"] = held_evidence
+            observe_held_responses(
+                api,
+                parent_handle,
+                parent_metrics,
+                b,
+                held_requests,
+                [h for h, _, _ in held.values()],
+                acceptance._read(args.token_file).decode("ascii").strip(),
+                requests_started,
+                evidence=held_evidence,
+            )
+        elif args.case == "health":
             samples = []
             for _ in range(3):
                 if any(r.done.is_set() for r in requests):
@@ -740,10 +1003,10 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             if not request.done.is_set():
                 raise ProbeError("HTTP test request exceeded its bounded wait.")
         wait_ended(api, [h for h, _, _ in held.values()])
-        if args.case in {"health", "xml25"}:
+        if args.case in {"health", "xml25", "held-responses"}:
             if any(r.error is not None or r.record.get("status") != 200 for r in requests):
                 raise ProbeError("Bound normal synthetic request failed.")
-            if args.case == "xml25" and not requests[0].record["byte_identical"]:
+            if xml_export and not all(request.record["byte_identical"] for request in requests):
                 raise ProbeError("Maximum XML bytes changed.")
             if args.case == "health" and not all(r.record["pdf_markers"] for r in requests):
                 raise ProbeError("PDF response incomplete.")
@@ -786,6 +1049,21 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                 request.close()
             except Exception as exc:
                 close_errors.append(type(exc).__name__)
+        if args.case == "held-responses":
+            # Abort every owned socket before joining any client, including
+            # clients whose header/response stage failed. Never free observers
+            # while a helper thread could still use them.
+            deadline = time.monotonic() + 2
+            for request in requests:
+                try:
+                    request.abort()
+                except Exception as exc:
+                    close_errors.append(type(exc).__name__)
+            for request in requests:
+                if request.thread.ident is not None:
+                    request.thread.join(max(0, deadline - time.monotonic()))
+                    if request.thread.is_alive():
+                        close_errors.append("UnconfirmedClientEnd")
         for handle, p, _ in held.values():
             try:
                 record_memory(api, handle, report["process_metrics"][str(p.pid)], "before-close")
@@ -798,6 +1076,8 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
         if parent_handle:
             try:
                 record_memory(api, parent_handle, report["process_metrics"][str(b.parent_pid)], "before-close")
+                if args.case == "held-responses" and report["status"] == "PASS":
+                    validate_held_memory(report["process_metrics"][str(b.parent_pid)])
             except Exception as exc:
                 close_errors.append(type(exc).__name__)
             try:

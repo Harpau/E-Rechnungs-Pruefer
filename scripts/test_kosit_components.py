@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.settings import Settings  # noqa: E402
+from app.configuration import Settings  # noqa: E402
 from app.validators import kosit  # noqa: E402
 from app.validators.kosit import KositValidator  # noqa: E402
 from scripts.install_kosit import InstallError, load_lock, sha256_file  # noqa: E402

@@ -53,12 +53,48 @@ main.settings = replace(main.settings, max_upload_bytes=128)
 listener = socket.socket()
 listener.bind(("127.0.0.1", 0))
 listener.listen(16)
-Path(sys.argv[1]).write_text(str(listener.getsockname()[1]), encoding="ascii")
+port_file = Path(sys.argv[1])
+pending_port = port_file.with_suffix(".pending")
+pending_port.write_text(str(listener.getsockname()[1]), encoding="ascii")
+pending_port.replace(port_file)
 config = uvicorn.Config(main.app, log_level="critical", access_log=False, http=sys.argv[2],
                         lifespan="on", timeout_graceful_shutdown=1, timeout_keep_alive=2)
 uvicorn.Server(config).run(sockets=[listener])
 timer.cancel()
 """
+
+
+def test_port_file_is_invisible_until_its_contents_are_complete(tmp_path, monkeypatch):
+    import ast
+    from types import SimpleNamespace
+
+    port_file = tmp_path / "port.txt"
+    statements = ast.parse(SERVER).body
+
+    def assignment_to(statement, name):
+        return isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in statement.targets
+        )
+
+    start = next(i for i, statement in enumerate(statements) if assignment_to(statement, "listener"))
+    end = next(i for i, statement in enumerate(statements) if assignment_to(statement, "config"))
+    code = compile(ast.Module(body=statements[start:end], type_ignores=[]), "<port-publication>", "exec")
+
+    def interrupted_write(path, data, *, encoding):
+        with path.open("w", encoding=encoding) as target:
+            # Observe the exact open-before-write interleaving seen by CI.
+            assert not port_file.exists(), "A reader can observe an empty ready file"
+            return target.write(data)
+
+    monkeypatch.setattr(Path, "write_text", interrupted_write)
+    listener = SimpleNamespace(bind=lambda _: None, listen=lambda _: None, getsockname=lambda: ("127.0.0.1", 12345))
+    namespace = {
+        "Path": Path,
+        "sys": SimpleNamespace(argv=["probe", str(port_file)]),
+        "socket": SimpleNamespace(socket=lambda: listener),
+    }
+    exec(code, namespace)
+    assert port_file.read_text() == "12345"
 
 
 @pytest.fixture(scope="module", params=["h11", "httptools"])

@@ -107,6 +107,7 @@ SOURCE_REQUIRED = {
     "scripts/build_release.py",
     "scripts/processing_probe.py",
     "scripts/processing_watchdog_probe.py",
+    "scripts/processing_kosit_probe.py",
     "scripts/processing_smoke.py",
     "scripts/processing_lifecycle_probe.py",
     "scripts/test_processing_package.py",

@@ -186,6 +186,30 @@ jobs:
             --output /tmp/kosit-smoke.json || status=$?
           docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/kosit-smoke.json').read_text())" > .cache/docker-evidence/kosit-smoke.json
           exit "$status"
+      - name: Calibrate real Java through the bounded processing manager
+        if: always() && steps.runtime.outcome == 'success'
+        timeout-minutes: 7
+        shell: bash
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          docker exec "$container_id" python -c "from pathlib import Path; Path('/tmp/processing-kosit-evidence').mkdir(mode=0o700)"
+          status=0
+          docker exec "$container_id" python scripts/processing_kosit_probe.py \
+            --vendor-root /app/vendor/kosit --java /usr/bin/java \
+            --config-archive '/locked-components/${{ steps.runtime.outputs.config_archive }}' \
+            --output /tmp/processing-kosit-evidence/catalog.json \
+            > .cache/docker-evidence/processing-kosit.stdout.txt \
+            2> .cache/docker-evidence/processing-kosit.stderr.txt || status=$?
+          docker exec "$container_id" python -c '
+          import sys, tarfile
+          with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+              archive.add("/tmp/processing-kosit-evidence", arcname="processing-kosit-evidence")
+          ' > .cache/docker-evidence/processing-kosit-raw.tar \
+            2> .cache/docker-evidence/processing-kosit-archive.stderr.txt || status=1
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/processing-kosit-evidence/catalog.json').read_text())" \
+            > .cache/docker-evidence/processing-kosit.json \
+            2> .cache/docker-evidence/processing-kosit-json.stderr.txt || status=1
+          exit "$status"
       - name: Complete bounded native processing catalog in the exact final image
         if: always() && steps.runtime.outcome == 'success'
         timeout-minutes: 7

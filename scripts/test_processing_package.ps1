@@ -1,5 +1,16 @@
 # Dot-sourced only by the already bound disposable package controllers.
 # No installation, global process search/kill, or recovery after a failed case.
+function Resolve-BoundProcessingPython {
+    $PythonCommand = Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $PythonPath = $PythonCommand.Source
+    if ($PythonPath -isnot [string] -or [string]::IsNullOrWhiteSpace($PythonPath) -or
+        -not [IO.Path]::IsPathFullyQualified($PythonPath) -or
+        -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
+        throw "Der vorrangige Python-Interpreter ist kein eindeutiger absoluter Dateipfad."
+    }
+    return [IO.Path]::GetFullPath($PythonPath)
+}
+
 function Invoke-BoundProcessingPackageTests {
     [CmdletBinding()]
     param(
@@ -20,6 +31,7 @@ function Invoke-BoundProcessingPackageTests {
         throw "Native Paketproben benötigen den bereits konsumierten isolierten CI-Kontext."
     }
     $Root = Split-Path -Parent $PSScriptRoot
+    $PythonExecutable = Resolve-BoundProcessingPython
     $Harness = Join-Path $PSScriptRoot "test_processing_package.py"
     $HarnessHash = (Get-FileHash -LiteralPath $Harness -Algorithm SHA256).Hash.ToLowerInvariant()
     $ExpectedHash = (Get-FileHash -LiteralPath $ExpectedExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -45,7 +57,7 @@ function Invoke-BoundProcessingPackageTests {
             "--output-directory", $Evidence, "--verify-only", $(if ($ContextOnly) { "context" } else { "parent" })
         )
         if ($ServiceSid) { $CheckArguments += @("--service-sid", $ServiceSid) }
-        $CheckRaw = & python @CheckArguments
+        $CheckRaw = & $PythonExecutable @CheckArguments
         if ($LASTEXITCODE -ne 0) { throw "Aktuelle Kontext-/TTL-/Prozessprüfung fehlgeschlagen; keine Folgeaktion." }
         $Check = $CheckRaw | ConvertFrom-Json
         if ($Check.status -ne "PASS" -or $Check.controller.harness.sha256 -ne $HarnessHash) {
@@ -54,7 +66,7 @@ function Invoke-BoundProcessingPackageTests {
         Write-Host "Processing binding $Mode/$Case $CheckRaw"
         return $Check
     }
-    foreach ($Case in @("health", "worker-death", "supervisor-death", "parent-death", "controlled-stop", "xml25")) {
+    foreach ($Case in @("held-responses", "health", "worker-death", "supervisor-death", "parent-death", "controlled-stop", "xml25")) {
         $Current.Refresh()
         if ($Current.HasExited) { throw "Der gebundene Backendprozess endete vor der Probe." }
         $Created = $Current.StartTime.ToUniversalTime().ToFileTimeUtc()
@@ -71,7 +83,7 @@ function Invoke-BoundProcessingPackageTests {
         )
         if ($ServiceSid) { $Arguments += @("--service-sid", $ServiceSid) }
         $Info = [Diagnostics.ProcessStartInfo]::new()
-        $Info.FileName = (Get-Command python -CommandType Application).Source
+        $Info.FileName = $PythonExecutable
         $Info.UseShellExecute = $false
         $Info.RedirectStandardOutput = $true
         $Info.RedirectStandardError = $true

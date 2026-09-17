@@ -84,3 +84,44 @@ def test_macos_checks_inherited_watchdog_startup_before_invoice_catalogs() -> No
     for step in steps:
         if "python -m pytest" in step.get("run", "") or "scripts/processing_smoke.py" in step.get("run", ""):
             assert steps.index(probe) < steps.index(step)
+
+
+def test_real_java_calibration_uses_the_bound_image_and_prepared_windows_components() -> None:
+    docker = yaml.safe_load((ROOT / ".github/workflows/docker.yml").read_text())
+    steps = docker["jobs"]["docker"]["steps"]
+    step = next(s for s in steps if "scripts/processing_kosit_probe.py" in s.get("run", ""))
+    assert step["if"] == "always() && steps.runtime.outcome == 'success'"
+    assert step["timeout-minutes"] == 7
+    command = step["run"]
+    assert 'docker exec "$container_id" python scripts/processing_kosit_probe.py' in command
+    assert "--vendor-root /app/vendor/kosit --java /usr/bin/java" in command
+    assert "--config-archive '/locked-components/${{ steps.runtime.outputs.config_archive }}'" in command
+    assert "processing-kosit-raw.tar" in command and "processing-kosit.json" in command
+    assert command.count("|| status=1") == 2 and 'exit "$status"' in command
+    assert "docker run" not in command and "extract" not in command.lower()
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    steps = ci["jobs"]["windows-smoke"]["steps"]
+    probe = next(s for s in steps if "scripts/processing_kosit_probe.py" in s.get("run", ""))
+    preparation = next(s for s in steps if "python scripts/prepare_windows_components.py" in s.get("run", ""))
+    build = next(s for s in steps if "scripts\\build_windows.ps1" in s.get("run", ""))
+    assert steps.index(preparation) < steps.index(probe) < steps.index(build)
+    assert probe["timeout-minutes"] == 7 and "continue-on-error" not in probe
+    assert "--config-archive $archive" in probe["run"] and "--java runtime/java/bin/java.exe" in probe["run"]
+
+
+def test_completed_windows_build_is_preserved_if_later_package_acceptance_fails() -> None:
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    steps = ci["jobs"]["windows-smoke"]["steps"]
+    build = next(step for step in steps if step.get("id") == "windows_build")
+    artifact = next(step for step in steps if step.get("with", {}).get("name", "").startswith("windows-x64-package-"))
+    assert "scripts\\build_windows.ps1" in build["run"]
+    assert artifact["if"] == "always() && steps.windows_build.outcome == 'success'"
+    assert artifact["with"]["if-no-files-found"] == "error"
+    paths = artifact["with"]["path"]
+    for suffix in (
+        "Windows-x64-Setup.exe",
+        "Windows-x64-Dienst-Setup.exe",
+        "Windows-x64-Binaries.zip",
+        "Windows-x64-SHA256SUMS.txt",
+    ):
+        assert suffix in paths
