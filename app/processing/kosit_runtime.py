@@ -11,6 +11,7 @@ import math
 import os
 import shutil
 import stat
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,13 +166,25 @@ def _file_identity(information: os.stat_result, *, cross_api: bool = False) -> t
     # Windows path stat infers executable bits from a suffix; fstat does not.
     # Normalize only across APIs, retaining full-mode same-API race checks.
     mode = information.st_mode & ~0o111 if cross_api and os.name == "nt" else information.st_mode
+    changed = information.st_ctime_ns
+    if cross_api and os.name == "nt" and sys.version_info >= (3, 12):
+        # CPython's Windows path stat retains creation time in legacy ctime,
+        # whereas fstat can expose ChangeTime there. Compare creation time
+        # explicitly across APIs; same-API checks still retain their ctime.
+        # Python 3.11 has no birthtime_ns and uses legacy creation-time ctime.
+        # https://github.com/python/cpython/blob/v3.14.7/Modules/posixmodule.c
+        # https://github.com/python/cpython/blob/v3.14.7/Python/fileutils.c
+        birthtime = getattr(information, "st_birthtime_ns", None)
+        if type(birthtime) is not int:
+            raise KositRuntimeError("report_creation_time_unavailable")
+        changed = birthtime
     return (
         information.st_dev,
         information.st_ino,
         mode,
         information.st_size,
         information.st_mtime_ns,
-        information.st_ctime_ns,
+        changed,
         information.st_nlink,
     )
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -224,3 +227,106 @@ def test_import_does_not_load_parsers_or_ambient_settings() -> None:
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+def _stat_sample(*, ctime: int, birthtime: int | None = 100) -> SimpleNamespace:
+    values = dict(st_dev=1, st_ino=2, st_mode=0o100666, st_size=3, st_mtime_ns=300, st_ctime_ns=ctime, st_nlink=1)
+    if birthtime is not None:
+        values["st_birthtime_ns"] = birthtime
+    return SimpleNamespace(**values)
+
+
+def test_windows_cross_api_compares_creation_time_without_discarding_same_api_change_time(monkeypatch) -> None:
+    from app.processing import kosit_runtime as runtime
+
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(version_info=(3, 14)))
+    path_stat = _stat_sample(ctime=100)
+    handle_stat = _stat_sample(ctime=200)
+    assert runtime._file_identity(path_stat, cross_api=True) == runtime._file_identity(handle_stat, cross_api=True)
+    assert runtime._file_identity(path_stat) != runtime._file_identity(handle_stat)
+    assert runtime._file_identity(handle_stat) != runtime._file_identity(_stat_sample(ctime=201))
+
+
+@pytest.mark.parametrize("field", ["st_dev", "st_ino", "st_size", "st_mtime_ns", "st_nlink", "st_birthtime_ns"])
+def test_windows_cross_api_still_rejects_changed_file_identity(monkeypatch, field) -> None:
+    from app.processing import kosit_runtime as runtime
+
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(version_info=(3, 14)))
+    before, changed = _stat_sample(ctime=100), _stat_sample(ctime=200)
+    setattr(changed, field, getattr(changed, field) + 1)
+    assert runtime._file_identity(before, cross_api=True) != runtime._file_identity(changed, cross_api=True)
+
+
+def test_windows_cross_api_retains_type_permissions_and_only_normalizes_executable_bits(monkeypatch) -> None:
+    from app.processing import kosit_runtime as runtime
+
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(version_info=(3, 14)))
+    before, handle = _stat_sample(ctime=100), _stat_sample(ctime=200)
+    before.st_mode |= 0o111
+    assert runtime._file_identity(before, cross_api=True) == runtime._file_identity(handle, cross_api=True)
+    handle.st_mode &= ~0o200
+    assert runtime._file_identity(before, cross_api=True) != runtime._file_identity(handle, cross_api=True)
+
+
+def test_posix_cross_api_keeps_change_time(monkeypatch) -> None:
+    from app.processing import kosit_runtime as runtime
+
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(name="posix"))
+    assert runtime._file_identity(_stat_sample(ctime=100), cross_api=True) != runtime._file_identity(
+        _stat_sample(ctime=200), cross_api=True
+    )
+
+
+def test_python311_windows_legacy_creation_time_without_birthtime_remains_supported(monkeypatch) -> None:
+    from app.processing import kosit_runtime as runtime
+
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(version_info=(3, 11)), raising=False)
+    before, opened = _stat_sample(ctime=100, birthtime=None), _stat_sample(ctime=100, birthtime=None)
+    assert runtime._file_identity(before, cross_api=True) == runtime._file_identity(opened, cross_api=True)
+    opened.st_ctime_ns += 1
+    assert runtime._file_identity(before, cross_api=True) != runtime._file_identity(opened, cross_api=True)
+
+
+def test_modern_windows_missing_creation_time_fails_closed(monkeypatch) -> None:
+    from app.processing import kosit_runtime as runtime
+
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(version_info=(3, 14)), raising=False)
+    with pytest.raises(KositRuntimeError, match="report_creation_time_unavailable"):
+        runtime._file_identity(_stat_sample(ctime=100, birthtime=None), cross_api=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Actual Windows path/handle creation and change timestamps")
+def test_windows_delayed_write_report_retains_native_identity(tmp_path: Path, record_property) -> None:
+    directory, _settings = prepared(tmp_path)
+    report = directory / "reports" / "invoice-report.xml"
+    report.write_bytes(b"synthetic-")
+    time.sleep(0.05)
+    with report.open("ab") as stream:
+        stream.write(b"delayed-write")
+        stream.flush()
+        os.fsync(stream.fileno())
+    before = report.lstat()
+    with report.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns", "st_birthtime_ns", "st_nlink")
+    # Numeric native evidence only: no path, environment or invoice payload.
+    record_property(
+        "windows_report_stat_identity",
+        json.dumps(
+            {
+                name: {field: getattr(value, field, None) for field in fields}
+                for name, value in (("lstat", before), ("fstat", opened))
+            },
+            sort_keys=True,
+        ),
+    )
+    birth = getattr(before, "st_birthtime_ns", before.st_ctime_ns)
+    assert before.st_mtime_ns > birth
+    result = read_execution(directory, 0, b"", b"", False)
+    assert result.report_error is None
+    assert result.report_candidates == (b"synthetic-delayed-write",)

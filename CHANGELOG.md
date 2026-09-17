@@ -17,6 +17,8 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   bestätigte Ergebnisse gelangen als Schema 2, HTML/PDF beziehungsweise byteidentisches XML in die Antwort.
 - pypdf-Dekoder verwenden das verbleibende Anhangsbudget; PDF-Strukturstreams und Seitenbaumknoten besitzen eigene
   Grenzen. Technische Ressourcenabbrüche werden separat ausgewiesen und gelten nie als offizielle Rechnungsablehnung.
+- Der geschützte KoSIT-Berichtszugriff berücksichtigt die unterschiedlichen Windows-Zeitstempel der Datei-APIs,
+  damit unveränderte Java-Prüfberichte nicht fälschlich als nachträglich verändert zurückgewiesen werden.
 - Für diese neue Prozessarchitektur sind native Plattform-, Frozen-/Installations- und Shutdownabnahmen erforderlich.
   Diese Änderungen ersetzen keine Sicherheitsupdates und ändern das bestehende Dependency-/Container-Freigabegate nicht.
 
