@@ -79,6 +79,15 @@ insbesondere macOS besitzt große gemeinsame Adressabbildungen. Das ist weder ei
 nicht zuverlässig. Die gemessenen RSS-Spitzen dieser sechs Proben waren rund 142 MiB für den Worker und
 23 MiB für den Supervisor; sie sind keine Zusage für beliebige Dokumente.
 
+Die vertrauenswürdige Adressraumbasis wird vor Rechnungsinput gemessen und nach derselben festen Grenze beim
+Start, nach Bibliotheksimports und im READY-Nachweis geprüft: höchstens 1 GiB unter Linux, 64 GiB unter macOS
+x86_64 und 512 GiB unter macOS arm64. Unbekannte macOS-Architekturen werden abgewiesen. Diese Obergrenzen
+begrenzen die zulässige Basis, nicht den Arbeitszuschlag: Das tatsächlich gesetzte Limit bleibt die gemessene
+Basis plus dem oben genannten unveränderten Rollenbudget. Rund 392 GiB virtueller Basis auf dem ARM64-CI-Runner
+sind kein entsprechender RAM-Verbrauch und keine freie Speicherreserve. Die macOS-CI verlangt vor dem
+Testkatalog begrenzte mmap- und Heap-Proben zur tatsächlichen Limitdurchsetzung; die neue ARM64-Grenze allein
+belegt weder diese Durchsetzung noch eine bestandene native ARM64-Abnahme.
+
 Windows verwendet dagegen Job-/Commitgrenzen: Worker 2.048 MiB beim Import und danach 768 MiB, Supervisor
 512 MiB und zusammen 4.096 MiB für Java-Launcher und JVM. Der äußere Auftragsjob ist insgesamt auf 6,5 GiB
 begrenzt. Diese Windowswerte benötigen ihre eigene native Kalibrierung; aus einem macOS-AS-Test folgt kein

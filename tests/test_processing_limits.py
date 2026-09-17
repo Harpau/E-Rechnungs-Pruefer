@@ -1,12 +1,77 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from app.processing import posix
 from app.processing.budgets import ProcessingBudgets
+
+
+@pytest.mark.parametrize(
+    "system,machine,gib",
+    [("darwin", "arm64", 512), ("darwin", "x86_64", 64), ("linux", "aarch64", 1), ("linux", "x86_64", 1)],
+)
+def test_baseline_ceiling_depends_on_trusted_platform_and_architecture(monkeypatch, system, machine, gib):
+    monkeypatch.setattr(posix, "sys", SimpleNamespace(platform=system))
+    monkeypatch.setattr(posix, "platform", SimpleNamespace(machine=lambda: machine), raising=False)
+    assert posix.baseline_ceiling_bytes() == gib * 1024**3
+
+
+@pytest.mark.parametrize("system,machine", [("darwin", "unknown"), ("darwin", "i386"), ("win32", "AMD64")])
+def test_unknown_posix_baseline_profile_fails_closed(monkeypatch, system, machine):
+    monkeypatch.setattr(posix, "sys", SimpleNamespace(platform=system))
+    monkeypatch.setattr(posix, "platform", SimpleNamespace(machine=lambda: machine), raising=False)
+    with pytest.raises(OSError):
+        posix.baseline_ceiling_bytes()
+
+
+@pytest.mark.parametrize(
+    "system,machine,gib", [("darwin", "arm64", 512), ("darwin", "x86_64", 64), ("linux", "aarch64", 1)]
+)
+@pytest.mark.parametrize("seal", [False, True])
+@pytest.mark.parametrize("excess", [0, 1])
+def test_start_and_seal_use_identical_baseline_ceiling_without_raising_headroom(
+    monkeypatch, system, machine, gib, seal, excess
+):
+    import sys
+
+    baseline = gib * 1024**3 + excess
+    headroom = 8 * 1024**2
+    limits = {1: (baseline + 4 * headroom,) * 2}
+    resource = SimpleNamespace(
+        RLIMIT_CORE=0,
+        RLIMIT_AS=1,
+        RLIMIT_NOFILE=2,
+        RLIMIT_FSIZE=3,
+        RLIMIT_CPU=4,
+        RLIM_INFINITY=-1,
+        setrlimit=lambda key, value: limits.__setitem__(key, value),
+        getrlimit=lambda key: limits[key],
+    )
+    monkeypatch.setitem(sys.modules, "resource", resource)
+    monkeypatch.setattr(posix, "sys", SimpleNamespace(platform=system))
+    monkeypatch.setattr(posix, "platform", SimpleNamespace(machine=lambda: machine), raising=False)
+    monkeypatch.setattr(posix, "virtual_memory_bytes", lambda: baseline)
+    monkeypatch.setattr(
+        posix,
+        "signal",
+        SimpleNamespace(SIGXCPU=24, SIG_DFL=0, SIG_UNBLOCK=0, signal=lambda *_: None, pthread_sigmask=lambda *_: None),
+    )
+    kwargs = {"memory_headroom": headroom} if seal else {"memory_headroom": headroom, "cpu_seconds": 30}
+    function = posix.seal_runtime_memory if seal else posix.apply_limits
+    if excess:
+        before = dict(limits)
+        with pytest.raises(OSError):
+            function(**kwargs)
+        assert limits == before
+    else:
+        proof = function(**kwargs)
+        assert proof["baseline_as_bytes"] == baseline
+        assert proof["address_space_bytes"] == baseline + headroom
+        assert limits[1] == (baseline + headroom,) * 2
 
 
 def test_linux_namespace_init_can_own_worker(monkeypatch):

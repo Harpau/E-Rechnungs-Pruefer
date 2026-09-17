@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .budgets import ProcessingBudgets
+from .posix import baseline_ceiling_bytes
 from .protocol import ProtocolError
 
 
@@ -21,7 +22,11 @@ def _profile(value: object, *, memory: int, windows: bool, cpu: int | None = Non
         expected.add("cpu_seconds")
     if set(value) != expected or any(type(entry) is not int or entry <= 0 for entry in value.values()):
         raise ProtocolError("Unzulässiges POSIX-Speicherprofil.")
-    if value["baseline_as_bytes"] > 64 * 1024**3 or value["address_space_bytes"] - value["baseline_as_bytes"] != memory:
+    try:
+        ceiling = baseline_ceiling_bytes()
+    except OSError as exc:
+        raise ProtocolError("Für die Adressraumbasis fehlt ein geprüftes Plattformprofil.") from exc
+    if value["baseline_as_bytes"] > ceiling or value["address_space_bytes"] - value["baseline_as_bytes"] != memory:
         raise ProtocolError("Der aktive Adressraum entspricht nicht dem geprüften Profil.")
     if cpu is not None and value["cpu_seconds"] != cpu:
         raise ProtocolError("Das CPU-Budget wurde nicht bestätigt.")

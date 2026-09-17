@@ -2,15 +2,156 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import time
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
 from app.processing import native, windows
+
+
+class InventoryOwner:
+    handle = 100
+
+    def __init__(self, pids=(10, 20)):
+        self.pids = pids
+
+    def process_ids(self):
+        return self.pids
+
+    def active_process_count(self):
+        return len(self.pids)
+
+
+class InventoryAPI:
+    def __init__(self):
+        self.opened = []
+        self.closed = []
+        self.failure = None
+        self.identity_calls = {}
+
+    def open(self, pid):
+        if self.failure == "open" and pid == 20:
+            raise OSError("synthetic open failure")
+        self.opened.append(pid)
+        return pid + 1000
+
+    def member(self, handle, job):
+        assert job == 100
+        return self.failure != "membership"
+
+    def identity(self, handle):
+        self.identity_calls[handle] = self.identity_calls.get(handle, 0) + 1
+        if self.failure == "query" and handle == 1020:
+            raise OSError("synthetic query failure")
+        pid = handle - 1000
+        creation = 133000000000000000 + pid
+        if self.failure == "changed_creation" and self.identity_calls[handle] > 1:
+            creation += 1
+        return (
+            pid + int(self.failure == "pid"),
+            0 if self.failure == "creation" else creation,
+            "relative.exe" if self.failure == "image" else rf"C:\Python\python{pid}.exe",
+        )
+
+    def running(self, handle):
+        return self.failure != "exited"
+
+    def limits(self, job):
+        return {"memory_bytes": 512 * 1024**2, "process_memory_bytes": None, "active_processes": 1}
+
+    def close(self, handle):
+        self.closed.append(handle)
+        if self.failure == "close" and handle == 1010:
+            raise OSError("synthetic close failure")
+
+
+def test_inventory_binds_every_pid_to_held_job_and_native_identity():
+    from processing_windows_inventory import capture_inventory
+
+    api = InventoryAPI()
+    result = capture_inventory(InventoryOwner(), api=api)
+    assert result["complete"] is True
+    assert result["snapshot_pids"] == [10, 20]
+    assert result["active_process_count"] == 2
+    assert [record["pid"] for record in result["processes"]] == [10, 20]
+    assert all(record["job_member_before"] and record["job_member_after"] for record in result["processes"])
+    assert all(record["running_before"] and record["running_after"] for record in result["processes"])
+    assert all(record["creation_filetime"] > 0 and record["image_path"] for record in result["processes"])
+    assert api.closed == [1020, 1010]
+    assert api.identity_calls == {1010: 2, 1020: 2}
+
+
+@pytest.mark.parametrize("pids", [(), tuple(range(1, 66)), (10, 10), (False,), (-1,)])
+def test_inventory_rejects_empty_oversized_or_ambiguous_pid_sets_without_opening(pids):
+    from processing_windows_inventory import capture_inventory
+
+    api = InventoryAPI()
+    result = capture_inventory(InventoryOwner(pids), api=api)
+    assert result["complete"] is False and result["errors"]
+    assert not api.opened and not api.closed
+
+
+@pytest.mark.parametrize(
+    "failure", ["open", "membership", "query", "pid", "creation", "image", "changed_creation", "exited", "close"]
+)
+def test_inventory_query_failure_is_explicit_and_closes_every_opened_handle(failure):
+    from processing_windows_inventory import capture_inventory
+
+    api = InventoryAPI()
+    api.failure = failure
+    result = capture_inventory(InventoryOwner(), api=api)
+    assert result["complete"] is False and result["errors"]
+    assert sorted(api.closed) == sorted(pid + 1000 for pid in api.opened)
+    assert len(api.closed) == len(set(api.closed)), "never retry close against a potentially reused handle"
+
+
+def test_inventory_changed_job_snapshot_is_incomplete():
+    from processing_windows_inventory import capture_inventory
+
+    class ChangingOwner(InventoryOwner):
+        def process_ids(self):
+            value = self.pids
+            self.pids = (10,)
+            return value
+
+    api = InventoryAPI()
+    result = capture_inventory(ChangingOwner(), api=api)
+    assert result["complete"] is False and result["errors"]
+    assert api.closed == [1020, 1010]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {},
+        {"owned_process_exit_confirmed": False},
+        {"owned_job_active_after_cleanup": 1},
+        {"owned_job_active_after_cleanup": False},
+        {"cleanup_within_deadline": False},
+        {"inventory": {"complete": False}},
+        {"errors": ["close:OSError"]},
+        {"errors": ["cleanup:TimeoutExpired"]},
+        {"errors": ["descriptor_close:OSError"]},
+    ],
+)
+def test_comparison_continues_only_after_bound_inventory_and_confirmed_cleanup(changed):
+    from processing_windows_inventory import comparison_can_continue
+
+    record = {
+        "owned_process_exit_confirmed": True,
+        "owned_job_active_after_cleanup": 0,
+        "cleanup_within_deadline": True,
+        "inventory": {"complete": True, "snapshot_pids": [10, 20]},
+        "errors": [],
+    }
+    record.update(changed)
+    assert comparison_can_continue(record) is (not changed)
 
 
 class FakeAPI:
@@ -370,8 +511,10 @@ def _wait_control_file(path, process):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="real inherited nested job chain")
-def test_native_nested_job_keeps_descendants_in_outer_kill_on_close(tmp_path):
+def test_native_nested_job_keeps_descendants_in_outer_kill_on_close(tmp_path, record_property):
     from pathlib import Path
+
+    from processing_windows_inventory import capture_inventory
 
     pid_file = tmp_path / "synthetic-grandchild-pid.txt"
     source_root = str(Path(__file__).resolve().parents[1])
@@ -392,7 +535,14 @@ def test_native_nested_job_keeps_descendants_in_outer_kill_on_close(tmp_path):
             descendant = _wait_control_file(pid_file, process)
             api, descendant_handle = _native_open_process(descendant)
             assert descendant_handle and not api.wait(descendant_handle, 0)
-            assert descendant in owner.process_ids() and owner.active_process_count() == 2
+            inventory = capture_inventory(owner)
+            diagnostic = json.dumps(
+                {"held_launcher_pid": process.pid, "held_descendant_pid": descendant, "inventory": inventory},
+                sort_keys=True,
+            )
+            record_property("windows_nested_job_inventory", diagnostic)
+            assert inventory["complete"], diagnostic
+            assert descendant in inventory["snapshot_pids"] and inventory["active_process_count"] == 2, diagnostic
             deadline = time.monotonic() + 5
             owner.close()
             process.wait(max(0, deadline - time.monotonic()))
@@ -492,11 +642,15 @@ assert not k.WriteFile({other}, b"unexpected", 10, ctypes.byref(written), None)
 
 
 @pytest.mark.parametrize("fail_update", [False, True])
-def test_raw_ctypes_startup_attributes_include_atomic_jobs_and_allowlist(monkeypatch, fail_update):
+@pytest.mark.parametrize("test_flag,expected_flags", [(0x08000000, 0x08080404), (0x00000008, 0x0008040C)])
+def test_raw_ctypes_startup_attributes_include_atomic_jobs_and_allowlist(
+    monkeypatch, fail_update, test_flag, expected_flags
+):
     import ctypes
     from types import SimpleNamespace
 
     calls = []
+    monkeypatch.setattr(windows, "_CREATE_NO_WINDOW", test_flag)
 
     def initialize(storage, count, flags, size):
         assert count == 2 and flags == 0
@@ -512,7 +666,7 @@ def test_raw_ctypes_startup_attributes_include_atomic_jobs_and_allowlist(monkeyp
     ):
         assert application == r"C:\Python\python.exe" and command.value == application
         assert process_security is thread_security is None
-        assert inherit and flags == 0x08080404  # NO_WINDOW | EX | UNICODE | SUSPENDED
+        assert inherit and flags == expected_flags  # test flag | EX | UNICODE | SUSPENDED
         value = ctypes.cast(startup, ctypes.POINTER(windows._StartupInfoEx)).contents
         assert value.StartupInfo.cb == ctypes.sizeof(windows._StartupInfoEx)
         assert value.StartupInfo.dwFlags == 0x100 and value.lpAttributeList
@@ -553,17 +707,17 @@ def test_raw_ctypes_startup_attributes_include_atomic_jobs_and_allowlist(monkeyp
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="actual Windows source interpreter and venv identity")
-def test_native_direct_interpreter_pid_and_venv_packages_are_exact(tmp_path):
-    import json
-
+def test_native_direct_interpreter_pid_and_venv_packages_are_exact(tmp_path, record_property):
     import fastapi
+    from processing_windows_inventory import capture_inventory
 
     path = tmp_path / "synthetic-interpreter-identity.json"
     code = (
         "import os,sys,json,time,fastapi; from pathlib import Path; "
         "record={'pid':os.getpid(),'prefix':sys.prefix,'base_prefix':sys.base_prefix,"
         "'executable':sys.executable,'fastapi':fastapi.__file__}; "
-        f"Path({str(path)!r}).write_text(json.dumps(record),encoding='utf-8'); time.sleep(10)"
+        f"path=Path({str(path)!r}); pending=path.with_suffix('.pending'); "
+        "pending.write_text(json.dumps(record),encoding='utf-8'); pending.replace(path); time.sleep(10)"
     )
     with windows.WindowsJob(512 * 1024**2, active_processes=1) as owner:
         process = owner.spawn([native.python_executable(), "-I", "-c", code], native.child_environment())
@@ -576,17 +730,186 @@ def test_native_direct_interpreter_pid_and_venv_packages_are_exact(tmp_path):
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
             value = json.loads(path.read_text(encoding="utf-8"))
-            assert value["pid"] == process.pid
-            assert owner.process_ids() == (process.pid,)
-            assert owner.active_process_count() == 1
+            inventory = capture_inventory(owner)
+            expected_identity = {
+                "prefix": sys.prefix,
+                "base_prefix": sys.base_prefix,
+                "executable": sys.executable,
+                "fastapi": fastapi.__file__,
+            }
+            diagnostic = json.dumps(
+                {
+                    "held_pid": process.pid,
+                    "child_identity": value,
+                    "expected_identity": expected_identity,
+                    "inventory": inventory,
+                },
+                sort_keys=True,
+            )
+            record_property("windows_direct_interpreter_inventory", diagnostic)
+            assert value["pid"] == process.pid, diagnostic
             for name, expected in (
                 ("prefix", sys.prefix),
                 ("base_prefix", sys.base_prefix),
                 ("executable", sys.executable),
                 ("fastapi", fastapi.__file__),
             ):
-                assert os.path.normcase(value[name]) == os.path.normcase(expected)
+                assert os.path.normcase(value[name]) == os.path.normcase(expected), diagnostic
+            assert inventory["complete"], diagnostic
+            assert inventory["snapshot_pids"] == [process.pid], diagnostic
+            assert inventory["active_process_count"] == 1, diagnostic
         finally:
             owner.terminate()
-            process.wait(5)
-            process.close()
+            try:
+                process.wait(5)
+            finally:
+                process.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="bounded native NO_WINDOW / DETACHED_PROCESS comparison")
+def test_native_console_flag_comparison_preserves_pid_venv_and_handle_job_bindings(
+    tmp_path, monkeypatch, record_property
+):
+    """Only the test replaces the flag; both variants use the same fixed program.
+
+    The shared 24-second deadline includes both readiness and owned-job cleanup.
+    Natural ten-second sleeper termination is never containment evidence.
+    No unexpected PID is a termination target: only the held owned job is killed.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires native Windows process and handle APIs")
+    import msvcrt
+
+    import fastapi
+    from processing_windows_inventory import capture_inventory, comparison_can_continue
+
+    program = """
+import ctypes, json, os, sys, time
+from pathlib import Path
+import fastapi
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+kernel.WriteFile.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p]
+kernel.WriteFile.restype = ctypes.c_int32
+selected, forbidden = int(sys.argv[2]), int(sys.argv[3])
+written = ctypes.c_uint32()
+selected_ok = bool(kernel.WriteFile(selected, b'ok', 2, ctypes.byref(written), None)) and written.value == 2
+forbidden_ok = bool(kernel.WriteFile(forbidden, b'no', 2, ctypes.byref(written), None))
+record = {'pid': os.getpid(), 'prefix': sys.prefix, 'base_prefix': sys.base_prefix,
+          'executable': sys.executable, 'fastapi': fastapi.__file__,
+          'selected_handle_written': selected_ok, 'unselected_handle_written': forbidden_ok}
+path = Path(sys.argv[1])
+pending = path.with_suffix('.pending')
+pending.write_text(json.dumps(record), encoding='utf-8')
+pending.replace(path)
+time.sleep(10)
+"""
+    expected_identity = {
+        "prefix": sys.prefix,
+        "base_prefix": sys.base_prefix,
+        "executable": sys.executable,
+        "fastapi": fastapi.__file__,
+    }
+    assert windows._CREATE_NO_WINDOW == 0x08000000
+    common_deadline = time.monotonic() + 24
+    variants: list[dict[str, Any]] = []
+    for label, flag in (("CREATE_NO_WINDOW", 0x08000000), ("DETACHED_PROCESS", 0x00000008)):
+        record: dict[str, Any] = {
+            "variant": label,
+            "test_creation_flag": flag,
+            "expected_identity": expected_identity,
+            "errors": [],
+        }
+        variants.append(record)
+        selected_read, selected_write = os.pipe()
+        other_read, other_write = os.pipe()
+        owner = None
+        process = None
+        launched = time.monotonic()
+        try:
+            assert common_deadline - launched > 5, "insufficient remaining shared cleanup budget"
+            selected = msvcrt.get_osfhandle(selected_write)
+            forbidden = msvcrt.get_osfhandle(other_write)
+            os.set_handle_inheritable(selected, True)
+            os.set_handle_inheritable(forbidden, True)
+            path = tmp_path / f"synthetic-{label}-identity.json"
+            owner = windows.WindowsJob(512 * 1024**2, active_processes=1)
+            with monkeypatch.context() as local_patch:
+                local_patch.setattr(windows, "_CREATE_NO_WINDOW", flag)
+                process = owner.spawn(
+                    [native.python_executable(), "-I", "-c", program, str(path), str(selected), str(forbidden)],
+                    native.child_environment(),
+                    inherited_handles=(selected,),
+                )
+            record["held_pid"] = process.pid
+            ready_deadline = min(launched + 8, common_deadline - 5)
+            while not path.is_file():
+                assert process.poll() is None, "fixed helper exited before atomic identity receipt"
+                assert time.monotonic() < ready_deadline, "fixed helper missed bounded READY"
+                time.sleep(0.01)
+            assert path.stat().st_size <= 65536
+            value = json.loads(path.read_text(encoding="utf-8"))
+            record["child_identity"] = value
+            record["inventory"] = capture_inventory(owner)
+            record["identity_matches"] = value["pid"] == process.pid and all(
+                os.path.normcase(value[name]) == os.path.normcase(expected)
+                for name, expected in expected_identity.items()
+            )
+            record["handle_allowlist_matches"] = (
+                value["selected_handle_written"] and not value["unselected_handle_written"]
+            )
+        except (AssertionError, OSError, ValueError) as error:
+            record["errors"].append(type(error).__name__)
+        finally:
+            try:
+                if owner is not None:
+                    stop_started = time.monotonic()
+                    cleanup_deadline = min(stop_started + 5, common_deadline)
+                    owner.terminate()
+                    if process is not None:
+                        process.wait(max(0, cleanup_deadline - time.monotonic()))
+                        observed = time.monotonic()
+                        record["owned_process_exit_confirmed"] = process.returncode is not None
+                        record["observed_end_after_launch_seconds"] = observed - launched
+                        record["observed_end_after_terminate_seconds"] = observed - stop_started
+                        while owner.active_process_count():
+                            if time.monotonic() >= cleanup_deadline:
+                                raise subprocess.TimeoutExpired("owned diagnostic job cleanup", 5)
+                            time.sleep(0.01)
+                        observed = time.monotonic()
+                        record["owned_job_active_after_cleanup"] = owner.active_process_count()
+                        record["observed_job_end_after_terminate_seconds"] = observed - stop_started
+                        record["cleanup_within_deadline"] = observed <= cleanup_deadline and observed - launched < 10
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                record["errors"].append(f"cleanup:{type(error).__name__}")
+            finally:
+                for resource in (owner, process):
+                    if resource is not None:
+                        try:
+                            resource.close()
+                        except (OSError, ValueError) as error:
+                            record["errors"].append(f"close:{type(error).__name__}")
+                for descriptor in (selected_read, selected_write, other_read, other_write):
+                    try:
+                        os.close(descriptor)
+                    except OSError as error:
+                        record["errors"].append(f"descriptor_close:{type(error).__name__}")
+        # Record each completed variant immediately; a later failure must not
+        # discard the independent observation of the first flag.
+        record["safe_to_continue"] = comparison_can_continue(record)
+        record_property(f"windows_console_flag_{label}", json.dumps(record, sort_keys=True))
+        if not record["safe_to_continue"]:
+            break
+    assert windows._CREATE_NO_WINDOW == 0x08000000
+    diagnostic = json.dumps({"variants": variants, "shared_deadline_seconds": 24}, sort_keys=True)
+    record_property("windows_console_flag_comparison", diagnostic)
+    assert time.monotonic() <= common_deadline, diagnostic
+    assert len(variants) == 2, diagnostic
+    for record in variants:
+        assert not record["errors"], diagnostic
+        assert record.get("identity_matches") and record.get("handle_allowlist_matches"), diagnostic
+        assert record.get("owned_process_exit_confirmed") and record.get("cleanup_within_deadline"), diagnostic
+        assert record["owned_job_active_after_cleanup"] == 0, diagnostic
+        inventory = record["inventory"]
+        assert inventory["complete"], diagnostic
+        assert inventory["snapshot_pids"] == [record["held_pid"]], diagnostic
+        assert inventory["active_process_count"] == 1, diagnostic

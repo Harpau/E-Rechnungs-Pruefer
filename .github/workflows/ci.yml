@@ -190,6 +190,13 @@ jobs:
               "virtual_memory_bytes": virtual_memory_bytes(),
           }, indent=2))
           PY
+      - name: Verify native macOS address space and heap enforcement
+        timeout-minutes: 1
+        run: >-
+          python scripts/processing_probe.py --case address_space --case heap
+          --output .cache/macos-processing/address-space.json
+          > .cache/macos-processing/address-space.stdout
+          2> .cache/macos-processing/address-space.stderr
       - name: Native bounded synthetic lifecycle tests
         run: >-
           python -m pytest --junitxml=.cache/macos-processing/tests.xml

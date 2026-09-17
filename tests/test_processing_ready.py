@@ -5,9 +5,11 @@ from __future__ import annotations
 import copy
 import io
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from app.processing import posix
 from app.processing.budgets import ProcessingBudgets
 from app.processing.protocol import (
     CONTROL_LIMIT,
@@ -23,6 +25,39 @@ from app.processing.ready import validate_ready
 
 BUDGETS = ProcessingBudgets()
 RESERVED = {101, 102, 103}
+
+
+@pytest.fixture(autouse=True)
+def simulated_posix_profile(monkeypatch):
+    # POSIX protocol examples must remain host-independent on Windows CI too.
+    monkeypatch.setattr(posix, "sys", SimpleNamespace(platform="linux"))
+
+
+@pytest.mark.parametrize(
+    "system,machine,gib", [("darwin", "arm64", 512), ("darwin", "x86_64", 64), ("linux", "aarch64", 1)]
+)
+def test_ready_uses_the_same_architecture_baseline_ceiling(monkeypatch, system, machine, gib):
+    monkeypatch.setattr(posix, "sys", SimpleNamespace(platform=system))
+    monkeypatch.setattr(posix, "platform", SimpleNamespace(machine=lambda: machine), raising=False)
+    baseline = gib * 1024**3
+    memory = BUDGETS.supervisor_memory_bytes
+    validate_memory_profile(
+        {"baseline_as_bytes": baseline, "address_space_bytes": baseline + memory}, memory=memory, windows=False
+    )
+    with pytest.raises(ProtocolError):
+        validate_memory_profile(
+            {"baseline_as_bytes": baseline + 1, "address_space_bytes": baseline + 1 + memory},
+            memory=memory,
+            windows=False,
+        )
+
+
+def test_unknown_darwin_architecture_rejects_posix_but_not_windows_job_proof(monkeypatch):
+    monkeypatch.setattr(posix, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(posix, "platform", SimpleNamespace(machine=lambda: "unknown"), raising=False)
+    with pytest.raises(ProtocolError):
+        _validate(_ready())
+    assert _validate(_ready(windows=True), windows=True) == (501, 502)
 
 
 def _profile(memory, windows, cpu=None):

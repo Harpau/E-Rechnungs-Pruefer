@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import signal
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+from app.processing import posix
 
 SPEC = importlib.util.spec_from_file_location(
     "processing_probe", Path(__file__).resolve().parents[1] / "scripts/processing_probe.py"
@@ -14,6 +18,31 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 probe = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(probe)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX probe CLI")
+def test_probe_reports_the_shared_arm64_baseline_ceiling_without_changing_allocation_bounds(tmp_path, monkeypatch):
+    monkeypatch.setattr(posix, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(posix, "platform", SimpleNamespace(machine=lambda: "arm64"), raising=False)
+    monkeypatch.setattr(probe, "inventory", lambda: {})
+    monkeypatch.setattr(
+        probe,
+        "run_bounded",
+        lambda case: {
+            "case": case,
+            "returncode": 0,
+            "forced_stop": None,
+            "records": [
+                {"phase": "memory_result", "limit_set": True, "enforced": True, "small_allocation_passed": True}
+            ],
+        },
+    )
+    output = tmp_path / "probe.json"
+    assert probe.main(["--case", "address_space", "--case", "heap", "--output", str(output)]) == 0
+    report = json.loads(output.read_text())
+    assert report["limits"]["operation_baseline_ceiling_bytes"] == 512 * 1024**3
+    assert report["limits"]["max_allocation_bytes"] == 32 * 1024**2
+    assert report["limits"]["outer_seconds_per_case"] == 9
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])

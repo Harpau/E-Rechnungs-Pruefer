@@ -144,6 +144,20 @@ def test_macos_records_native_address_space_baseline_before_bounded_roles_start(
     assert ".cache/macos-processing/native-baseline.json" in command
 
 
+def test_macos_requires_bounded_heap_and_mmap_enforcement_before_native_catalog() -> None:
+    steps = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["macos-processing"]["steps"]
+    index = next(i for i, step in enumerate(steps) if "scripts/processing_probe.py" in step.get("run", ""))
+    step = steps[index]
+    assert not step.get("continue-on-error", False)
+    assert step.get("if") is None
+    command = step["run"]
+    assert "--case address_space" in command and "--case heap" in command
+    assert ".cache/macos-processing/address-space.json" in command
+    assert "address-space.stdout" in command and "address-space.stderr" in command
+    assert index < next(i for i, step in enumerate(steps) if "python -m pytest" in step.get("run", ""))
+    assert index < next(i for i, step in enumerate(steps) if "scripts/processing_smoke.py" in step.get("run", ""))
+
+
 @pytest.mark.parametrize("job_name", ["macos-processing", "windows-smoke"])
 def test_ci_native_catalog_covers_all_five_cases_and_saves_raw_output(job_name) -> None:
     job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"][job_name]

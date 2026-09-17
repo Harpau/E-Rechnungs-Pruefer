@@ -4,9 +4,23 @@ from __future__ import annotations
 
 import ctypes
 import os
+import platform
 import signal
 import sys
 from pathlib import Path
+
+
+def baseline_ceiling_bytes() -> int:
+    """Bound trusted bootstrap mappings; this is not an invoice/RSS budget."""
+    if sys.platform.startswith("linux"):
+        return 1024**3
+    if sys.platform == "darwin":
+        machine = platform.machine()
+        if machine == "arm64":
+            return 512 * 1024**3
+        if machine == "x86_64":
+            return 64 * 1024**3
+    raise OSError("Für diese Plattform ist keine geprüfte Adressraumbasis festgelegt.")
 
 
 def virtual_memory_bytes() -> int:
@@ -69,10 +83,9 @@ def apply_limits(*, memory_headroom: int, cpu_seconds: int) -> dict[str, int]:
     if type(cpu_seconds) is not int or not 1 <= cpu_seconds <= 360:
         raise ValueError("Ungültiges CPU-Budget.")
     baseline = virtual_memory_bytes()
-    # Shared mappings on macOS occupy tens of GiB of virtual address space.
-    # Charge the fixed workload headroom on top, never infer it from invoices.
-    baseline_ceiling = 64 * 1024**3 if sys.platform == "darwin" else 1024**3
-    if not 0 < baseline <= baseline_ceiling:
+    # Trusted mappings differ by architecture. Charge only the unchanged fixed
+    # workload headroom on top; no invoice input may influence the baseline.
+    if not 0 < baseline <= baseline_ceiling_bytes():
         raise OSError("Unzulässiger Prozessgrundbedarf.")
     address_limit = baseline + memory_headroom
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -96,7 +109,7 @@ def seal_runtime_memory(*, memory_headroom: int) -> dict[str, int]:
     if type(memory_headroom) is not int or not 1024**2 <= memory_headroom <= 4 * 1024**3:
         raise ValueError("Ungültiges Prozessspeicherbudget.")
     baseline = virtual_memory_bytes()
-    maximum_baseline = 64 * 1024**3 if sys.platform == "darwin" else 1024**3
+    maximum_baseline = baseline_ceiling_bytes()
     limit = baseline + memory_headroom
     _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
     if not 0 < baseline <= maximum_baseline or hard == resource.RLIM_INFINITY or limit > hard:

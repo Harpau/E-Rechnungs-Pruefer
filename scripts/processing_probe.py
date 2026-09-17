@@ -51,7 +51,16 @@ CASES = (
 EXTERNAL_CPU_SECONDS = 1.5
 PYTHON_HEADROOM_BYTES = 768 * MIB
 PYTHON_START_HEADROOM_BYTES = 2 * 1024 * MIB
-BASELINE_CEILING_BYTES = 64 * 1024 * MIB
+
+
+def operation_baseline_ceiling_bytes() -> int:
+    # Direct script execution need not have an editable project installed.
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from app.processing.posix import baseline_ceiling_bytes
+
+    return baseline_ceiling_bytes()
 
 
 class ProbeError(RuntimeError):
@@ -204,7 +213,8 @@ def operations_probe(selection: tuple[str, str] | None = None) -> None:
     import resource
 
     baseline = virtual_bytes()
-    if baseline > BASELINE_CEILING_BYTES:
+    baseline_ceiling = operation_baseline_ceiling_bytes()
+    if not 0 < baseline <= baseline_ceiling:
         raise ProbeError("Trusted bootstrap baseline exceeds the fixed calibration ceiling")
     start_limit = baseline + PYTHON_START_HEADROOM_BYTES
     resource.setrlimit(resource.RLIMIT_AS, (start_limit, start_limit))
@@ -221,7 +231,7 @@ def operations_probe(selection: tuple[str, str] | None = None) -> None:
         raise ProbeError("Processing imports unexpectedly loaded environment/web application configuration")
     imported_baseline = virtual_bytes()
     runtime_limit = imported_baseline + PYTHON_HEADROOM_BYTES
-    if imported_baseline > BASELINE_CEILING_BYTES or runtime_limit > start_limit:
+    if not 0 < imported_baseline <= baseline_ceiling or runtime_limit > start_limit:
         raise ProbeError("Trusted processing imports leave insufficient headroom within the fixed start cap")
     resource.setrlimit(resource.RLIMIT_AS, (runtime_limit, runtime_limit))
     emit(
@@ -579,7 +589,7 @@ def main(argv: list[str] | None = None) -> int:
             "max_allocation_bytes": ALLOCATION_BYTES,
             "outer_seconds_per_case": OUTER_SECONDS,
             "output_cap": OUTPUT_LIMIT,
-            "operation_baseline_ceiling_bytes": BASELINE_CEILING_BYTES,
+            "operation_baseline_ceiling_bytes": operation_baseline_ceiling_bytes(),
             "operation_as_headroom_bytes": PYTHON_HEADROOM_BYTES,
             "operation_start_as_headroom_bytes": PYTHON_START_HEADROOM_BYTES,
             "operation_synthetic_input_cap": 65536,
