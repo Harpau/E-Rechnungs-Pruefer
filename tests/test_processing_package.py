@@ -1231,3 +1231,270 @@ def test_snapshot_queries_only_five_already_bound_handles_and_caps_requests():
     assert len(result["requests_done"]) == 3 and len(result["request_failures"]) == 3
     assert result["bound_processes"][1]["input_marker_observed"]
     assert not result["bound_processes"][2]["input_marker_observed"]
+
+
+@pytest.mark.parametrize("granted", [0x101441, 0x101401, 0])
+def test_d3_access_reports_actual_grants_without_substituting_requested_mask(native_error_api, granted):
+    import ctypes
+    from types import SimpleNamespace
+
+    api, _ = native_error_api
+    calls = []
+
+    def query(handle, kind, output, size, returned):
+        calls.append((handle, kind, size))
+        assert ctypes.sizeof(output._obj) == 56
+        output._obj.GrantedAccess = granted
+        returned._obj.value = size
+        return 0
+
+    api.n = SimpleNamespace(NtQueryObject=query)
+    result = api.process_access(123)
+    assert calls == [(123, 0, 56)]
+    assert result["status"] == "observed"
+    assert result["requested_access"] == 0x101441
+    assert result["granted_access"] == granted
+    assert result["dup_handle_granted"] is bool(granted & 0x40)
+    assert "123" not in str(result)
+
+
+@pytest.mark.parametrize("status,length", [(0xC0000004, 56), (-1073741790, 56), (1, 56), (0, 0), (0, 55), (0, 57)])
+def test_d3_invalid_access_status_or_length_never_claims_grants(native_error_api, status, length):
+    from types import SimpleNamespace
+
+    api, _ = native_error_api
+
+    def query(_handle, _kind, output, _size, returned):
+        output._obj.GrantedAccess = 0x101441
+        returned._obj.value = length
+        return status
+
+    api.n = SimpleNamespace(NtQueryObject=query)
+    result = api.process_access(123)
+    assert result["status"] == "unavailable"
+    assert result["ntstatus"] == status & 0xFFFFFFFF
+    assert result["returned_size"] == length
+    assert "granted_access" not in result and "dup_handle_granted" not in result
+
+
+def test_d3_access_exception_is_numeric_and_does_not_escape(native_error_api):
+    from types import SimpleNamespace
+
+    api, _ = native_error_api
+    api.n = SimpleNamespace(NtQueryObject=lambda *_: (_ for _ in ()).throw(OSError(6, "PRIVATE HANDLE")))
+    result = api.process_access(123)
+    assert result["status"] == "unavailable" and result["failure"]["errno"] == 6
+    assert "PRIVATE" not in str(result)
+
+
+@pytest.mark.parametrize("last_status", [0, 0xC0000022, 0xC000010A])
+def test_d3_last_status_precedes_end_clock_and_exception_and_is_only_correlated(
+    native_error_api, monkeypatch, last_status
+):
+    api, state = native_error_api
+    order = []
+    observation = probe.new_input_observation(process())
+
+    def clock():
+        order.append("clock")
+        return float(len(order))
+
+    def duplicate(*_):
+        order.append("duplicate")
+        state.error = 5
+        return 0
+
+    def status():
+        order.append("last_ntstatus")
+        return last_status
+
+    old_error = probe._native_ctypes.WinError
+    monkeypatch.setattr(probe.time, "monotonic", clock)
+    probe._native_ctypes.get_last_error = lambda: order.append("winerror") or state.error
+    probe._native_ctypes.WinError = lambda value: order.append("exception") or old_error(value)
+    api._last_ntstatus = status
+    api.k.DuplicateHandle = duplicate
+    with pytest.raises(PermissionError) as raised:
+        api.peek_marker(123, 456, b"PRIVATE", observation)
+    assert order == ["clock", "duplicate", "winerror", "last_ntstatus", "clock", "exception"]
+    assert probe.failure_details(raised.value)["winerror"] == 5
+    last = observation["last_native_failure"]["correlated_last_ntstatus"]
+    assert last == {"status": "observed", "value": last_status, "origin_guaranteed": False}
+    assert observation["duplicate"]["failures"] == 1
+    assert observation["peek"]["attempts"] == 0
+
+
+@pytest.mark.parametrize("failure_mode", ["missing", "raises"])
+def test_d3_unavailable_last_status_never_replaces_primary_error(native_error_api, failure_mode):
+    api, state = native_error_api
+    observation = probe.new_input_observation(process())
+    if failure_mode == "raises":
+        api._last_ntstatus = lambda: (_ for _ in ()).throw(OSError(6, "PRIVATE"))
+    api.k.DuplicateHandle = lambda *_: 0
+    with pytest.raises(PermissionError) as raised:
+        api.peek_marker(123, 456, b"PRIVATE", observation)
+    assert probe.failure_details(raised.value)["winerror"] == 5
+    assert observation["last_native_failure"]["correlated_last_ntstatus"]["status"] == "unavailable"
+    assert state.closed == [] and "PRIVATE" not in str(observation)
+
+
+def test_d3_counters_measure_existing_calls_only_and_remain_fixed_size(native_error_api, monkeypatch):
+    api, state = native_error_api
+    calls = []
+    times = iter([1.0, 1.25, 2.0, 2.75, 3.0, 3.125, 4.0, 4.25])
+    monkeypatch.setattr(probe.time, "monotonic", lambda: next(times))
+
+    def duplicate(_source, _input, _target, output, *_rest):
+        calls.append("duplicate")
+        output._obj.value = 555
+        return 1
+
+    def peek(_handle, raw, _size, read, _available, _left):
+        calls.append("peek")
+        raw.value = b"marker"
+        read._obj.value = 6
+        return 1
+
+    api.k.DuplicateHandle, api.k.PeekNamedPipe = duplicate, peek
+    api.k.CloseHandle = lambda handle: state.closed.append(handle) or 1
+    observation = probe.new_input_observation(process())
+    assert api.peek_marker(123, 456, b"missing", observation) is False
+    assert api.peek_marker(123, 456, b"marker", observation) is True
+    assert calls == ["duplicate", "peek", "duplicate", "peek"]
+    assert state.closed == [555, 555]
+    assert observation["duplicate"] == {
+        "attempts": 2,
+        "successes": 2,
+        "failures": 0,
+        "last_seconds": 0.125,
+        "max_seconds": 0.25,
+        "counter_saturated": False,
+    }
+    assert observation["peek"]["last_seconds"] == 0.25 and observation["peek"]["max_seconds"] == 0.75
+    assert observation["marker_seen"] is True
+    assert observation["source"] == {"pid": 20, "created": 200, "role": "worker", "channel": "input"}
+    assert "123" not in str(observation) and "456" not in str(observation)
+
+
+def test_d3_peek_failure_capture_precedes_clock_and_cleanup(native_error_api, monkeypatch):
+    api, state = native_error_api
+    order = []
+
+    def duplicate(_source, _input, _target, output, *_rest):
+        output._obj.value = 555
+        return 1
+
+    api.k.DuplicateHandle = duplicate
+    api.k.PeekNamedPipe = lambda *_: order.append("peek") or 0
+    api._last_ntstatus = lambda: order.append("last_ntstatus") or 0xC000010A
+    api.k.CloseHandle = lambda handle: order.append("close") or state.closed.append(handle) or 0
+    monkeypatch.setattr(probe.time, "monotonic", lambda: order.append("clock") or float(len(order)))
+    observation = probe.new_input_observation(process())
+    with pytest.raises(probe.ProbeError) as raised:
+        api.peek_marker(123, 456, b"marker", observation)
+    assert order == ["clock", "clock", "clock", "peek", "last_ntstatus", "clock", "close"]
+    assert probe.failure_details(raised.value)["api"] == "PeekNamedPipe"
+    assert observation["peek"]["failures"] == 1 and len(api.cleanup_diagnostics) == 1
+
+
+def test_d3_failed_source_access_is_bound_and_diagnostic_failure_preserves_error(synthetic_run):
+    import json
+
+    args, api, _ = synthetic_run
+    calls = []
+    primary = PermissionError(13, "PRIVATE")
+    primary.winerror = 5
+
+    def access(handle):
+        calls.append(handle)
+        if calls.count(handle) == 2:
+            raise OSError(6, "PRIVATE DIAGNOSTICS")
+        return {
+            "status": "observed",
+            "requested_access": 0x101441,
+            "granted_access": 0x101401,
+            "dup_handle_granted": False,
+        }
+
+    api.process_access = access
+    api.peek_marker = lambda *_: (_ for _ in ()).throw(primary)
+    with pytest.raises(PermissionError) as raised:
+        probe.run(args, api)
+    assert raised.value is primary and calls == [10, 20, 20]
+    report = json.loads((args.output_directory / "result.json").read_bytes())
+    role = report["process_metrics"]["20"]
+    assert role["input_observation"]["source"]["pid"] == 20
+    assert role["access_observations"][0]["dup_handle_granted"] is False
+    assert role["access_observations"][1]["status"] == "unavailable"
+    assert role["access_observations"][1]["phase"] == "input-observation-failed"
+    assert sorted(api.closed) == [10, 20] and not api.kills and "PRIVATE" not in str(report)
+
+
+def test_d3_invalid_identity_never_queries_process_access(synthetic_run):
+    args, api, _ = synthetic_run
+    queried = []
+    opened = api.open
+    api.process_access = lambda handle: queried.append(handle) or {}
+    api.open = lambda pid, parent: (lambda pair: (pair[0], replace(pair[1], created=99)))(opened(pid, parent))
+    with pytest.raises(probe.ProbeError):
+        probe.run(args, api)
+    assert queried == []
+
+
+def test_d3_access_observations_never_query_more_than_twice():
+    from types import SimpleNamespace
+
+    calls = []
+    api = SimpleNamespace(process_access=lambda handle: calls.append(handle) or {"status": "observed"})
+    record = {}
+    probe.record_access(api, 123, record, "bound")
+    probe.record_access(api, 123, record, "input-observation-failed")
+    probe.record_access(api, 123, record, "unreachable-extra-call")
+    assert calls == [123, 123]
+    assert len(record["access_observations"]) == 2 and record["access_observations_truncated"]
+
+
+def test_d3_counters_saturate_without_growing_or_retrying(native_error_api):
+    api, _ = native_error_api
+    calls = []
+    api.k.DuplicateHandle = lambda *_: calls.append("duplicate") or 0
+    observation = probe.new_input_observation(process())
+    observation["duplicate"]["attempts"] = probe.OBSERVATION_COUNTER_MAX
+    observation["duplicate"]["failures"] = probe.OBSERVATION_COUNTER_MAX
+    with pytest.raises(PermissionError):
+        api.peek_marker(123, 456, b"marker", observation)
+    assert calls == ["duplicate"]
+    assert observation["duplicate"]["attempts"] == probe.OBSERVATION_COUNTER_MAX
+    assert observation["duplicate"]["failures"] == probe.OBSERVATION_COUNTER_MAX
+    assert observation["duplicate"]["counter_saturated"]
+
+
+def test_d3_bad_duration_diagnostic_does_not_replace_native_failure(native_error_api, monkeypatch):
+    api, _ = native_error_api
+    calls = []
+
+    def clock():
+        calls.append("clock")
+        if len(calls) == 2:
+            raise OSError(6, "PRIVATE CLOCK FAILURE")
+        return 1.0
+
+    monkeypatch.setattr(probe.time, "monotonic", clock)
+    api.k.DuplicateHandle = lambda *_: 0
+    observation = probe.new_input_observation(process())
+    with pytest.raises(PermissionError) as raised:
+        api.peek_marker(123, 456, b"marker", observation)
+    assert probe.failure_details(raised.value)["winerror"] == 5
+    assert observation["duplicate"]["timing_unavailable"]
+    assert observation["duplicate"]["last_seconds"] is None
+
+
+def test_d3_changed_object_structure_is_unavailable_without_native_query(native_error_api, monkeypatch):
+    api, _ = native_error_api
+    monkeypatch.setattr(probe.ctypes, "sizeof", lambda _: 48)
+    assert api.process_access(123) == {
+        "status": "unavailable",
+        "api": "NtQueryObject.ObjectBasicInformation",
+        "requested_access": 0x101441,
+        "structure_size": 48,
+    }

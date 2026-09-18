@@ -41,6 +41,8 @@ HELD_XML_BYTES = 25 * 1024**2
 HELD_SEND_SECONDS = 25.0  # Five seconds below the unchanged product send deadline.
 HELD_OBSERVE_SECONDS = 15.0
 _native_ctypes: Any = ctypes
+PROCESS_ACCESS = 0x1000 | 0x400 | 0x40 | 0x100000 | 1
+OBSERVATION_COUNTER_MAX = 2**31 - 1
 
 
 class ProbeError(RuntimeError):
@@ -96,6 +98,70 @@ class ProcessIdentity:
     def public(self) -> dict[str, Any]:
         # Never emit command lines, pipe handles, token paths or token values.
         return {key: value for key, value in asdict(self).items() if key != "argv"}
+
+
+def new_input_observation(identity: ProcessIdentity) -> dict[str, Any]:
+    def counters() -> dict[str, Any]:
+        return {
+            "attempts": 0,
+            "successes": 0,
+            "failures": 0,
+            "last_seconds": None,
+            "max_seconds": None,
+            "counter_saturated": False,
+        }
+
+    return {
+        "source": {"pid": identity.pid, "created": identity.created, "role": "worker", "channel": "input"},
+        "scope": "existing calls only; measured durations are not individual call deadlines",
+        "duplicate": counters(),
+        "peek": counters(),
+        "marker_seen": False,
+    }
+
+
+def _observation_start(observation: dict[str, Any] | None) -> float | None:
+    if observation is not None:
+        try:
+            return time.monotonic()
+        except BaseException:
+            pass
+    return None
+
+
+def _record_observation_call(
+    observation: dict[str, Any] | None, name: str, started: float | None, success: bool
+) -> None:
+    if observation is None:
+        return
+    counter = observation[name]
+    for key in ("attempts", "successes" if success else "failures"):
+        if counter[key] == OBSERVATION_COUNTER_MAX:
+            counter["counter_saturated"] = True
+        else:
+            counter[key] += 1
+    try:
+        duration = time.monotonic() - started if started is not None else None
+        if duration is None or not math.isfinite(duration) or duration < 0:
+            raise ValueError("Invalid diagnostic clock")
+        counter["last_seconds"] = duration
+        counter["max_seconds"] = max(counter["max_seconds"] or 0.0, duration)
+    except BaseException:
+        # A clock/diagnostic failure must not replace the native API failure.
+        counter["last_seconds"] = None
+        counter["timing_unavailable"] = True
+
+
+class _ObjectBasicInformation(ctypes.Structure):
+    # Documented PUBLIC_OBJECT_BASIC_INFORMATION, not private object names.
+    # https://learn.microsoft.com/windows/win32/api/winternl/nf-winternl-ntqueryobject
+    _fields_ = [
+        ("Attributes", ctypes.c_uint32),
+        ("GrantedAccess", ctypes.c_uint32),
+        ("HandleCount", ctypes.c_uint32),
+        ("PointerCount", ctypes.c_uint32),
+        ("Reserved", ctypes.c_uint32 * 10),
+    ]
 
 
 def _same_path(a: str, b: str) -> bool:
@@ -222,6 +288,17 @@ class WindowsAPI:
         self._define(self.k, "QueryPerformanceCounter", [P], ctypes.c_int)
         self._define(self.k, "QueryPerformanceFrequency", [P], ctypes.c_int)
         self._define(self.n, "NtQueryInformationProcess", [H, D, P, D, P], ctypes.c_int32)
+        self._last_ntstatus: Any = None
+        try:
+            self._define(self.n, "NtQueryObject", [H, D, P, D, P], ctypes.c_int32)
+        except (AttributeError, OSError):
+            pass
+        try:
+            # Resolve before observation, never on the native failure path.
+            self._define(self.n, "RtlGetLastNtStatus", [], ctypes.c_int32)
+            self._last_ntstatus = self.n.RtlGetLastNtStatus
+        except (AttributeError, OSError):
+            pass
         self._define(self.s, "CommandLineToArgvW", [ctypes.c_wchar_p, P], P)
         self._define(self.ip, "GetExtendedTcpTable", [P, P, ctypes.c_int, D, D, D], D)
 
@@ -373,6 +450,46 @@ class WindowsAPI:
     def memory(self, handle: int) -> dict[str, Any]:
         return windows_memory_counters(handle)
 
+    def process_access(self, handle: int) -> dict[str, Any]:
+        """One fixed-size query of an already bound process, never a retry/open."""
+        result: dict[str, Any] = {
+            "status": "unavailable",
+            "api": "NtQueryObject.ObjectBasicInformation",
+            "requested_access": PROCESS_ACCESS,
+            "structure_size": ctypes.sizeof(_ObjectBasicInformation),
+        }
+        try:
+            if result["structure_size"] != 56:
+                return result
+            info = _ObjectBasicInformation()
+            returned = ctypes.c_uint32()
+            status = self.n.NtQueryObject(handle, 0, ctypes.byref(info), 56, ctypes.byref(returned))
+            result.update(ntstatus=status & 0xFFFFFFFF, returned_size=returned.value)
+            if status == 0 and returned.value == 56:
+                result.update(
+                    status="observed",
+                    granted_access=int(info.GrantedAccess),
+                    dup_handle_granted=bool(info.GrantedAccess & 0x40),
+                )
+        except BaseException as exc:
+            result["failure"] = failure_details(exc)
+        return result
+
+    def _correlated_status(self) -> dict[str, Any]:
+        # DuplicateHandle documents GetLastError only. This optional last-NT
+        # value can be stale or overwritten during ctypes/Python return; it is
+        # never treated as the proven originating status or a PASS condition.
+        result: dict[str, Any] = {"status": "unavailable", "origin_guaranteed": False}
+        try:
+            query = getattr(self, "_last_ntstatus", None)
+            if query is not None:
+                value = query()
+                if type(value) is int and -(2**31) <= value < 2**32:
+                    result.update(status="observed", value=value & 0xFFFFFFFF)
+        except BaseException as exc:
+            result["failure"] = failure_details(exc)
+        return result
+
     def _security_call(self, name: str, *args: Any) -> Any:
         try:
             return getattr(self.security, name)(*args)
@@ -382,7 +499,7 @@ class WindowsAPI:
 
     def open(self, pid: int, parent_pid: int) -> tuple[int, ProcessIdentity]:
         # QUERY_LIMITED_INFORMATION | QUERY_INFORMATION | DUP_HANDLE | SYNCHRONIZE | TERMINATE
-        h = self.k.OpenProcess(0x1000 | 0x400 | 0x40 | 0x100000 | 1, False, pid)
+        h = self.k.OpenProcess(PROCESS_ACCESS, False, pid)
         self._check(h, "OpenProcess")
         try:
             times = [ctypes.c_uint64() for _ in range(4)]
@@ -410,26 +527,54 @@ class WindowsAPI:
             with self.owned(lambda: self.close(h)):
                 raise
 
-    def peek_marker(self, handle: int, input_handle: int, marker: bytes) -> bool:
+    def peek_marker(
+        self, handle: int, input_handle: int, marker: bytes, observation: dict[str, Any] | None = None
+    ) -> bool:
         duplicate = ctypes.c_void_p()
-        self._check(
-            self.k.DuplicateHandle(
-                handle, input_handle, self.k.GetCurrentProcess(), ctypes.byref(duplicate), 0, False, 2
-            ),
-            "DuplicateHandle",
-        )
+        current_process = self.k.GetCurrentProcess()
+        started = _observation_start(observation)
+        succeeded = self.k.DuplicateHandle(handle, input_handle, current_process, ctypes.byref(duplicate), 0, False, 2)
+        if not succeeded:
+            code = _native_ctypes.get_last_error()
+            correlated = self._correlated_status()
+            # End-clock uses native QPC on Windows: capture both statuses first.
+            _record_observation_call(observation, "duplicate", started, False)
+            if observation is not None:
+                observation["last_native_failure"] = {
+                    "api": "DuplicateHandle",
+                    "winerror": code,
+                    "correlated_last_ntstatus": correlated,
+                }
+            raise native_failure(_native_ctypes.WinError(code), "DuplicateHandle", winerror=code)
+        _record_observation_call(observation, "duplicate", started, True)
         with self.owned(lambda: self.close(int(duplicate.value or 0))):
             raw = ctypes.create_string_buffer(65536)
             read = ctypes.c_uint32()
             available = ctypes.c_uint32()
-            if not self.k.PeekNamedPipe(duplicate, raw, len(raw), ctypes.byref(read), ctypes.byref(available), None):
+            started = _observation_start(observation)
+            succeeded = self.k.PeekNamedPipe(
+                duplicate, raw, len(raw), ctypes.byref(read), ctypes.byref(available), None
+            )
+            if not succeeded:
                 code = _native_ctypes.get_last_error()
+                correlated = self._correlated_status()
+                _record_observation_call(observation, "peek", started, False)
+                if observation is not None:
+                    observation["last_native_failure"] = {
+                        "api": "PeekNamedPipe",
+                        "winerror": code,
+                        "correlated_last_ntstatus": correlated,
+                    }
                 if code in (109, 232, 233):
                     return False
                 raise native_failure(
                     ProbeError("Bound input pipe cannot be observed safely."), "PeekNamedPipe", winerror=code
                 )
-            return marker in raw.raw[: read.value]
+            _record_observation_call(observation, "peek", started, True)
+            found = marker in raw.raw[: read.value]
+            if observation is not None:
+                observation["marker_seen"] = observation["marker_seen"] or found
+            return found
 
     def listener(self, port: int, parent: int) -> None:
         size = ctypes.c_uint32(256 * 1024)
@@ -806,6 +951,20 @@ def record_memory(api: WindowsAPI, handle: int, record: dict[str, Any], phase: s
     observations.append({"phase": phase, **value})
 
 
+def record_access(api: WindowsAPI, handle: int, record: dict[str, Any], phase: str) -> None:
+    """At most the bound observation and one failed-source observation."""
+    observations = record.setdefault("access_observations", [])
+    if len(observations) >= 2:
+        record["access_observations_truncated"] = True
+        return
+    try:
+        value = api.process_access(handle)
+    except BaseException as exc:
+        # Additive evidence cannot replace the original observation failure.
+        value = {"status": "unavailable", "requested_access": PROCESS_ACCESS, "failure": failure_details(exc)}
+    observations.append({"phase": phase, **value})
+
+
 def failure_snapshot(
     api: WindowsAPI,
     *,
@@ -987,6 +1146,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
         bound_parent = parent_handle, parent
         parent_metrics: dict[str, Any] = {"role": "backend", "identity": parent.public()}
         report["process_metrics"][str(parent.pid)] = parent_metrics
+        record_access(api, parent_handle, parent_metrics, "bound")
         record_memory(api, parent_handle, parent_metrics, "bound")
         phase = "preflight-listener"
         api.listener(b.port, b.parent_pid)
@@ -1039,14 +1199,22 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                     held[pid] = (handle, p, role)
                     metrics: dict[str, Any] = {"role": role, "identity": p.public()}
                     report["process_metrics"][str(pid)] = metrics
+                    record_access(api, handle, metrics, "bound")
+                    if role == "worker":
+                        metrics["input_observation"] = new_input_observation(p)
                     record_memory(api, handle, metrics, "bound")
                 handle, p, role = held[pid]
                 phase = "observe-input"
-                if role == "worker" and pid not in seen and marker and api.peek_marker(handle, int(p.argv[4]), marker):
-                    seen.add(pid)
-                    report["process_metrics"][str(pid)]["input_after_ready_upper_bound_seconds"] = (
-                        time.monotonic() - requests_started
-                    )
+                if role == "worker" and pid not in seen and marker:
+                    metrics = report["process_metrics"][str(pid)]
+                    try:
+                        observed = api.peek_marker(handle, int(p.argv[4]), marker, metrics["input_observation"])
+                    except BaseException:
+                        record_access(api, handle, metrics, "input-observation-failed")
+                        raise
+                    if observed:
+                        seen.add(pid)
+                        metrics["input_after_ready_upper_bound_seconds"] = time.monotonic() - requests_started
             workers = {pid for pid, (_, _, role) in held.items() if role == "worker"}
             if len(held) == count * 2 and (xml_export or (len(workers) == count and seen == workers)):
                 break
