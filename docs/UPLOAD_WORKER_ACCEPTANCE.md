@@ -166,12 +166,34 @@ Der Produktzustand wurde beim Befund erhalten; Installerlog, Fehlerbericht, Kont
 sind gebunden. Deinstallation oder erfolgreicher Produktcleanup sind nicht nachgewiesen. Der spätere Abbau
 des temporären GitHub-Runners ersetzt diesen Nachweis nicht.
 
-Beide zusätzlich freigegebenen Diagnoseläufe sind verbraucht. Der Bestätigungslauf bleibt ungenutzt, seine
-Voraussetzung – eine belegte Ursache und unabhängig geprüfte Korrektur des ursprünglichen Fehlers – ist
-nicht erfüllt. Eine weitere native Diagnose benötigt eine neue ausdrückliche Freigabe; sie darf nicht als
-Bestätigung umbenannt werden. Die nächste gezielte Messung müsste die tatsächlich gewährten Rechte des
-gebundenen Prozesshandles und den nativen Status unmittelbar am fehlgeschlagenen Aufruf unterscheiden.
-Ein pauschaler Retry, eine Rechteerhöhung oder das Ignorieren des Fehlers wären keine belegte Korrektur.
+Der anschließend ausdrücklich freigegebene
+[Diagnoselauf D3, 35359989931, Versuch 1](https://github.com/Harpau/E-Rechnungs-Pruefer/actions/runs/35359989931)
+verwendete Harnesscommit `55fc5944fad738795f6fede2211f4f262483633b` und dieselben C6-Produktbytes.
+Die Ergänzung erfasst tatsächlich gewährte Handle-Rechte, feste Zähler und Dauern bestehender Aufrufe sowie
+bei Fehlern einen ausdrücklich nur korrelierten Last-NTSTATUS. Sie verändert weder Produktrechte noch
+Bestehenskriterien. Die bisher tolerierten Pipe-Endzustände 109/232/233 bleiben unverändert behandelt.
+169 Windows-Vorprüfungen bestanden; das vollständige lokale Gate bestand mit 2.708 Tests und zehn Skips.
+
+D3 bestand beide begrenzten Fälle und die reguläre Deinstallation samt vorhandenen Restprüfungen.
+Zwei gehaltene 25-MiB-XML-Antworten wurden bytegleich abgerufen. In der anschließenden Healthprobe wurden
+beide Worker-Marker erkannt; alle fünf gebundenen Prozesshandles besaßen die angeforderten Rechte
+`0x101441`, einschließlich `PROCESS_DUP_HANDLE`. Die Worker lieferten 163 bzw. 156 erfolgreiche
+Duplikationen und ebenso viele erfolgreiche Peeks, ohne API-Fehler. Die längste Duplikation dauerte 57,6 µs,
+der längste Peek 176,5 µs. Die drei Health-Antworten benötigten 21,95 bis 32,96 ms; die zusätzliche Anfrage
+erhielt `503 analysis_capacity_error` nach 3,41 ms. Beide PDF-Antworten erreichten HTTP 200, die gebundenen
+Rollen endeten und ein anschließender frischer XML-Auftrag bestand.
+
+Damit lautet der Status dieser beiden D3-Fälle `PASS`. Die Diagnose der früheren Ursache bleibt dagegen
+`INCONCLUSIVE`: Es gab keinen fehlgeschlagenen D3-Aufruf, an dem ein Fehlerstatus oder entzogene Rechte
+hätten gemessen werden können. Die gewährten Rechte dieses Laufs gelten nicht rückwirkend für D2.
+Eine Handle-Race, ein Rechteentzug oder eine erfolgreiche Reparatur ist weiterhin nicht bewiesen.
+D3 ersetzt weder die übrigen Desktopfälle noch die Dienst-/Recovery-Abnahme.
+
+Alle drei zusätzlich freigegebenen Diagnoseläufe sind verbraucht. Der vollständige Bestätigungslauf bleibt
+ungenutzt; seine bisherige Voraussetzung – belegte Ursache und unabhängig geprüfte Korrektur – ist nicht
+erfüllt. Eine funktionale Vollprüfung bei weiterhin offenem Ursachenbefund wäre eine ausdrücklich neu
+freizugebende Änderung dieser Voraussetzung. Ein weiterer gleichartiger Diagnoselauf, pauschaler Retry,
+eine Rechteerhöhung oder das Ignorieren des Fehlers sind nicht vorgesehen.
 
 Die vollständige Desktop-/Dienst- und Ressourcenabnahme bleibt bis zu einem belegten Ergebnis offen.
 Die 48 unveränderten OS-Sicherheitskennungen (67 Paketzuordnungen, darunter acht
