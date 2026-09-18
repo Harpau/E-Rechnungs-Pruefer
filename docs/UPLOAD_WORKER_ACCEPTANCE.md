@@ -48,7 +48,8 @@ Spätere Dokumentations- oder Testkorrekturen erhalten dadurch keine neue native
 Die PowerShell-Korrektur erweitert ausschließlich die äußere Frist des reinen Resolver-Regressionshelfers
 von 10 auf 30 Sekunden. Assertions und Produktfristen bleiben unverändert. Ein langsamer PowerShell-/NET-Start
 ist eine mögliche Erklärung; die genaue Ursache des CI-Timeouts wurde nicht aufgezeichnet. Die korrigierte
-Fassung bestand das lokale vollständige Gate; ein erneuter Linux-CI-Nachweis steht aus.
+Fassung bestand das lokale vollständige Gate; der unten dokumentierte C1-Lauf bestätigt inzwischen auch
+die vollständige Python-Matrix einschließlich Python 3.13.
 
 ## Ressourcenprofil und Kalibrierung
 
@@ -189,13 +190,57 @@ hätten gemessen werden können. Die gewährten Rechte dieses Laufs gelten nicht
 Eine Handle-Race, ein Rechteentzug oder eine erfolgreiche Reparatur ist weiterhin nicht bewiesen.
 D3 ersetzt weder die übrigen Desktopfälle noch die Dienst-/Recovery-Abnahme.
 
-Alle drei zusätzlich freigegebenen Diagnoseläufe sind verbraucht. Der vollständige Bestätigungslauf bleibt
-ungenutzt; seine bisherige Voraussetzung – belegte Ursache und unabhängig geprüfte Korrektur – ist nicht
-erfüllt. Eine funktionale Vollprüfung bei weiterhin offenem Ursachenbefund wäre eine ausdrücklich neu
-freizugebende Änderung dieser Voraussetzung. Ein weiterer gleichartiger Diagnoselauf, pauschaler Retry,
-eine Rechteerhöhung oder das Ignorieren des Fehlers sind nicht vorgesehen.
+Zu diesem Zeitpunkt waren alle drei zusätzlich freigegebenen Diagnoseläufe verbraucht; C1 war ungenutzt
+und seine Voraussetzung – belegte Ursache und unabhängig geprüfte Korrektur – nicht erfüllt.
 
-Die vollständige Desktop-/Dienst- und Ressourcenabnahme bleibt bis zu einem belegten Ergebnis offen.
-Die 48 unveränderten OS-Sicherheitskennungen (67 Paketzuordnungen, darunter acht
-HIGH-Kennungen in neun Paketzeilen je geprüftem Container) sind ein weiterer Freigabeblocker. Merge, Tag und
-Veröffentlichung sind nicht erfolgt.
+## Vollständiger funktionaler Lauf C1
+
+Nach ausdrücklicher Änderung dieser Voraussetzung wurde genau ein vollständiger funktionaler
+[C1-Lauf 35365866430, Versuch 1](https://github.com/Harpau/E-Rechnungs-Pruefer/actions/runs/35365866430)
+auf Commit `9fcc02e4f7f318b8660f7d4babbfe7f4f33da69b` ausgeführt. Die ursprüngliche Fehlerursache durfte dabei
+offenbleiben; eine Reparatur wurde nicht behauptet. Der neue Commit ergänzt ausschließlich die getrennte
+Aufbewahrung des ohnehin gebauten Recovery-Testinstallers samt Regression und Dokumentation. Alle
+Produkt-, Rechte-, Frist- und Bestehenskriterien blieben unverändert. Vor Dispatch bestand das vollständige
+lokale Gate mit 2.709 Tests, zehn Skips und 86,43 % Coverage; Plan und Änderung wurden unabhängig geprüft.
+
+| C1-Prüfung | Ergebnis und Grenze |
+|---|---|
+| Quality und Python 3.11–3.14 | Alle Jobs bestanden; auch der frühere Python-3.13-Testtimeout trat nicht erneut auf. |
+| Source/Wheel | 79 Appdateien bytegleich; acht Aufträge im außerhalb des Checkouts installierten Wheel, 16 Rollen beendet, keine belegten Plätze. |
+| Linux amd64/arm64 | Funktionale Kataloge, Abbruchfälle, HTTP und KoSIT bestanden; beide Jobs scheiterten ausschließlich am strikten OS-Sicherheitsaudit. Imageexport/-upload wurde deshalb übersprungen. |
+| macOS arm64 | Native Kataloge und Lebenszyklusprüfungen bestanden; 386 Tests bestanden, ein Windows-spezifischer Skip. |
+| Windows vor Installation | 1.651 Tests bestanden, 16 Skips; nativer Katalog, Abbruchfälle, KoSIT und neuer Paketbau bestanden. |
+| Installierter Desktop | Zwei gehaltene, bytegleiche 25-MiB-XML-Antworten bestanden. Die folgende Health-Beobachtung brach erneut im Prüfhelfer ab. |
+| Weitere Desktopfälle, Modusausschluss und Dienst/Recovery | Nicht erreicht. Keine vollständige Paketabnahme; keine erfolgreiche Produktdeinstallation behauptet. |
+
+Der neue Health-Fehler entstand nach 2,176 Sekunden bei `DuplicateHandle`, erneut Win32=5/errno=13.
+Beim betroffenen Worker waren zuvor 392 Duplikationen und 392 Peeks erfolgreich. Die 393. Duplikation
+scheiterte nach 20,8 µs. Tatsächlich gewährte Rechte wurden sowohl bei Bindung als auch nach dem Fehler mit
+`0x101441` einschließlich `PROCESS_DUP_HANDLE` gemessen. Ein fehlendes Duplikationsrecht am gehaltenen
+Quellprozesshandle erklärt diesen C1-Befund daher nicht.
+
+Der unmittelbar erfasste, ausdrücklich nur korrelierte Last-NTSTATUS war `0xC000010A`.
+Microsoft bezeichnet ihn als
+[`STATUS_PROCESS_IS_TERMINATING`](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55),
+also eine Handle-Duplikation aus oder in einen beendenden Prozess. Das passt zu einem zeitlichen Konflikt
+zwischen Beobachtung und Prozessende. Dass alle fünf Prozesshandles im nachfolgenden Snapshot noch nicht
+signalisiert waren, widerspricht dem nicht: Bei
+[`ExitProcess`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-exitprocess)
+liegt die Handleschließung vor dem Prozessobjekt-Signal. Der Last-NTSTATUS ist jedoch kein garantiert dem
+fehlgeschlagenen Aufruf zugeordneter direkter Rückgabewert. Worker-Endstatus und beide fertigen HTTP-Ergebnisse
+fehlen. Eine bestimmte Abbauursache, ein Produktfehler oder eine erfolgreiche Reparatur bleiben unbewiesen.
+
+Der Desktop-Kindkontext endete `INCONCLUSIVE` und sperrte die nachfolgenden Mutationen. Der Prüfhelfer erhielt
+Produktprozesse, Installation und Autostart beim Befund; der spätere Abbau des GitHub-Runners ist kein
+Deinstallationsnachweis. Die Originalinstaller, EXEs, der gesonderte Recovery-Testinstaller und die Nachweise
+werden getrennt erhalten. Für den Recovery-Testinstaller entstand wegen des früheren Abbruchs kein
+Dienst-Kindkontext; er ist ein ungetestetes Buildartefakt und kein Dienst-PASS.
+
+Die aktuellen Container-Scans melden je Architektur 49 OS-Kennungen in 69 Paketzeilen, davon unverändert
+acht HIGH-Kennungen in neun Zeilen. Gegenüber C6 neu ist `CVE-2026-8674` (MEDIUM) für `libc-bin` und `libc6`;
+keine bisherige Kennung entfiel. Diese Scannerfeststellung ist keine zusätzliche Ausnutzbarkeitsbewertung.
+Die Python- und KoSIT-Java-Audits sind ohne Befund. Das Nullbefund-Gate bleibt gesperrt.
+
+C1 ist mit 1/1 verbraucht; ursprüngliche Desktopversuche 2/2 und D1–D3 jeweils 1/1 bleiben unverändert.
+Ein weiterer nativer Lauf, pauschaler Retry, Rechteerhöhung oder Fehlerunterdrückung ist nicht freigegeben.
+Die technische Gesamtabnahme bleibt `INCONCLUSIVE`; Merge, Tag und Veröffentlichung sind nicht erfolgt.
