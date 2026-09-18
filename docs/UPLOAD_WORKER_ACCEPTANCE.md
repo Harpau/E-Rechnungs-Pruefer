@@ -146,9 +146,32 @@ Textcodierung. C6-Download, Installerprobe und Produktkontext wurden nicht gesta
 identische rohe ZIP-Namen auf allen Plattformen und explizites UTF-8; die Archivprüfung bewertet zusätzlich
 den unveränderten Originalnamen vor einer Windows-Normalisierung.
 
-Der einmalige Diagnoselauf ist verbraucht. Der Bestätigungslauf bleibt ungenutzt, seine Voraussetzung – eine
-belegte Ursache und geprüfte Korrektur des ursprünglichen Fehlers – ist nicht erfüllt. Eine erneute Diagnose
-benötigt eine zusätzliche ausdrückliche Freigabe; sie darf nicht als Bestätigung umbenannt werden.
+Nach zusätzlicher ausdrücklicher Freigabe wurde genau ein weiterer
+[Diagnoselauf 35354724166, Versuch 1](https://github.com/Harpau/E-Rechnungs-Pruefer/actions/runs/35354724166)
+auf Harnesscommit `68de5c41a64fa7c83ecdcbc1afa4ac9e98f75564` ausgeführt. Alle 146 Vorprüfungstests bestanden.
+Installer und installierte EXE waren hashgleich den ursprünglichen C6-Bytes. Zwei gehaltene 25-MiB-Antworten
+bestanden erneut. Die folgende Healthprobe scheiterte nach 2,674 Sekunden in der Phase `observe-input`:
+`DuplicateHandle` lieferte Win32-Fehler 5 (`ERROR_ACCESS_DENIED`, `errno=13`).
+
+Im unmittelbar nachfolgenden Snapshot waren Backend, beide Supervisoren und beide Worker über ihre
+gebundenen Prozesshandles noch `alive`; ein Worker-Marker war erkannt, beide HTTP-Anfragen noch offen.
+Ein bereits vollendetes Prozessende ist damit nicht belegt. Der Snapshot beweist allerdings auch nicht,
+dass das konkrete Eingabehandle zum Zeitpunkt des API-Aufrufs noch gültig war. Der Beobachter fordert
+`PROCESS_DUP_HANDLE` an und verwendet passende Pointer-Signaturen; tatsächlich gewährte Rechte und der
+ursprüngliche native NTSTATUS wurden nicht aufgezeichnet. Eine bestimmte Rechte- oder Handleursache ist
+weiter offen. Das Ergebnis bleibt `INCONCLUSIVE`; eine Produktstörung oder Überschreitung der Healthfrist
+ist nicht nachgewiesen. Der Dienst und die weiteren Paketfälle wurden nicht ausgeführt.
+
+Der Produktzustand wurde beim Befund erhalten; Installerlog, Fehlerbericht, Kontextreceipt und Originalarchiv
+sind gebunden. Deinstallation oder erfolgreicher Produktcleanup sind nicht nachgewiesen. Der spätere Abbau
+des temporären GitHub-Runners ersetzt diesen Nachweis nicht.
+
+Beide zusätzlich freigegebenen Diagnoseläufe sind verbraucht. Der Bestätigungslauf bleibt ungenutzt, seine
+Voraussetzung – eine belegte Ursache und unabhängig geprüfte Korrektur des ursprünglichen Fehlers – ist
+nicht erfüllt. Eine weitere native Diagnose benötigt eine neue ausdrückliche Freigabe; sie darf nicht als
+Bestätigung umbenannt werden. Die nächste gezielte Messung müsste die tatsächlich gewährten Rechte des
+gebundenen Prozesshandles und den nativen Status unmittelbar am fehlgeschlagenen Aufruf unterscheiden.
+Ein pauschaler Retry, eine Rechteerhöhung oder das Ignorieren des Fehlers wären keine belegte Korrektur.
 
 Die vollständige Desktop-/Dienst- und Ressourcenabnahme bleibt bis zu einem belegten Ergebnis offen.
 Die 48 unveränderten OS-Sicherheitskennungen (67 Paketzuordnungen, darunter acht
