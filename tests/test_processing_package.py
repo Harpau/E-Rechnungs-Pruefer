@@ -665,7 +665,11 @@ def test_held_backend_memory_requires_all_three_real_byte_counters():
 def test_held_case_is_in_shared_package_catalog():
     assert "held-responses" in probe.CASES
     source = (probe.ROOT / "scripts/test_processing_package.ps1").read_text()
-    assert 'foreach ($Case in @("held-responses",' in source
+    assert (
+        'return @("held-responses", "health", "worker-death", "supervisor-death", "parent-death", "controlled-stop", "xml25")'
+        in source
+    )
+    assert "foreach ($Case in $Cases)" in source
 
 
 @pytest.fixture()
@@ -1025,3 +1029,205 @@ def test_powershell_uses_same_resolved_interpreter_for_guard_and_helper():
     assert "$CheckRaw = & $PythonExecutable @CheckArguments" in source
     assert "$Info.FileName = $PythonExecutable" in source
     assert "(Get-Command python -CommandType Application).Source" not in source
+
+
+def test_four_bound_roles_one_marker_preserves_permission_error_and_cleanup(synthetic_run):
+    import json
+
+    args, api, requests = synthetic_run
+    args.case = "health"
+    original_open = api.open
+
+    def opened(pid, parent):
+        handle, identity = original_open(pid, parent)
+        if pid == 22:
+            identity = replace(
+                identity, argv=(str(args.executable), "--einvoice-processing", "worker", "10", "40", "41")
+            )
+        return handle, identity
+
+    def children(pid):
+        api.scans += 1
+        return [] if api.scans == 1 else [21, 23, 20, 22]
+
+    failure = PermissionError(13, "SECRET TOKEN AND HANDLE MUST NOT BE EMITTED")
+    failure.winerror = 5
+
+    def observed(handle, *_args):
+        if handle == 22:
+            raise failure
+        return True
+
+    def closed(handle):
+        api.closed.append(handle)
+        if handle == 20:
+            raise OSError(6, "PRIVATE CLEANUP DETAILS")
+
+    api.open, api.children, api.peek_marker, api.close = opened, children, observed, closed
+    with pytest.raises(PermissionError) as raised:
+        probe.run(args, api)
+    assert raised.value is failure
+    report = json.loads((args.output_directory / "result.json").read_bytes())
+    assert report["failure"]["winerror"] == 5 and report["failure"]["errno"] == 13
+    snap = report["failure_snapshot"]
+    assert snap["phase"] == "observe-input"
+    assert snap["marker_seen_count"] == 1 and snap["bound_role_counts"] == {"supervisor": 2, "worker": 2}
+    assert len(snap["bound_processes"]) == 5 and snap["requests_done"] == [False, False]
+    assert all(p["state"] == "alive" for p in snap["bound_processes"])
+    assert report["observer_cleanup"][0]["error_class"] == "OSError"
+    assert sorted(api.closed) == [10, 20, 21, 22, 23] and not api.kills
+    assert all(r.closed for r in requests)
+    assert "processes" not in report and "loaded_health_seconds" not in report
+    raw = json.dumps(report)
+    assert "SECRET" not in raw and "PRIVATE CLEANUP" not in raw and '"argv"' not in raw
+
+
+@pytest.fixture()
+def native_error_api(monkeypatch):
+    from types import SimpleNamespace
+
+    state = SimpleNamespace(error=5, closed=[])
+
+    def winerror(code):
+        error = PermissionError(13, "PRIVATE") if code == 5 else OSError(9, "PRIVATE")
+        error.winerror = code
+        return error
+
+    monkeypatch.setattr(probe, "_native_ctypes", SimpleNamespace(get_last_error=lambda: state.error, WinError=winerror))
+    api = object.__new__(probe.WindowsAPI)
+    api.k = SimpleNamespace(GetCurrentProcess=lambda: 999)
+    return api, state
+
+
+def test_duplicate_handle_failure_retains_exact_api_code_without_cleanup_or_raw_handles(native_error_api):
+    api, state = native_error_api
+    api.k.DuplicateHandle = lambda *_args: 0
+    api.k.CloseHandle = lambda handle: state.closed.append(handle) or 1
+    with pytest.raises(PermissionError) as raised:
+        api.peek_marker(876543, 654321, b"PRIVATE-MARKER")
+    assert probe.failure_details(raised.value) == {
+        "error_class": "PermissionError",
+        "api": "DuplicateHandle",
+        "domain": "win32",
+        "errno": 13,
+        "winerror": 5,
+    }
+    assert state.closed == []
+
+
+def test_peek_primary_error_survives_close_error_and_closes_duplicate_once(native_error_api):
+    api, state = native_error_api
+
+    def duplicate(_source, _input, _target, output, *_rest):
+        output._obj.value = 555
+        return 1
+
+    def close(handle):
+        state.closed.append(handle)
+        state.error = 6
+        return 0
+
+    api.k.DuplicateHandle, api.k.PeekNamedPipe, api.k.CloseHandle = duplicate, lambda *_: 0, close
+    with pytest.raises(probe.ProbeError) as raised:
+        api.peek_marker(123, 456, b"PRIVATE")
+    assert probe.failure_details(raised.value)["api"] == "PeekNamedPipe"
+    assert probe.failure_details(raised.value)["winerror"] == 5
+    assert api.cleanup_diagnostics[0]["winerror"] == 6
+    assert state.closed == [555]
+
+
+def test_ntstatus_survives_without_last_error_translation(native_error_api):
+    from types import SimpleNamespace
+
+    api, state = native_error_api
+    api.n = SimpleNamespace(NtQueryInformationProcess=lambda *_: -1073741790)
+    with pytest.raises(probe.ProbeError) as raised:
+        api.kernel_parent(123, 20, 10)
+    details = probe.failure_details(raised.value)
+    assert details["api"] == "NtQueryInformationProcess.BasicInformation"
+    assert details["domain"] == "ntstatus" and details["ntstatus"] == 0xC0000022
+    assert "winerror" not in details
+
+
+def test_failure_snapshot_is_bounded_and_survives_wait_failure(synthetic_run):
+    import json
+
+    args, api, _ = synthetic_run
+    failure = PermissionError(13, "PRIMARY PRIVATE")
+    api.peek_marker = lambda *_: (_ for _ in ()).throw(failure)
+    api.alive = lambda *_: (_ for _ in ()).throw(OSError(9, "SECONDARY PRIVATE"))
+    with pytest.raises(PermissionError) as raised:
+        probe.run(args, api)
+    assert raised.value is failure
+    report = json.loads((args.output_directory / "result.json").read_bytes())
+    snapshot = report["failure_snapshot"]
+    assert all(p["state"] == "unavailable" for p in snapshot["bound_processes"])
+    assert len(json.dumps(snapshot)) < 16384
+    assert sorted(api.closed) == [10, 20]
+
+
+def test_socket_error_metadata_is_numeric_and_does_not_expose_messages():
+    error = PermissionError(13, "TOKEN FILE SOCKET ADDRESS")
+    error.winerror = 10013
+    assert probe.failure_details(error) == {"error_class": "PermissionError", "errno": 13, "winerror": 10013}
+
+
+def test_open_identity_failure_preserves_primary_code_and_attempts_handle_close_once(native_error_api):
+    api, state = native_error_api
+    api.k.OpenProcess = lambda *_: 555
+    api.k.GetProcessTimes = lambda *_: 0
+
+    def close(handle):
+        state.closed.append(handle)
+        state.error = 6
+        return 0
+
+    api.k.CloseHandle = close
+    with pytest.raises(PermissionError) as raised:
+        api.open(20, 10)
+    assert probe.failure_details(raised.value)["api"] == "GetProcessTimes"
+    assert probe.failure_details(raised.value)["winerror"] == 5
+    assert state.closed == [555]
+    assert api.cleanup_diagnostics[0]["winerror"] == 6
+
+
+@pytest.mark.parametrize("code", [109, 232, 233, None])
+def test_pipe_end_or_consumed_marker_is_still_not_a_positive_observation(native_error_api, code):
+    api, state = native_error_api
+
+    def duplicate(_source, _input, _target, output, *_rest):
+        output._obj.value = 555
+        return 1
+
+    state.error = code
+    api.k.DuplicateHandle = duplicate
+    api.k.PeekNamedPipe = lambda *_: int(code is None)  # Success with an empty buffer, or existing pipe-end codes.
+    api.k.CloseHandle = lambda handle: state.closed.append(handle) or 1
+    assert not api.peek_marker(123, 456, b"PRIVATE")
+    assert state.closed == [555]
+
+
+def test_snapshot_queries_only_five_already_bound_handles_and_caps_requests():
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    calls = []
+    api = SimpleNamespace(alive=lambda handle: calls.append(handle) or True)
+    held = {pid: (pid, process(pid=pid), "worker") for pid in range(20, 30)}
+    requests = [SimpleNamespace(done=threading.Event(), error=None) for _ in range(10)]
+    result = probe.failure_snapshot(
+        api,
+        phase="observe-input",
+        parent=(10, process(pid=10)),
+        held=held,
+        requests=requests,
+        seen={20},
+        started=time.monotonic(),
+        discovered_count=10,
+    )
+    assert calls == [10, 20, 21, 22, 23]
+    assert result["processes_truncated"] and result["requests_truncated"]
+    assert len(result["requests_done"]) == 3 and len(result["request_failures"]) == 3
+    assert result["bound_processes"][1]["input_marker_observed"]
+    assert not result["bound_processes"][2]["input_marker_observed"]

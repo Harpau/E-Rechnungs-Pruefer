@@ -1,6 +1,6 @@
 # Stand der Upload- und Workerabsicherung
 
-Stand: 17. September 2026. Die Schutzänderungen für frühe Uploadbegrenzung und begrenzte
+Stand: 18. September 2026. Die Schutzänderungen für frühe Uploadbegrenzung und begrenzte
 Rechnungsverarbeitung sind implementiert. **Die technische Gesamtabnahme ist `INCONCLUSIVE`; der PR bleibt
 Entwurf und ist nicht zur Veröffentlichung freigegeben.** Die vollständigen Nachweise für den installierten
 Windows-Desktop und -Dienst fehlen. Zusätzlich bleibt das OS-Sicherheitsgate gesperrt.
@@ -130,9 +130,15 @@ verschlüsselte Archivierung wird nicht behauptet. Der Abschlusscommit enthält 
 Dokumentation. Sein `[skip ci]` verhindert eine unbeabsichtigte neue PR-Abnahme; er erzeugt keinen grünen
 CI-Nachweis und darf nicht zum Umgehen eines Mergegates verwendet werden.
 
-Die nächste Entscheidung muss den offenen Windows-Abnahmeweg ausdrücklich klären. Eine Fortsetzung benötigt
-einen zulässigen, neu gebundenen Weg nach den Abnahmeregeln oder eine ausdrücklich geänderte Vorgabe; allgemeine
-Fortsetzungsaufträge setzen das Fehlerbudget nicht zurück. Bis dahin bleiben die vollständige Desktop-/Dienst-
-und Ressourcenabnahme offen. Die 48 unveränderten OS-Sicherheitskennungen (67 Paketzuordnungen, darunter acht
+Am 18. September wurde eine begrenzte Ausnahme ausdrücklich freigegeben: genau ein zusätzlicher manueller
+Windows-Diagnoselauf mit den unveränderten C6-Paketen und, nach belegter Ursache sowie unabhängig geprüfter
+Korrektur, genau ein vollständiger Bestätigungslauf mit frisch gebauten Paketen. Das ursprüngliche Budget
+bleibt mit 2/2 verbraucht; automatische Wiederholungen sind nicht erlaubt. Der Diagnosemodus erfasst ausschließlich
+`held-responses` und `health`, bindet Produktbytes und aktuelle Harnessrevision getrennt und erhält den
+Produktzustand bei einem Fehler. Ein erfolgreiches Diagnoseergebnis ersetzt keine vollständige Paketabnahme.
+Vor dem Dispatch sind der neue lokale Controllerplan und die exakten Hash-/Laufbindungen maßgeblich.
+
+Die vollständige Desktop-/Dienst- und Ressourcenabnahme bleibt bis zu einem belegten Ergebnis offen.
+Die 48 unveränderten OS-Sicherheitskennungen (67 Paketzuordnungen, darunter acht
 HIGH-Kennungen in neun Paketzeilen je geprüftem Container) sind ein weiterer Freigabeblocker. Merge, Tag und
 Veröffentlichung sind nicht erfolgt.

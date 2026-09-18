@@ -14,13 +14,17 @@ on:
         description: "Nur native Containerproben; ersetzt keine vollständige Release-CI"
         type: boolean
         default: false
+      windows_diagnostic_only:
+        description: "Nur autorisierte C6-Desktopdiagnose; keine vollständige Paketabnahme"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.prepare_dependencies && 'dependency-preparation' || inputs.container_only && 'container-probe' || 'full' }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.windows_diagnostic_only && 'windows-diagnostic' || inputs.prepare_dependencies && 'dependency-preparation' || inputs.container_only && 'container-probe' || 'full' }}
+  cancel-in-progress: ${{ inputs.windows_diagnostic_only != true }}
 
 jobs:
   dispatch-inputs:
@@ -31,9 +35,15 @@ jobs:
         env:
           PREPARE: ${{ inputs.prepare_dependencies }}
           CONTAINER_ONLY: ${{ inputs.container_only }}
-        run: test "$PREPARE" != true || test "$CONTAINER_ONLY" != true
+          WINDOWS_DIAGNOSTIC_ONLY: ${{ inputs.windows_diagnostic_only }}
+        run: |
+          selected=0
+          for mode in "$PREPARE" "$CONTAINER_ONLY" "$WINDOWS_DIAGNOSTIC_ONLY"; do
+            if [ "$mode" = true ]; then selected=$((selected + 1)); fi
+          done
+          test "$selected" -le 1
   quality:
-    if: inputs.prepare_dependencies != true && inputs.container_only != true
+    if: inputs.prepare_dependencies != true && inputs.container_only != true && inputs.windows_diagnostic_only != true
     name: Quality gate
     runs-on: ubuntu-24.04
     steps:
@@ -109,7 +119,7 @@ jobs:
           if-no-files-found: ignore
 
   tests:
-    if: inputs.prepare_dependencies != true && inputs.container_only != true
+    if: inputs.prepare_dependencies != true && inputs.container_only != true && inputs.windows_diagnostic_only != true
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-24.04
     strategy:
@@ -132,7 +142,7 @@ jobs:
         run: python -m pytest
 
   macos-processing:
-    if: inputs.prepare_dependencies != true && inputs.container_only != true
+    if: inputs.prepare_dependencies != true && inputs.container_only != true && inputs.windows_diagnostic_only != true
     name: Native macOS processing lifecycle
     runs-on: macos-14
     timeout-minutes: 20
@@ -236,8 +246,88 @@ jobs:
           retention-days: 14
           path: .cache/macos-processing/
 
+  windows-diagnostic:
+    needs: dispatch-inputs
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_diagnostic_only == true && inputs.prepare_dependencies != true && inputs.container_only != true
+    name: Authorized original Desktop diagnostic
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      EINVOICE_WINDOWS_DIAGNOSTIC_ONLY: ${{ inputs.windows_diagnostic_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: Reject any automatic retry or different diagnostic target
+        run: python -c "from scripts.windows_package_diagnostic import diagnostic_environment; diagnostic_environment()"
+      - name: Prepare private CPython security backport for the harness
+        shell: pwsh
+        run: |
+          $privatePython = Join-Path $env:RUNNER_TEMP "einvoice-cpython-security"
+          python scripts/cpython_security.py clone --destination $privatePython --output .cache/dependency-evidence/cpython-security.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $privatePython | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Create fresh diagnostic helper environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "$env:GITHUB_WORKSPACE\.venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "VIRTUAL_ENV=$env:GITHUB_WORKSPACE\.venv" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install locked helper dependencies
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: --force-reinstall
+          -r packaging/windows/requirements-release.txt &&
+          python -m pip install --no-deps --no-build-isolation -e . &&
+          python scripts/dependency_lock.py verify --lock packaging/windows/requirements-release.txt --installed &&
+          python -m pip check
+      - name: Verify diagnostic harness before any product installation
+        run: >-
+          python -m pytest tests/test_windows_package_diagnostic.py
+          tests/test_processing_diagnostic_scope.py tests/test_processing_package.py
+      - name: Retrieve and verify the exact original C6 artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/windows_package_diagnostic.py prepare
+      - name: Bind isolated diagnostic before product mutations
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .cache/acceptance, .cache/acceptance-logs | Out-Null
+          $root = ".cache/acceptance/$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:GITHUB_JOB"
+          $controller = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:GITHUB_JOB"
+          python scripts/acceptance_context.py init-ci --root $root --controller $controller --version 2.0.3 --scope desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "EINVOICE_ACCEPTANCE_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "EINVOICE_ACCEPTANCE_CONTROLLER=$controller" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Observe original held responses then health without further acceptance cases
+        shell: pwsh
+        run: |
+          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action desktop --artifact dist/E-Rechnungs-Pruefer-2.0.3-Windows-x64-Setup.exe --artifact "build/windows/bundle/E-Rechnungs-Pruefer/E-Rechnungs-Pruefer.exe" --artifact .cache/windows-diagnostic/input-binding.json --artifact scripts/windows_package_diagnostic.py --artifact scripts/test_processing_package.py --artifact scripts/test_processing_package.ps1 --artifact scripts/processing_smoke.py --script scripts/test_windows_package.ps1 --evidence .cache/acceptance-logs/desktop-diagnostic.log -- pwsh -NoProfile -File scripts/test_windows_package.ps1 -ConfirmIsolatedEnvironment -Setup dist/E-Rechnungs-Pruefer-2.0.3-Windows-x64-Setup.exe -ProcessingDiagnosticOnly
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify diagnostic evidence
+        run: python scripts/acceptance_context.py verify --root $env:EINVOICE_ACCEPTANCE_ROOT
+      - name: Preserve original inputs and diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-diagnostic-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            .cache/acceptance/
+            .cache/acceptance-logs/
+            .cache/windows-diagnostic/
+            .cache/dependency-evidence/
+
   windows-smoke:
-    if: inputs.prepare_dependencies != true && inputs.container_only != true
+    if: inputs.prepare_dependencies != true && inputs.container_only != true && inputs.windows_diagnostic_only != true
     name: Windows package and smoke test
     runs-on: windows-2022
     steps:
@@ -403,12 +493,12 @@ jobs:
             dist/*-Windows-x64-SHA256SUMS.txt
 
   docker:
-    if: inputs.prepare_dependencies != true
+    if: inputs.prepare_dependencies != true && inputs.windows_diagnostic_only != true
     uses: ./.github/workflows/docker.yml
 
   prepare-dependencies:
     name: Prepare ${{ matrix.profile }}
-    if: github.event_name == 'workflow_dispatch' && inputs.prepare_dependencies == true && inputs.container_only != true
+    if: github.event_name == 'workflow_dispatch' && inputs.prepare_dependencies == true && inputs.container_only != true && inputs.windows_diagnostic_only != true
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

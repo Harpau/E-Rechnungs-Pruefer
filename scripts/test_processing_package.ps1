@@ -11,6 +11,110 @@ function Resolve-BoundProcessingPython {
     return [IO.Path]::GetFullPath($PythonPath)
 }
 
+function Get-BoundProcessingPackageCases {
+    param(
+        [ValidateSet("desktop", "service")][string]$Mode,
+        [switch]$ProcessingDiagnosticOnly
+    )
+    if ($ProcessingDiagnosticOnly) {
+        if ($Mode -ne "desktop") {
+            throw "Die begrenzte Verarbeitungsdiagnose ist ausschließlich für den Desktop gebunden."
+        }
+        return @("held-responses", "health")
+    }
+    return @("held-responses", "health", "worker-death", "supervisor-death", "parent-death", "controlled-stop", "xml25")
+}
+
+function Assert-BoundProcessingDiagnosticScope {
+    param([Parameter(Mandatory = $true)][string]$Setup)
+    if ($env:GITHUB_ACTIONS -ne "true" -or
+        [string]::IsNullOrWhiteSpace($env:EINVOICE_ACCEPTANCE_ROOT) -or
+        [string]::IsNullOrWhiteSpace($env:EINVOICE_ACCEPTANCE_CONTROLLER)) {
+        throw "Die begrenzte Diagnose benötigt den explizit gebundenen isolierten CI-Kontext."
+    }
+    $PythonExecutable = Resolve-BoundProcessingPython
+    $ScopeVerifier = Join-Path $PSScriptRoot "windows_package_diagnostic.py"
+    $ScopeRaw = & $PythonExecutable $ScopeVerifier verify-scope --setup $Setup
+    if ($LASTEXITCODE -ne 0) {
+        throw "Diagnoseumfang, Artefakte oder konsumierter Desktopkontext sind nicht bestätigt; keine Folgeaktion."
+    }
+    $Scope = $ScopeRaw | ConvertFrom-Json
+    if ($Scope.status -cne "PASS" -or $Scope.scope -cne "processing-diagnostic-only" -or
+        @($Scope.cases).Count -ne 2 -or $Scope.cases[0] -cne "held-responses" -or $Scope.cases[1] -cne "health") {
+        throw "Die Diagnosefreigabe bestätigt nicht exakt held-responses und health."
+    }
+}
+
+function Save-BoundDiagnosticInstallerEvidence {
+    param(
+        [string]$SourceDirectory,
+        [string]$EvidenceDirectory,
+        [switch]$RequireInstallLog,
+        [switch]$RequireUninstallLog
+    )
+    # Fixed technical allowlist only: never enumerate or copy the installation,
+    # token, runtime, cookie, or arbitrary files from the private test directory.
+    New-Item -ItemType Directory -Path $EvidenceDirectory -ErrorAction Stop | Out-Null
+    $Records = [Collections.Generic.List[object]]::new()
+    $Failed = $false
+    foreach ($Name in @("install.log", "uninstall.log", "uninstall-diagnostic.json")) {
+        $Required = ($Name -eq "install.log" -and $RequireInstallLog) -or
+            ($Name -eq "uninstall.log" -and $RequireUninstallLog)
+        $Record = [ordered]@{ name = $Name; required = [bool]$Required; status = "missing" }
+        try {
+            $Source = Join-Path $SourceDirectory $Name
+            if (Test-Path -LiteralPath $Source -ErrorAction Stop) {
+                $Item = Get-Item -LiteralPath $Source -Force -ErrorAction Stop
+                if ($Item.PSIsContainer -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    throw "Technical evidence is not a regular unlinked file."
+                }
+                $Target = Join-Path $EvidenceDirectory $Name
+                $InputStream = $null
+                $OutputStream = $null
+                try {
+                    $InputStream = [IO.File]::Open($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                    $OutputStream = [IO.File]::Open($Target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                    $Buffer = [byte[]]::new(65536)
+                    $Bytes = 0L
+                    while (($Count = $InputStream.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
+                        $Bytes += $Count
+                        if ($Bytes -gt 16MB) { throw "Technical evidence exceeds the fixed 16MiB file limit." }
+                        $OutputStream.Write($Buffer, 0, $Count)
+                    }
+                    $OutputStream.Flush($true)
+                } finally {
+                    try { if ($null -ne $OutputStream) { $OutputStream.Dispose() } }
+                    finally { if ($null -ne $InputStream) { $InputStream.Dispose() } }
+                }
+                $Record.status = "retained"
+                $Record.size = $Bytes
+                $Record.sha256 = (Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash.ToLowerInvariant()
+            } elseif ($Required) {
+                $Failed = $true
+            }
+        } catch {
+            $Record.status = "error"
+            $Record.error_class = $_.Exception.GetType().FullName
+            $Failed = $true
+        }
+        $Records.Add($Record)
+    }
+    $Receipt = [ordered]@{
+        schema_version = 1; scope = "diagnostic technical installer evidence only"
+        status = $(if ($Failed) { "FAIL" } else { "PASS" }); files = $Records.ToArray()
+    }
+    $ReceiptPath = Join-Path $EvidenceDirectory "retention.json"
+    $ReceiptStream = [IO.File]::Open($ReceiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $ReceiptBytes = [Text.UTF8Encoding]::new($false).GetBytes(($Receipt | ConvertTo-Json -Depth 6))
+        $ReceiptStream.Write($ReceiptBytes, 0, $ReceiptBytes.Length)
+        $ReceiptStream.Flush($true)
+    } finally { $ReceiptStream.Dispose() }
+    $ReceiptHash = (Get-FileHash -LiteralPath $ReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Host "Diagnostic installer evidence $ReceiptPath sha256=$ReceiptHash"
+    if ($Failed) { throw "Die technischen Installer-Nachweise konnten nicht vollständig gesichert werden." }
+}
+
 function Invoke-BoundProcessingPackageTests {
     [CmdletBinding()]
     param(
@@ -23,12 +127,18 @@ function Invoke-BoundProcessingPackageTests {
         [string]$OwnerSid,
         [string]$ServiceSid = "",
         [scriptblock]$StartBackend,
-        [scriptblock]$StopBackend
+        [scriptblock]$StopBackend,
+        [switch]$ProcessingDiagnosticOnly,
+        [string]$Setup = ""
     )
     if ($env:GITHUB_ACTIONS -ne "true" -or
         [string]::IsNullOrWhiteSpace($env:EINVOICE_ACCEPTANCE_ROOT) -or
         [string]::IsNullOrWhiteSpace($env:EINVOICE_ACCEPTANCE_CONTROLLER)) {
         throw "Native Paketproben benötigen den bereits konsumierten isolierten CI-Kontext."
+    }
+    $Cases = @(Get-BoundProcessingPackageCases -Mode $Mode -ProcessingDiagnosticOnly:$ProcessingDiagnosticOnly)
+    if ($ProcessingDiagnosticOnly) {
+        Assert-BoundProcessingDiagnosticScope -Setup $Setup
     }
     $Root = Split-Path -Parent $PSScriptRoot
     $PythonExecutable = Resolve-BoundProcessingPython
@@ -66,7 +176,7 @@ function Invoke-BoundProcessingPackageTests {
         Write-Host "Processing binding $Mode/$Case $CheckRaw"
         return $Check
     }
-    foreach ($Case in @("held-responses", "health", "worker-death", "supervisor-death", "parent-death", "controlled-stop", "xml25")) {
+    foreach ($Case in $Cases) {
         $Current.Refresh()
         if ($Current.HasExited) { throw "Der gebundene Backendprozess endete vor der Probe." }
         $Created = $Current.StartTime.ToUniversalTime().ToFileTimeUtc()

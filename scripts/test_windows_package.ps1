@@ -4,7 +4,8 @@ param(
     [string]$Setup = "",
     [switch]$RequireSignature,
     [switch]$ConfirmIsolatedEnvironment,
-    [switch]$PreflightOnly
+    [switch]$PreflightOnly,
+    [switch]$ProcessingDiagnosticOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -343,6 +344,14 @@ if (-not $Setup) {
     $Setup = Join-Path $ProjectRoot "dist\E-Rechnungs-Pruefer-$Version-Windows-x64-Setup.exe"
 }
 
+if ($ProcessingDiagnosticOnly) {
+    if ($PreflightOnly) {
+        throw "Diagnoseausführung und reine Vorprüfung sind unterschiedliche gebundene Umfänge."
+    }
+    . (Join-Path $PSScriptRoot "test_processing_package.ps1")
+    Assert-BoundProcessingDiagnosticScope -Setup $Setup
+}
+
 $TemporaryRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     [System.IO.Path]::GetTempPath()
 } else {
@@ -399,7 +408,9 @@ if ([string]::IsNullOrWhiteSpace($CurrentUserSid)) {
 $PackageTestMutexName = "Global\E-Rechnungs-Pruefer-Package-Test-$CurrentUserSid"
 $PackageTestMutex = [System.Threading.Mutex]::new($false, $PackageTestMutexName)
 $PackageTestMutexAcquired = $false
-$NativeProcessingProbeFailed = $false
+$NativeProcessingProbeFailed = [bool]$ProcessingDiagnosticOnly
+$PackageFailure = $null
+$DiagnosticEvidenceFailure = $null
 $InstallationStarted = $false
 $UninstallCompleted = $false
 $process = $null
@@ -577,11 +588,15 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
             -Executable $Executable `
             -ExpectedExecutable (Join-Path $ProjectRoot "build\windows\bundle\E-Rechnungs-Pruefer\E-Rechnungs-Pruefer.exe") `
             -Port 18080 -TokenFile $ApiTokenFile -OwnerSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) `
-            -StartBackend $StartProcessingBackend -StopBackend $StopProcessingBackend
+            -StartBackend $StartProcessingBackend -StopBackend $StopProcessingBackend `
+            -ProcessingDiagnosticOnly:$ProcessingDiagnosticOnly -Setup $Setup
         $runtime = Get-Content $RuntimeFile -Raw | ConvertFrom-Json
-        $NativeProcessingProbeFailed = $false
+        if (-not $ProcessingDiagnosticOnly) { $NativeProcessingProbeFailed = $false }
     }
 
+    # Diagnostic success proceeds to the same checked normal uninstall below.
+    # Keep preservation armed until every cleanup assertion succeeds.
+    if (-not $ProcessingDiagnosticOnly) {
     $Bootstrap = "http://127.0.0.1:$($runtime.port)/desktop/bootstrap?token=$($runtime.token)"
     & curl.exe --silent --show-error --fail --location `
         --cookie-jar $CookieFile `
@@ -784,14 +799,26 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
         throw "Das persistente API-Zugriffstoken wurde beim Update unerwartet geändert."
     }
 
+    }
+
     if (-not (Test-Path -LiteralPath $Uninstaller)) {
         throw "Deinstallationsprogramm wurde nicht gefunden."
     }
-    Assert-NativeDesktopModulesLoaded -OwnedProcess $restartedProcess -InstallDirectory $InstallDir
+    if (-not $ProcessingDiagnosticOnly) {
+        Assert-NativeDesktopModulesLoaded -OwnedProcess $restartedProcess -InstallDirectory $InstallDir
+    }
+    if ($ProcessingDiagnosticOnly) {
+        Assert-BoundProcessingDiagnosticScope -Setup $Setup
+    }
     Invoke-TestUninstaller -Path $Uninstaller -LogPath $UninstallLog
     $UninstallCompleted = $true
 
-    if (-not $restartedProcess.WaitForExit(10000)) {
+    $UninstallProcessEnded = if ($ProcessingDiagnosticOnly) {
+        $process.WaitForExit(10000)
+    } else {
+        $restartedProcess.WaitForExit(10000)
+    }
+    if (-not $UninstallProcessEnded) {
         throw "Die laufende Anwendung wurde bei der Deinstallation nicht kontrolliert beendet."
     }
 
@@ -809,6 +836,10 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     if ($RemainingAutostartState.Exists) {
         throw "Der Autostart-Eintrag blieb nach der Deinstallation zurück."
     }
+    $NativeProcessingProbeFailed = $false
+} catch {
+    $PackageFailure = $_
+    throw
 } finally {
     Restore-ProcessEnvironment `
         -HadNoDialog $HadNoDialog `
@@ -854,6 +885,16 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     } else {
         Write-Warning "Native Paketprobe fehlgeschlagen: Produktprozesse, Installation und Autostart bleiben zur Klassifikation erhalten."
     }
+    if ($ProcessingDiagnosticOnly) {
+        try {
+            Save-BoundDiagnosticInstallerEvidence -SourceDirectory $TestRoot `
+                -EvidenceDirectory (Join-Path $ProjectRoot ".cache\acceptance-logs\desktop-diagnostic-installer") `
+                -RequireInstallLog:$InstallationStarted -RequireUninstallLog:$UninstallCompleted
+        } catch {
+            $DiagnosticEvidenceFailure = $_
+            Write-Warning -WarningAction Continue "Technische Installer-Nachweise konnten nicht gesichert werden: $($_.Exception.GetType().FullName)"
+        }
+    }
     try {
         if ($PackageTestMutexAcquired) {
             $PackageTestMutex.ReleaseMutex()
@@ -863,6 +904,13 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     } finally {
         $PackageTestMutex.Dispose()
     }
+    if ($null -ne $DiagnosticEvidenceFailure -and $null -eq $PackageFailure) {
+        throw $DiagnosticEvidenceFailure
+    }
 }
 
-Write-Host "Windows-Installer erfolgreich geprüft: $Setup"
+if ($ProcessingDiagnosticOnly) {
+    Write-Host "Windows-Verarbeitungsdiagnose erfolgreich: held-responses, health; keine vollständige Paketabnahme: $Setup"
+} else {
+    Write-Host "Windows-Installer erfolgreich geprüft: $Setup"
+}

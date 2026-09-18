@@ -21,6 +21,8 @@ import sys
 import threading
 import time
 from collections import Counter
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
@@ -47,6 +49,26 @@ class ProbeError(RuntimeError):
 
 class Inconclusive(ProbeError):
     pass
+
+
+def failure_details(exc: BaseException) -> dict[str, Any]:
+    """Fixed, numeric error evidence; never exception text, argv or handles."""
+    result: dict[str, Any] = {"error_class": type(exc).__name__[:80]}
+    for name in ("errno", "winerror"):
+        value = getattr(exc, name, None)
+        if type(value) is int:
+            result[name] = value
+    details = getattr(exc, "_probe_native", None)
+    if isinstance(details, dict):
+        result.update(details)
+    return result
+
+
+def native_failure(exc: BaseException, api: str, *, domain: str = "win32", **codes: int) -> BaseException:
+    # All callers supply fixed API labels, never native exception messages.
+    if not hasattr(exc, "_probe_native"):
+        exc.__dict__["_probe_native"] = {"api": api, "domain": domain, **codes}
+    return exc
 
 
 @dataclass(frozen=True)
@@ -182,6 +204,7 @@ class WindowsAPI:
         self.s = ctypes.WinDLL("shell32", use_last_error=True)
         self.ip = ctypes.WinDLL("iphlpapi", use_last_error=True)
         self.security = importlib.import_module("win32security")
+        self.cleanup_diagnostics: list[dict[str, Any]] = []
         H, D, P = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p
         self._define(self.k, "OpenProcess", [D, ctypes.c_int, D], H)
         self._define(self.k, "CloseHandle", [H], ctypes.c_int)
@@ -209,21 +232,43 @@ class WindowsAPI:
         f.restype = result
 
     @staticmethod
-    def _check(value: Any) -> None:
+    def _check(value: Any, api: str) -> None:
         if not value:
-            raise _native_ctypes.WinError(_native_ctypes.get_last_error())
+            code = _native_ctypes.get_last_error()
+            raise native_failure(_native_ctypes.WinError(code), api, winerror=code)
+
+    @contextmanager
+    def owned(self, close: Callable[[], None], api: str = "CloseHandle") -> Iterator[None]:
+        """Attempt one close; preserve a primary failure if cleanup also fails."""
+        primary = False
+        try:
+            yield
+        except BaseException:
+            primary = True
+            raise
+        finally:
+            try:
+                close()
+            except BaseException as exc:
+                if not hasattr(self, "cleanup_diagnostics"):
+                    self.cleanup_diagnostics = []
+                if len(self.cleanup_diagnostics) < 8:
+                    self.cleanup_diagnostics.append(failure_details(native_failure(exc, api)))
+                if not primary:
+                    raise
 
     def close(self, handle: int) -> None:
-        self._check(self.k.CloseHandle(handle))
+        self._check(self.k.CloseHandle(handle), "CloseHandle")
 
     def alive(self, handle: int) -> bool:
         status = self.k.WaitForSingleObject(handle, 0)
         if status not in (0, 258):
-            raise ProbeError("Kernel process wait failed.")
+            code = _native_ctypes.get_last_error()
+            raise native_failure(ProbeError("Kernel process wait failed."), "WaitForSingleObject", winerror=code)
         return status == 258
 
     def terminate(self, handle: int) -> None:
-        self._check(self.k.TerminateProcess(handle, 71))
+        self._check(self.k.TerminateProcess(handle, 71), "TerminateProcess")
 
     def children(self, parent: int) -> list[int]:
         class Entry(ctypes.Structure):
@@ -242,9 +287,10 @@ class WindowsAPI:
 
         h = self.k.CreateToolhelp32Snapshot(2, 0)
         if h == ctypes.c_void_p(-1).value:
-            raise ProbeError("Process snapshot failed.")
+            code = _native_ctypes.get_last_error()
+            raise native_failure(ProbeError("Process snapshot failed."), "CreateToolhelp32Snapshot", winerror=code)
         result = []
-        try:
+        with self.owned(lambda: self.close(h)):
             e = Entry()
             e.size = ctypes.sizeof(e)
             available = self.k.Process32FirstW(h, ctypes.byref(e))
@@ -252,10 +298,9 @@ class WindowsAPI:
                 if e.parent == parent:
                     result.append(int(e.pid))
                 available = self.k.Process32NextW(h, ctypes.byref(e))
-            if _native_ctypes.get_last_error() != 18:
-                raise ProbeError("Incomplete process snapshot.")
-        finally:
-            self.close(h)
+            code = _native_ctypes.get_last_error()
+            if code != 18:
+                raise native_failure(ProbeError("Incomplete process snapshot."), "Process32Enumeration", winerror=code)
         return result
 
     def _argv(self, handle: int) -> tuple[str, ...]:
@@ -264,8 +309,14 @@ class WindowsAPI:
 
         raw = ctypes.create_string_buffer(65536)
         needed = ctypes.c_uint32()
-        if self.n.NtQueryInformationProcess(handle, 60, raw, len(raw), ctypes.byref(needed)) != 0:
-            raise ProbeError("Kernel command line could not be bound.")
+        status = self.n.NtQueryInformationProcess(handle, 60, raw, len(raw), ctypes.byref(needed))
+        if status != 0:
+            raise native_failure(
+                ProbeError("Kernel command line could not be bound."),
+                "NtQueryInformationProcess.CommandLine",
+                domain="ntstatus",
+                ntstatus=status & 0xFFFFFFFF,
+            )
         text = UString.from_buffer(raw)
         address = int(text.buffer or 0)
         if text.length % 2 or not ctypes.addressof(raw) <= address <= ctypes.addressof(raw) + len(raw) - text.length:
@@ -273,14 +324,12 @@ class WindowsAPI:
         command = ctypes.wstring_at(address, text.length // 2)
         count = ctypes.c_int()
         argv = self.s.CommandLineToArgvW(command, ctypes.byref(count))
-        self._check(argv)
-        try:
+        self._check(argv, "CommandLineToArgvW")
+        with self.owned(lambda: self._check(not self.k.LocalFree(argv), "LocalFree"), "LocalFree"):
             if not 1 <= count.value <= 16:
                 raise ProbeError("Unexpected process arguments.")
             values = ctypes.cast(argv, ctypes.POINTER(ctypes.c_wchar_p))
             return tuple(values[i] for i in range(count.value))
-        finally:
-            self.k.LocalFree(argv)
 
     def kernel_parent(self, handle: int, pid: int, expected_parent: int) -> int:
         class BasicInformation(ctypes.Structure):
@@ -295,9 +344,17 @@ class WindowsAPI:
 
         info = BasicInformation()
         returned = ctypes.c_uint32()
-        if self.n.NtQueryInformationProcess(
+        status = self.n.NtQueryInformationProcess(
             handle, 0, ctypes.byref(info), ctypes.sizeof(info), ctypes.byref(returned)
-        ) != 0 or returned.value != ctypes.sizeof(info):
+        )
+        if status != 0:
+            raise native_failure(
+                ProbeError("Native parent identity could not be queried."),
+                "NtQueryInformationProcess.BasicInformation",
+                domain="ntstatus",
+                ntstatus=status & 0xFFFFFFFF,
+            )
+        if returned.value != ctypes.sizeof(info):
             raise ProbeError("Native parent identity could not be queried.")
         if info.pid != pid:
             raise ProbeError("Held process PID differs from snapshot.")
@@ -307,8 +364,8 @@ class WindowsAPI:
 
     def qpc(self) -> tuple[int, int]:
         ticks, frequency = ctypes.c_int64(), ctypes.c_int64()
-        self._check(self.k.QueryPerformanceCounter(ctypes.byref(ticks)))
-        self._check(self.k.QueryPerformanceFrequency(ctypes.byref(frequency)))
+        self._check(self.k.QueryPerformanceCounter(ctypes.byref(ticks)), "QueryPerformanceCounter")
+        self._check(self.k.QueryPerformanceFrequency(ctypes.byref(frequency)), "QueryPerformanceFrequency")
         if ticks.value <= 0 or frequency.value <= 0:
             raise ProbeError("Native monotonic clock invalid.")
         return ticks.value, frequency.value
@@ -316,61 +373,72 @@ class WindowsAPI:
     def memory(self, handle: int) -> dict[str, Any]:
         return windows_memory_counters(handle)
 
+    def _security_call(self, name: str, *args: Any) -> Any:
+        try:
+            return getattr(self.security, name)(*args)
+        except Exception as exc:
+            native_failure(exc, name)
+            raise
+
     def open(self, pid: int, parent_pid: int) -> tuple[int, ProcessIdentity]:
         # QUERY_LIMITED_INFORMATION | QUERY_INFORMATION | DUP_HANDLE | SYNCHRONIZE | TERMINATE
         h = self.k.OpenProcess(0x1000 | 0x400 | 0x40 | 0x100000 | 1, False, pid)
-        self._check(h)
+        self._check(h, "OpenProcess")
         try:
             times = [ctypes.c_uint64() for _ in range(4)]
-            self._check(self.k.GetProcessTimes(h, *(ctypes.byref(t) for t in times)))
+            self._check(self.k.GetProcessTimes(h, *(ctypes.byref(t) for t in times)), "GetProcessTimes")
             path = ctypes.create_unicode_buffer(32768)
             size = ctypes.c_uint32(len(path))
-            self._check(self.k.QueryFullProcessImageNameW(h, 0, path, ctypes.byref(size)))
-            token = self.security.OpenProcessToken(h, 8)
-            try:
-                owner = self.security.ConvertSidToStringSid(
-                    self.security.GetTokenInformation(token, self.security.TokenUser)[0]
+            self._check(self.k.QueryFullProcessImageNameW(h, 0, path, ctypes.byref(size)), "QueryFullProcessImageNameW")
+            token = self._security_call("OpenProcessToken", h, 8)
+            with self.owned(token.Close, "CloseTokenHandle"):
+                owner = self._security_call(
+                    "ConvertSidToStringSid",
+                    self._security_call("GetTokenInformation", token, self.security.TokenUser)[0],
                 )
                 groups = tuple(
-                    self.security.ConvertSidToStringSid(sid)
-                    for sid, attributes in self.security.GetTokenInformation(token, self.security.TokenGroups)
+                    self._security_call("ConvertSidToStringSid", sid)
+                    for sid, attributes in self._security_call("GetTokenInformation", token, self.security.TokenGroups)
                     if attributes & 4
                 )
-            finally:
-                token.Close()
             actual_parent = self.kernel_parent(h, pid, parent_pid)
             identity = ProcessIdentity(pid, times[0].value, path.value, owner, groups, actual_parent, self._argv(h))
             if not self.alive(h):
                 raise Inconclusive("Process exited before identity was bound.")
             return int(h), identity
         except BaseException:
-            self.close(h)
-            raise
+            with self.owned(lambda: self.close(h)):
+                raise
 
     def peek_marker(self, handle: int, input_handle: int, marker: bytes) -> bool:
         duplicate = ctypes.c_void_p()
         self._check(
             self.k.DuplicateHandle(
                 handle, input_handle, self.k.GetCurrentProcess(), ctypes.byref(duplicate), 0, False, 2
-            )
+            ),
+            "DuplicateHandle",
         )
-        try:
+        with self.owned(lambda: self.close(int(duplicate.value or 0))):
             raw = ctypes.create_string_buffer(65536)
             read = ctypes.c_uint32()
             available = ctypes.c_uint32()
             if not self.k.PeekNamedPipe(duplicate, raw, len(raw), ctypes.byref(read), ctypes.byref(available), None):
-                if _native_ctypes.get_last_error() in (109, 232, 233):
+                code = _native_ctypes.get_last_error()
+                if code in (109, 232, 233):
                     return False
-                raise ProbeError("Bound input pipe cannot be observed safely.")
+                raise native_failure(
+                    ProbeError("Bound input pipe cannot be observed safely."), "PeekNamedPipe", winerror=code
+                )
             return marker in raw.raw[: read.value]
-        finally:
-            self.close(int(duplicate.value or 0))
 
     def listener(self, port: int, parent: int) -> None:
         size = ctypes.c_uint32(256 * 1024)
         raw = ctypes.create_string_buffer(size.value)
-        if self.ip.GetExtendedTcpTable(raw, ctypes.byref(size), False, 2, 3, 0) != 0:
-            raise ProbeError("Listening port identity could not be obtained.")
+        status = self.ip.GetExtendedTcpTable(raw, ctypes.byref(size), False, 2, 3, 0)
+        if status != 0:
+            raise native_failure(
+                ProbeError("Listening port identity could not be obtained."), "GetExtendedTcpTable", winerror=status
+            )
         count = ctypes.c_uint32.from_buffer(raw).value
         if count > (len(raw) - 4) // 24:
             raise ProbeError("Invalid TCP table.")
@@ -738,6 +806,50 @@ def record_memory(api: WindowsAPI, handle: int, record: dict[str, Any], phase: s
     observations.append({"phase": phase, **value})
 
 
+def failure_snapshot(
+    api: WindowsAPI,
+    *,
+    phase: str,
+    parent: tuple[int, ProcessIdentity] | None,
+    held: dict[int, tuple[int, ProcessIdentity, str]],
+    requests: list[Request],
+    seen: set[int],
+    started: float,
+    discovered_count: int,
+) -> dict[str, Any]:
+    """One bounded zero-wait snapshot before cleanup; no new handles or reads."""
+    processes: list[dict[str, Any]] = []
+
+    def observe(handle: int, identity: ProcessIdentity, role: str) -> None:
+        item: dict[str, Any] = {"pid": identity.pid, "created": identity.created, "role": role}
+        if role == "worker":
+            item["input_marker_observed"] = identity.pid in seen
+        try:
+            item["state"] = "alive" if api.alive(handle) else "ended"
+        except BaseException as exc:
+            item.update(state="unavailable", failure=failure_details(exc))
+        processes.append(item)
+
+    if parent is not None:
+        observe(*parent, "backend")
+    for index, (handle, identity, role) in enumerate(held.values()):
+        if index == 4:
+            break
+        observe(handle, identity, role)
+    return {
+        "phase": phase,
+        "elapsed_seconds": time.monotonic() - started,
+        "marker_seen_count": len(seen),
+        "bound_role_counts": dict(Counter(role for _, _, role in held.values())),
+        "last_discovered_count": discovered_count,
+        "bound_processes": processes,
+        "processes_truncated": len(held) > 4,
+        "requests_done": [r.done.is_set() for r in requests[:3]],
+        "request_failures": [failure_details(r.error) if r.error else None for r in requests[:3]],
+        "requests_truncated": len(requests) > 3,
+    }
+
+
 def observe_held_responses(
     api: WindowsAPI,
     parent_handle: int,
@@ -862,20 +974,33 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
     requests: list[Request] = []
     held: dict[int, tuple[int, ProcessIdentity, str]] = {}
     parent_handle = 0
+    bound_parent: tuple[int, ProcessIdentity] | None = None
+    seen: set[int] = set()
+    primary_error: BaseException | None = None
+    cleanup_details: list[dict[str, Any]] = []
+    phase = "open-parent"
+    discovered_count = 0
     try:
         parent_handle, parent = api.open(b.parent_pid, 0)
+        phase = "validate-parent"
         validate_parent(parent, b)
+        bound_parent = parent_handle, parent
         parent_metrics: dict[str, Any] = {"role": "backend", "identity": parent.public()}
         report["process_metrics"][str(parent.pid)] = parent_metrics
         record_memory(api, parent_handle, parent_metrics, "bound")
+        phase = "preflight-listener"
         api.listener(b.port, b.parent_pid)
+        phase = "preflight-children"
         if api.children(b.parent_pid):
             raise ProbeError("Pre-existing direct children prevent isolated role attribution.")
+        phase = "read-token"
         token = acceptance._read(args.token_file).decode("ascii").strip()
         if not 32 <= len(token) <= 512 or any(c.isspace() for c in token):
             raise ProbeError("Token file invalid.")
+        phase = "baseline-health"
         report["baseline_health_seconds"] = [health(b.port) for _ in range(3)]
         validate_health(report["baseline_health_seconds"])
+        phase = "prepare-requests"
         xml_export = args.case in {"xml25", "held-responses"}
         payload, marker = (maximum_xml(), b"") if xml_export else processing_fixture(nonce)
         report["synthetic_input"] = {"size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
@@ -889,25 +1014,34 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             else [Request(b.port, token, payload, export=xml_export) for _ in range(count)]
         )
         requests_started = time.monotonic()
+        phase = "start-requests"
         for request in requests:
             request.start()
         del token
         deadline = time.monotonic() + 20
-        seen: set[int] = set()
         while True:
-            for pid in api.children(b.parent_pid):
+            phase = "discover-children"
+            discovered = api.children(b.parent_pid)
+            discovered_count = len(discovered)
+            for pid in discovered:
                 if pid not in held:
+                    phase = "open-role"
                     handle, p = api.open(pid, b.parent_pid)
                     try:
+                        phase = "validate-role"
                         role = role_of(p, b)
                     except BaseException:
-                        api.close(handle)
+                        try:
+                            api.close(handle)
+                        except BaseException as close_error:
+                            cleanup_details.append(failure_details(close_error))
                         raise
                     held[pid] = (handle, p, role)
                     metrics: dict[str, Any] = {"role": role, "identity": p.public()}
                     report["process_metrics"][str(pid)] = metrics
                     record_memory(api, handle, metrics, "bound")
                 handle, p, role = held[pid]
+                phase = "observe-input"
                 if role == "worker" and pid not in seen and marker and api.peek_marker(handle, int(p.argv[4]), marker):
                     seen.add(pid)
                     report["process_metrics"][str(pid)]["input_after_ready_upper_bound_seconds"] = (
@@ -919,6 +1053,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             if any(r.done.is_set() for r in requests) or time.monotonic() >= deadline:
                 raise Inconclusive("Live role/active-input observation raced with completion or startup.")
             time.sleep(0.002)
+        phase = "validate-inventory"
         validate_role_counts(dict(Counter(role for _, _, role in held.values())), count)
         report["processes"] = [
             {**p.public(), "role": role, "input_after_ready_observed": p.pid in seen} for _, p, role in held.values()
@@ -927,6 +1062,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             require_active(marker_seen=len(seen) == count, requests_done=any(r.done.is_set() for r in requests))
             if args.case == "controlled-stop":
                 report["ready_qpc_ticks"], report["qpc_frequency"] = api.qpc()
+        phase = "case-" + args.case
         if args.case == "held-responses":
             held_evidence: dict[str, Any] = {}
             report["held_responses"] = held_evidence
@@ -998,6 +1134,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                 wait_ended(api, [h for h, _, _ in held.values()])
                 if args.case == "parent-death":
                     wait_ended(api, [parent_handle])
+        phase = "complete-requests"
         for request in requests:
             request.thread.join(45)
             if not request.done.is_set():
@@ -1017,6 +1154,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             {**r.record, "transport_error": type(r.error).__name__ if r.error else None} for r in requests
         ]
         report["bound_role_exit_confirmed"] = True
+        phase = "recovery"
         if args.case not in {"parent-death", "controlled-stop"}:
             if not api.alive(parent_handle):
                 raise ProbeError("Parent unexpectedly exited.")
@@ -1035,13 +1173,27 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
         report["status"] = "PASS"
         return report
     except Inconclusive as exc:
+        primary_error = exc
         report["reason"] = str(exc)
         raise
     except BaseException as exc:
+        primary_error = exc
         report["status"] = "FAIL"
         report["error_class"] = type(exc).__name__
         raise
     finally:
+        if primary_error is not None:
+            report["failure"] = failure_details(primary_error)
+            report["failure_snapshot"] = failure_snapshot(
+                api,
+                phase=phase,
+                parent=bound_parent,
+                held=held,
+                requests=requests,
+                seen=seen,
+                started=probe_started,
+                discovered_count=discovered_count,
+            )
         # Never repair failed product cleanup by killing unidentified processes.
         close_errors = []
         for request in requests:
@@ -1049,6 +1201,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                 request.close()
             except Exception as exc:
                 close_errors.append(type(exc).__name__)
+                cleanup_details.append(failure_details(exc))
         if args.case == "held-responses":
             # Abort every owned socket before joining any client, including
             # clients whose header/response stage failed. Never free observers
@@ -1059,6 +1212,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                     request.abort()
                 except Exception as exc:
                     close_errors.append(type(exc).__name__)
+                    cleanup_details.append(failure_details(exc))
             for request in requests:
                 if request.thread.ident is not None:
                     request.thread.join(max(0, deadline - time.monotonic()))
@@ -1069,10 +1223,12 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                 record_memory(api, handle, report["process_metrics"][str(p.pid)], "before-close")
             except Exception as exc:
                 close_errors.append(type(exc).__name__)
+                cleanup_details.append(failure_details(exc))
             try:
                 api.close(handle)
             except Exception as exc:
                 close_errors.append(type(exc).__name__)
+                cleanup_details.append(failure_details(exc))
         if parent_handle:
             try:
                 record_memory(api, parent_handle, report["process_metrics"][str(b.parent_pid)], "before-close")
@@ -1080,10 +1236,16 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                     validate_held_memory(report["process_metrics"][str(b.parent_pid)])
             except Exception as exc:
                 close_errors.append(type(exc).__name__)
+                cleanup_details.append(failure_details(exc))
             try:
                 api.close(parent_handle)
             except Exception as exc:
                 close_errors.append(type(exc).__name__)
+                cleanup_details.append(failure_details(exc))
+        cleanup_details.extend(getattr(api, "cleanup_diagnostics", []))
+        if cleanup_details:
+            report["observer_cleanup"] = cleanup_details[:16]
+            report["observer_cleanup_truncated"] = len(cleanup_details) > 16
         if close_errors:
             report["status"] = "FAIL"
             report["observer_close_errors"] = close_errors
@@ -1093,7 +1255,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             for item in report["process_metrics"].values()
         )
         write_new_json(output / "result.json", report)
-        if close_errors:
+        if close_errors and primary_error is None:
             raise ProbeError("Bound observer cleanup could not be confirmed.")
 
 
@@ -1136,6 +1298,7 @@ def main() -> int:
                 {
                     "status": "INCONCLUSIVE" if isinstance(exc, Inconclusive) else "FAIL",
                     "error_class": type(exc).__name__,
+                    "failure": failure_details(exc),
                 }
             )
         )
