@@ -90,11 +90,14 @@ def validate_members(archive: zipfile.ZipFile) -> None:
     if len(members) > 5000 or sum(member.file_size for member in members) > 1024**3:
         raise DiagnosticError("Archive inventory exceeds the fixed input budget.")
     for member in members:
-        name = member.filename
+        # ZipInfo.filename has already normalized native Windows separators
+        # and truncated NULs. Reject changed raw names before trusting its path.
+        name = member.orig_filename
         path = PurePosixPath(name)
         parts = name.removesuffix("/").split("/")
         if (
             not name
+            or name != member.filename
             or path.is_absolute()
             or "\\" in name
             or ":" in name

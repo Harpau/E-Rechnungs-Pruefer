@@ -114,10 +114,18 @@ def test_diagnostic_rejects_different_source_run_or_candidate():
 
 
 @pytest.mark.parametrize("name", ["../escape", "/absolute", "C:/drive", "bundle/file:stream", "a\\escape"])
-def test_diagnostic_archive_rejects_unsafe_members(name):
+@pytest.mark.parametrize("windows_separators", [False, True])
+def test_diagnostic_archive_rejects_unsafe_members(name, windows_separators, monkeypatch):
+    if windows_separators:
+        monkeypatch.setattr(zipfile.os, "sep", "\\")
     content = io.BytesIO()
     with zipfile.ZipFile(content, "w") as z:
-        z.writestr(name, b"synthetic")
+        # ZipInfo normally normalizes Windows backslashes even while writing.
+        # Preserve the raw member name so this is the same invalid ZIP on all hosts.
+        info = zipfile.ZipInfo("synthetic")
+        info.filename = name
+        info.orig_filename = name
+        z.writestr(info, b"synthetic")
     with zipfile.ZipFile(content) as z, pytest.raises(diagnostic.DiagnosticError):
         diagnostic.validate_members(z)
 

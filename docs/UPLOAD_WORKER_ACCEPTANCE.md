@@ -138,6 +138,18 @@ bleibt mit 2/2 verbraucht; automatische Wiederholungen sind nicht erlaubt. Der D
 Produktzustand bei einem Fehler. Ein erfolgreiches Diagnoseergebnis ersetzt keine vollständige Paketabnahme.
 Vor dem Dispatch sind der neue lokale Controllerplan und die exakten Hash-/Laufbindungen maßgeblich.
 
+Der zusätzliche [Diagnoselauf 35349999750, Versuch 1](https://github.com/Harpau/E-Rechnungs-Pruefer/actions/runs/35349999750)
+auf Harnesscommit `ebaba2e8a8f0a76c74979e8fc0871c00b02ee758` endete bereits in der Vorprüfung:
+138 Tests bestanden, zwei neue plattformabhängige Tests scheiterten an ZIP-Namensnormalisierung bzw. impliziter
+Textcodierung. C6-Download, Installerprobe und Produktkontext wurden nicht gestartet. Das ist `FAIL_HARNESS`;
+über den ursprünglichen `PermissionError` liegt kein neuer nativer Befund vor. Die Testkorrektur verwendet
+identische rohe ZIP-Namen auf allen Plattformen und explizites UTF-8; die Archivprüfung bewertet zusätzlich
+den unveränderten Originalnamen vor einer Windows-Normalisierung.
+
+Der einmalige Diagnoselauf ist verbraucht. Der Bestätigungslauf bleibt ungenutzt, seine Voraussetzung – eine
+belegte Ursache und geprüfte Korrektur des ursprünglichen Fehlers – ist nicht erfüllt. Eine erneute Diagnose
+benötigt eine zusätzliche ausdrückliche Freigabe; sie darf nicht als Bestätigung umbenannt werden.
+
 Die vollständige Desktop-/Dienst- und Ressourcenabnahme bleibt bis zu einem belegten Ergebnis offen.
 Die 48 unveränderten OS-Sicherheitskennungen (67 Paketzuordnungen, darunter acht
 HIGH-Kennungen in neun Paketzeilen je geprüftem Container) sind ein weiterer Freigabeblocker. Merge, Tag und

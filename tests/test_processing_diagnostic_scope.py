@@ -125,8 +125,8 @@ def test_diagnostic_scope_rejects_missing_ci_context_before_guard_launch(tmp_pat
 
 
 def test_diagnostic_guard_and_parameter_flow_precede_product_mutations() -> None:
-    desktop = DESKTOP.read_text()
-    common = COMMON.read_text()
+    desktop = DESKTOP.read_text(encoding="utf-8")
+    common = COMMON.read_text(encoding="utf-8")
     assert "[switch]$ProcessingDiagnosticOnly" in desktop
     assert desktop.index("Assert-BoundProcessingDiagnosticScope -Setup $Setup") < desktop.index("$PackageTestMutex =")
     assert "if ($PreflightOnly)" in desktop.split("Assert-BoundProcessingDiagnosticScope -Setup $Setup")[0]
@@ -185,7 +185,7 @@ def test_existing_finally_preserves_failed_diagnosis_and_only_cleans_owned_succe
 
 
 def test_diagnostic_preservation_lasts_until_normal_uninstall_checks_complete() -> None:
-    source = DESKTOP.read_text()
+    source = DESKTOP.read_text(encoding="utf-8")
     assert "$NativeProcessingProbeFailed = [bool]$ProcessingDiagnosticOnly" in source
     start = source.index("$process = Invoke-BoundProcessingPackageTests")
     after_probe = source[start : source.index("$Bootstrap =", start)]
@@ -196,8 +196,20 @@ def test_diagnostic_preservation_lasts_until_normal_uninstall_checks_complete() 
     assert "keine vollständige Paketabnahme" in source
 
 
+def test_scope_source_contract_is_independent_of_windows_default_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
+    read_text = Path.read_text
+
+    def windows_read_text(path: Path, encoding: str | None = None, errors: str | None = None) -> str:
+        return read_text(path, encoding=encoding or "cp1252", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", windows_read_text)
+    test_diagnostic_guard_and_parameter_flow_precede_product_mutations()
+    test_diagnostic_preservation_lasts_until_normal_uninstall_checks_complete()
+    test_diagnostic_cleanup_requires_fresh_scope_before_uninstaller()
+
+
 def test_diagnostic_cleanup_requires_fresh_scope_before_uninstaller() -> None:
-    source = DESKTOP.read_text()
+    source = DESKTOP.read_text(encoding="utf-8")
     invocation = source.index("Invoke-TestUninstaller -Path $Uninstaller -LogPath $UninstallLog")
     before = source[:invocation]
     scope = before.rindex("Assert-BoundProcessingDiagnosticScope -Setup $Setup")
@@ -275,7 +287,7 @@ def test_installer_evidence_destination_is_exclusive_and_source_directories_reje
     )
     assert result == {"first_failed": True, "second_failed": True, "unchanged": True}
     assert (destination / "uninstall.log").read_bytes() == (source / "uninstall.log").read_bytes()
-    receipt = json.loads((destination / "retention.json").read_text())
+    receipt = json.loads((destination / "retention.json").read_text(encoding="utf-8"))
     assert receipt["status"] == "FAIL" and receipt["files"][0]["status"] == "error"
 
 
