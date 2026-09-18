@@ -46,6 +46,21 @@ def test_source_build_uses_frozen_dependencies_and_checks_inventory_after_build(
     assert "-m venv .venv" in commands
 
 
+def test_ci_preserves_recovery_installer_separately_even_after_package_failure() -> None:
+    job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["windows-smoke"]
+    uploads = [step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@")]
+    recovery = [step for step in uploads if "test-installer/" in step["with"]["path"]]
+    assert len(recovery) == 1
+    step = recovery[0]
+    assert step["if"] == "always() && steps.windows_build.outcome == 'success'"
+    assert step["with"]["path"] == "build/windows/test-installer/*-Windows-x64-Dienst-Setup.exe"
+    assert step["with"]["if-no-files-found"] == "error"
+    assert step["with"]["retention-days"] == 14
+    assert "${{ github.run_id }}-${{ github.run_attempt }}" in step["with"]["name"]
+    shipping = next(step for step in uploads if step["with"]["name"].startswith("windows-x64-package-"))
+    assert all(path.startswith("dist/") for path in shipping["with"]["path"].splitlines())
+
+
 def test_source_distribution_includes_all_native_lock_profiles() -> None:
     manifest = (ROOT / "MANIFEST.in").read_text()
     assert "recursive-include packaging *.txt *.json *.spec *.iss" in manifest

@@ -190,8 +190,12 @@ reines, bei einer Dienstdeinstallation erhaltenes ProgramData den Desktopmodus n
 Der zusätzlich unter `build\windows\test-installer` erzeugte und signierte VM-Recovery-Testinstaller ist
 präprozessorseitig der einzige Build, der `/ALLOWELEVATEDTESTCONTEXT=1` unterstützt. Er wird weder nach `dist`
 noch in das normale Windows-Artefakt oder einen GitHub Release übernommen; der produktive Dienst-Installer in
-`dist` enthält diesen Testpfad nicht. Nur ein manueller signierter Vorab-Probelauf auf `main` stellt ihn für
-einen Tag als separates internes Actions-Artefakt bereit.
+`dist` enthält diesen Testpfad nicht. Die unsignierte CI erhält ihn für 14 Tage als separates
+`windows-recovery-test-installer-<Commit>-<Run-ID>-<Versuch>`-Artefakt, auch wenn eine nachfolgende Paketprüfung
+fehlschlägt. Ein manueller signierter Vorab-Probelauf auf `main` stellt die signierte Testdatei für einen Tag
+als separates internes Actions-Artefakt bereit. Beide Artefakte unterliegen den Repository-Zugriffsregeln;
+der separate Name macht sie in einem öffentlichen Repository nicht vertraulich. Die lokale Abnahme prüft
+die erhaltenen Testinstallerbytes gegen Pfad, Größe und SHA-256 des Dienst-Recovery-Kindkontexts.
 Der opt-in Hard-Kill-Lauf erkennt seinen service-only Commit-Checkpoint nur über vollständig geparste, DACL- und
 Transaktions-ID-geprüfte persistente Marker und beendet ausschließlich den exakt von ihm gestarteten
 Setup-Prozessbaum. Ein nicht eindeutig erreichter Checkpoint oder ein anderer als der ausdrücklich angeforderte
