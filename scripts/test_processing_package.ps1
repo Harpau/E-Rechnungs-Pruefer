@@ -325,6 +325,46 @@ function Invoke-BoundProcessingPackageTests {
                 if ($RestartGuard.controller.context_id -ne $Result.controller.context_id) {
                     throw "Neue native Prozessbindung gehört nicht zum aktuellen Prüfkontext."
                 }
+                # Exactly one invoice on this new instance must complete before
+                # the next fault case. The Python claim forbids retry on failure.
+                $RestartSourceHash = (Get-FileHash -LiteralPath $ResultFile -Algorithm SHA256).Hash.ToLowerInvariant()
+                $RestartCreated = $Next.StartTime.ToUniversalTime().ToFileTimeUtc()
+                $RestartArguments = @(
+                    $Harness, "--confirm-isolated-environment", "--mode", $Mode, "--case", $Case,
+                    "--parent-pid", [string]$Next.Id, "--parent-created", [string]$RestartCreated,
+                    "--executable", $Executable, "--executable-sha256", $ExpectedHash,
+                    "--owner-sid", $OwnerSid, "--port", [string]$Port, "--token-file", $TokenFile,
+                    "--output-directory", $Evidence, "--verify-restart", "--restart-source-sha256", $RestartSourceHash
+                )
+                if ($ServiceSid) { $RestartArguments += @("--service-sid", $ServiceSid) }
+                $RestartRaw = & $PythonExecutable @RestartArguments
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Der einmalige Rechnungsauftrag nach Neustart ist fehlgeschlagen; keine nächste Fehleraktion."
+                }
+                $RestartSummary = $RestartRaw | ConvertFrom-Json
+                $RestartFile = Join-Path $Evidence "restart-result.json"
+                if (-not (Test-Path -LiteralPath $RestartFile -PathType Leaf) -or
+                    $RestartSummary.status -cne "PASS" -or $RestartSummary.case -cne $Case -or
+                    $RestartSummary.restart_receipt_sha256 -cne (Get-FileHash -LiteralPath $RestartFile -Algorithm SHA256).Hash.ToLowerInvariant()) {
+                    throw "Der separate Neustartbeleg fehlt oder ist nicht bytegenau gebunden."
+                }
+                $RestartReceipt = Get-Content -LiteralPath $RestartFile -Raw | ConvertFrom-Json
+                if ($RestartReceipt.schema_version -ne 1 -or $RestartReceipt.status -cne "PASS" -or $RestartReceipt.case -cne $Case -or
+                    $RestartReceipt.previous_result_sha256 -cne $RestartSourceHash -or
+                    $RestartSourceHash -cne (Get-FileHash -LiteralPath $ResultFile -Algorithm SHA256).Hash.ToLowerInvariant() -or
+                    $RestartReceipt.previous_package.parent_pid -ne $PreviousId -or $RestartReceipt.previous_package.parent_created -ne $Created -or
+                    $RestartReceipt.package.parent_pid -ne $Next.Id -or $RestartReceipt.package.parent_created -ne $RestartCreated -or
+                    $RestartReceipt.package.executable_sha256 -cne $ExpectedHash -or $RestartReceipt.package.mode -cne $Mode -or
+                    $RestartReceipt.package.owner_sid -cne $OwnerSid -or $RestartReceipt.package.port -ne $Port -or
+                    $RestartReceipt.controller.context_id -cne $Result.controller.context_id -or
+                    $RestartReceipt.controller.harness.sha256 -cne $HarnessHash -or -not $RestartReceipt.bound_role_exit_confirmed -or
+                    $RestartReceipt.response.status -ne 200 -or $RestartReceipt.response.byte_identical -ne $true -or
+                    $RestartReceipt.response.bytes -ne $RestartReceipt.synthetic_input.size -or
+                    $RestartReceipt.response.sha256 -cne $RestartReceipt.synthetic_input.sha256 -or
+                    $RestartReceipt.response.media_type -cne "application/xml" -or @($RestartReceipt.observations).Count -ne 1) {
+                    throw "Erfolgsrechnung, neuer Parent und ursprünglicher Fehlerfall sind nicht vollständig gebunden."
+                }
+                Write-Host "Processing restart $Mode/$Case $RestartRaw"
                 $Current.Dispose()
                 $Current = $Next
             }
@@ -337,7 +377,7 @@ function Invoke-BoundProcessingPackageTests {
             }
             [IO.File]::WriteAllText("$Evidence.stdout.log", $Stdout.GetAwaiter().GetResult())
             [IO.File]::WriteAllText("$Evidence.stderr.log", $Stderr.GetAwaiter().GetResult())
-            foreach ($EvidenceFile in @("$Evidence\ready.json", "$Evidence\stop-action.json", "$Evidence\result.json", "$Evidence.stdout.log", "$Evidence.stderr.log")) {
+            foreach ($EvidenceFile in @("$Evidence\ready.json", "$Evidence\stop-action.json", "$Evidence\result.json", "$Evidence\restart-once.claim.json", "$Evidence\restart-result.json", "$Evidence.stdout.log", "$Evidence.stderr.log")) {
                 if (Test-Path -LiteralPath $EvidenceFile) {
                     $Digest = (Get-FileHash -LiteralPath $EvidenceFile -Algorithm SHA256).Hash.ToLowerInvariant()
                     Write-Host "Processing evidence $Mode/$Case $EvidenceFile sha256=$Digest"

@@ -1323,6 +1323,172 @@ def verify_only(args: argparse.Namespace, api: WindowsAPI | None = None) -> dict
     return result
 
 
+def verify_restart(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
+    """One invoice on the new bound parent, before the controller's next fault.
+
+    The claim is exclusive and precedes the POST. Neither a crash nor incomplete
+    evidence permits a retry; previous fault receipts are never modified.
+    """
+    if not args.confirm_isolated_environment or args.case not in {"parent-death", "controlled-stop"}:
+        raise ProbeError("Eine isolierte, gebundene Neustartprüfung ist erforderlich.")
+    action = "desktop" if args.mode == "desktop" else "service-recovery"
+    controller = context_binding(action)
+    exe = acceptance._file(Path(args.executable))
+    if exe["sha256"] != args.executable_sha256:
+        raise ProbeError("Die installierten EXE-Bytes stimmen nicht überein.")
+    binding = PackageBinding(
+        args.parent_pid,
+        args.parent_created,
+        str(Path(args.executable).absolute()),
+        args.executable_sha256,
+        args.owner_sid,
+        args.service_sid,
+        args.port,
+        args.mode,
+    )
+    if binding.mode == "service" and (binding.owner_sid != "S-1-5-19" or not binding.service_sid):
+        raise ProbeError("LocalService und die tatsächliche Dienst-SID sind erforderlich.")
+    output = acceptance._safe_path(args.output_directory)
+    result_path = output / "restart-result.json"
+    claim_path = output / "restart-once.claim.json"
+    if os.path.lexists(result_path) or os.path.lexists(claim_path):
+        raise ProbeError("Ein Neustartversuch ist bereits belegt oder beansprucht; keine Wiederholung.")
+    original = acceptance._read(output / "result.json")
+    if len(original) > MAX_RESULT or hashlib.sha256(original).hexdigest() != args.restart_source_sha256:
+        raise ProbeError("Der vorherige Fehlerfall ist nicht bytegenau gebunden.")
+    previous = json.loads(original)
+    old = previous.get("package") if isinstance(previous, dict) else None
+    if (
+        not isinstance(old, dict)
+        or type(old.get("parent_pid")) is not int
+        or not 0 < old["parent_pid"] < 2**32
+        or old["parent_pid"] == binding.parent_pid
+        or type(old.get("parent_created")) is not int
+        or not 0 < old["parent_created"] < binding.parent_created
+        or old != {**asdict(binding), "parent_pid": old["parent_pid"], "parent_created": old["parent_created"]}
+        or previous.get("schema_version") != 2
+        or previous.get("status") != "PASS"
+        or previous.get("case") != args.case
+        or previous.get("controller") != controller
+        or previous.get("bound_role_exit_confirmed") is not True
+    ):
+        raise ProbeError("Alter Fehlerfall und neue Prozessinstanz sind nicht eindeutig gebunden.")
+    payload = large_example("cii")
+    tracker = ObservationTracker(binding, uuid4().hex, "export_xml")
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "case": args.case,
+        "status": "FAIL",
+        "controller": controller,
+        "package": asdict(binding),
+        "previous_package": old,
+        "previous_result_sha256": args.restart_source_sha256,
+        "synthetic_input": {"size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()},
+        "role_exit_evidence": "owner original-handle identities and confirmed cleanup; no stale PID reopen",
+    }
+    handle = 0
+    request: Request | None = None
+    claimed = False
+    primary_error: BaseException | None = None
+    try:
+        handle, parent = api.open(binding.parent_pid, 0)
+        validate_parent(parent, binding)
+        api.listener(binding.port, binding.parent_pid)
+        if not api.alive(handle) or api.children(binding.parent_pid):
+            raise ProbeError("Die neue Prozessinstanz ist nicht lebend und frei von alten Rollen.")
+        report["parent"] = parent.public()
+        token = acceptance._read(args.token_file).decode("ascii").strip()
+        if not 32 <= len(token) <= 512 or any(c.isspace() for c in token):
+            raise ProbeError("Die Token-Datei ist ungültig.")
+        if context_binding(action) != controller or acceptance._file(Path(binding.executable)) != exe:
+            raise ProbeError("Kontext oder EXE wurden vor dem Neustartauftrag verändert.")
+        write_new_json(claim_path, {**report, "status": "CLAIMED", "observation_id": tracker.observation_id})
+        claimed = True
+        request = Request(binding.port, token, payload, export=True, observation_id=tracker.observation_id)
+        request.start()
+        request.thread.join(20)
+        if not request.done.is_set() or request.error is not None:
+            raise ProbeError("Der einmalige Neustartauftrag liefert keine vollständige Antwort.")
+        response = request.record
+        if (
+            response.get("status") != 200
+            or response.get("byte_identical") is not True
+            or response.get("bytes") != len(payload)
+            or response.get("sha256") != report["synthetic_input"]["sha256"]
+            or response.get("media_type") != "application/xml"
+        ):
+            raise ProbeError("Der Neustartauftrag bestätigt keine byteidentische XML-Antwort mit HTTP 200.")
+        collect_owner_records(api, [tracker], token, deadline=time.monotonic() + 0.4, released=True)
+        require_successful_transport([tracker])
+        # A restart receipt must prove successful processing as well as sending.
+        # The exact success sequence excludes processing/upload/transport errors
+        # and poisoned state, even when a contradictory HTTP 200 was received.
+        if [event["phase"] for event in tracker.record["events"]] != [
+            "admitted",
+            "ready",
+            "input_received",
+            "operation_entering",
+            "operation_finished",
+            "result_received",
+            "cleanup_started",
+            "cleanup_confirmed",
+            "response_sending",
+            "response_send_complete",
+            "lease_released",
+        ]:
+            raise ProbeError("Die Ownersequenz bestätigt keinen vollständig erfolgreichen Neustartauftrag.")
+        if not api.alive(handle) or api.children(binding.parent_pid):
+            raise ProbeError("Parentfortbestand oder vollständiges Rollenende ist nicht bestätigt.")
+        api.listener(binding.port, binding.parent_pid)
+        if context_binding(action) != controller or acceptance._file(Path(binding.executable)) != exe:
+            raise ProbeError("Kontext oder EXE wurden während des Neustartauftrags verändert.")
+        if acceptance._read(output / "result.json") != original:
+            raise ProbeError("Der vorherige Fehlerbeleg wurde während des Neustartauftrags verändert.")
+        report["bound_role_exit_confirmed"] = True
+        report["status"] = "PASS"
+        return report
+    except BaseException as exc:
+        primary_error = exc
+        report["status"] = "INCONCLUSIVE" if isinstance(exc, Inconclusive) else "FAIL"
+        report["failure"] = failure_details(exc)
+        raise
+    finally:
+        # Close only owned client/observer resources; never repair product state.
+        close_errors = []
+        if request is not None:
+            for close in (request.abort, request.close):
+                try:
+                    close()
+                except Exception as exc:
+                    close_errors.append(failure_details(exc))
+            try:
+                if request.thread.ident is not None:
+                    request.thread.join(2)
+                    if request.thread.is_alive():
+                        raise ProbeError("Das Ende des eigenen HTTP-Clients ist unbestätigt.")
+            except Exception as exc:
+                close_errors.append(failure_details(exc))
+            report["response"] = dict(request.record)
+        if handle:
+            try:
+                api.close(handle)
+            except Exception as exc:
+                close_errors.append(failure_details(exc))
+        report["observations"] = observation_receipts([tracker])
+        if close_errors:
+            report["status"] = "FAIL"
+            report["observer_cleanup"] = close_errors
+        if claimed:
+            try:
+                write_new_json(result_path, report)
+            except BaseException:
+                if primary_error is None:
+                    raise
+                primary_error.add_note("Der Neustartbeleg konnte nicht exklusiv geschrieben werden.")
+        if close_errors and primary_error is None:
+            raise ProbeError("Die eigenen Neustartbeobachter wurden nicht bestätigt geschlossen.")
+
+
 def record_memory(api: WindowsAPI, handle: int, record: dict[str, Any], phase: str) -> None:
     """At most three fixed observations per bound process, no polling thread."""
     observations = record.setdefault("memory_observations", [])
@@ -1897,7 +2063,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, required=True)
     p.add_argument("--token-file", type=Path, required=True)
     p.add_argument("--output-directory", type=Path, required=True)
-    p.add_argument("--verify-only", choices=("context", "parent"))
+    verification = p.add_mutually_exclusive_group()
+    verification.add_argument("--verify-only", choices=("context", "parent"))
+    verification.add_argument("--verify-restart", action="store_true")
+    p.add_argument("--restart-source-sha256")
     return p
 
 
@@ -1910,8 +2079,24 @@ def main() -> int:
     watchdog.daemon = True
     watchdog.start()
     try:
+        if bool(args.restart_source_sha256) != args.verify_restart:
+            raise ProbeError("Der Neustartmodus benötigt genau eine Bindung an den vorherigen Ergebnisbeleg.")
         if args.verify_only:
             print(json.dumps(verify_only(args)))
+            return 0
+        if args.verify_restart:
+            report = verify_restart(args, WindowsAPI())
+            print(
+                json.dumps(
+                    {
+                        "status": report["status"],
+                        "case": args.case,
+                        "restart_receipt_sha256": acceptance._file(args.output_directory / "restart-result.json")[
+                            "sha256"
+                        ],
+                    }
+                )
+            )
             return 0
         report = run(args, WindowsAPI())
         print(json.dumps({"status": report["status"], "case": args.case}))

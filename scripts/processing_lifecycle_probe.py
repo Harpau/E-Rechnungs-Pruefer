@@ -81,7 +81,7 @@ def directory_identity(path: Path) -> dict[str, Any]:
 
 
 def cleanup_owned_temp(
-    runtime: Path, identity: dict[str, Any], *, ended: bool, evidence: Path | None = None
+    runtime: Path, identity: dict[str, Any], *, ended: bool, evidence: Path | None = None, remove: bool = True
 ) -> dict[str, Any]:
     if not ended:
         raise RuntimeError("native end is not confirmed")
@@ -121,8 +121,9 @@ def cleanup_owned_temp(
     if evidence is not None:
         record(evidence, {"identity": identity, "native_end_confirmed": True, "retained_inventory": entries})
     # No product cleanup is asserted: a hard parent death can leave this tree.
-    shutil.rmtree(path)
-    return {"present_after_native_end": True, "harness_removed": True, "retained_inventory": entries}
+    if remove:
+        shutil.rmtree(path)
+    return {"present_after_native_end": True, "harness_removed": remove, "retained_inventory": entries}
 
 
 def _walk_error(error: OSError) -> None:
@@ -229,7 +230,30 @@ def multipart(payload: bytes, *, official: bool) -> bytes:
     )
 
 
-async def asgi_request(application: Any, path: str, payload: bytes, disconnect: asyncio.Event) -> dict[str, Any]:
+def failure_details(error: BaseException) -> dict[str, str]:
+    return {"failure_class": type(error).__name__, "failure": str(error)[:256]}
+
+
+def failed(report: dict[str, Any], error: BaseException, phase: str, *, finalization: bool = False) -> None:
+    report["passed"] = False
+    detail = {"phase": phase, **failure_details(error)}
+    if "failure_class" not in report:
+        report.update(failure_details(error), failure_phase=phase)
+    if finalization:
+        errors = report.setdefault("finalization_errors", [])
+        if len(errors) < 12:
+            errors.append(detail)
+
+
+async def asgi_request(
+    application: Any,
+    path: str,
+    payload: bytes,
+    disconnect: asyncio.Event,
+    *,
+    evidence: Path | None = None,
+    observation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     from starlette.types import Message, Scope
 
     body = multipart(payload, official=path != "/api/xml")
@@ -252,8 +276,15 @@ async def asgi_request(application: Any, path: str, payload: bytes, disconnect: 
         ],
     }
     sent = False
-    response: dict[str, Any] = {"status": None, "body_size": 0}
+    # The controller retains this same object if the request and its exclusive
+    # receipt publication both fail. No disk read or second request is needed.
+    response: dict[str, Any] = observation if observation is not None else {}
+    response.update(status=None, body_size=0, hashed_body_size=0, final_body_seen=False)
     digest = hashlib.sha256()
+    prefix = bytearray()
+    returned = False
+    if evidence is not None and (evidence.exists() or evidence.with_name(evidence.name + ".pending").exists()):
+        raise FileExistsError("request evidence already exists")
 
     async def receive() -> Message:
         nonlocal sent
@@ -265,19 +296,46 @@ async def asgi_request(application: Any, path: str, payload: bytes, disconnect: 
 
     async def send(message: Message) -> None:
         if message["type"] == "http.response.start":
+            if response["status"] is not None:
+                raise RuntimeError("duplicate synthetic response start")
             response["status"] = message["status"]
         elif message["type"] == "http.response.body":
+            if response["status"] is None or response["final_body_seen"]:
+                raise RuntimeError("synthetic response body outside active response")
             chunk = message.get("body", b"")
             response["body_size"] += len(chunk)
+            retained = chunk[: max(0, 2 * 1024**2 - response["hashed_body_size"])]
+            digest.update(retained)
+            response["hashed_body_size"] += len(retained)
+            prefix.extend(retained[: max(0, 512 - len(prefix))])
             if response["body_size"] > 2 * 1024**2:
                 raise RuntimeError("bounded synthetic response exceeded")
-            digest.update(chunk)
+            response["final_body_seen"] = not message.get("more_body", False)
 
     try:
         await application(scope, receive, send)
-    except asyncio.CancelledError:
+        returned = True
+    except asyncio.CancelledError as exc:
         response["cancelled"] = True
-    response["sha256"] = digest.hexdigest()
+        response.update(failure_details(exc))
+    except BaseException as exc:
+        response.update(failure_details(exc))
+        raise
+    finally:
+        response.update(
+            sha256=digest.hexdigest(),
+            sha256_complete=response["hashed_body_size"] == response["body_size"],
+            body_prefix_hex=prefix.hex(),
+            body_prefix_truncated=response["body_size"] > len(prefix),
+            complete=returned and response["final_body_seen"],
+        )
+        if evidence is not None:
+            try:
+                record(evidence, response)
+            except BaseException as exc:
+                if "failure_class" not in response:
+                    raise
+                response["evidence_error"] = failure_details(exc)
     return response
 
 
@@ -353,7 +411,19 @@ async def controller(case: str, directory: Path) -> dict[str, Any]:
     native.role_command = command
     payload = (ROOT / "app/examples/cii-rechnung-demo.xml").read_bytes()
     disconnect = asyncio.Event()
-    request = asyncio.create_task(asgi_request(main.app, "/api/analyze", payload, disconnect))
+    report: dict[str, Any] = {"passed": False, "case": case, "response": {}}
+    request = asyncio.create_task(
+        asgi_request(
+            main.app,
+            "/api/analyze",
+            payload,
+            disconnect,
+            evidence=directory / "interrupted-response.json",
+            observation=report["response"],
+        )
+    )
+    lease = None
+    phase = "startup"
     deadline = time.monotonic() + 15
     try:
         while not (directory / "java-active.json").exists():
@@ -392,12 +462,23 @@ async def controller(case: str, directory: Path) -> dict[str, Any]:
         live_pids = list(pids.values())
         if sys.platform == "win32":
             live_pids.append(read_record(directory / "java-active.json")["pid"])
+        phase = "fault_binding"
         check = BoundExits(live_pids)
         try:
             require_active(request_done=request.done(), all_running=check.all_running())
+        except BaseException as exc:
+            failed(report, exc, phase)
+            raise
         finally:
-            check.close()
+            try:
+                check.close()
+            except BaseException as exc:
+                primary_exists = "failure_class" in report
+                failed(report, exc, "fault_observer_close", finalization=True)
+                if not primary_exists:
+                    raise
         started = time.monotonic()
+        phase = "fault"
         record(directory / "fault.json", {"case": case, "monotonic": started})
         if case == "parent":
             await asyncio.sleep(12)  # Outer controller terminates its held Popen.
@@ -411,29 +492,69 @@ async def controller(case: str, directory: Path) -> dict[str, Any]:
             if child is None:
                 raise RuntimeError("missing fixed role")
             child.kill()
+        phase = "interrupted_response"
         response = await asyncio.wait_for(request, 6)
+        report["response"] = response
+        if "evidence_error" in response:
+            raise RuntimeError("interrupted response evidence publication failed")
+        phase = "cleanup_state"
         clean = lease.tree.cleaned and not lease.poisoned and manager.active_count == 0
         if not clean:
             raise RuntimeError("native cleanup or capacity recovery not confirmed")
         if response["status"] == 200:
             raise RuntimeError("interrupted analysis unexpectedly returned success")
+        phase = "fresh_xml"
         fresh_payload = b"<synthetic-byte-exact-export/>\n"
-        fresh = await asyncio.wait_for(asgi_request(main.app, "/api/xml", fresh_payload, asyncio.Event()), 15)
-        if fresh["status"] != 200 or fresh["sha256"] != hashlib.sha256(fresh_payload).hexdigest():
+        report["fresh_xml"] = {}
+        fresh = await asyncio.wait_for(
+            asgi_request(
+                main.app,
+                "/api/xml",
+                fresh_payload,
+                asyncio.Event(),
+                evidence=directory / "fresh-response.json",
+                observation=report["fresh_xml"],
+            ),
+            15,
+        )
+        report["fresh_xml"] = fresh
+        if (
+            fresh["status"] != 200
+            or fresh["sha256"] != hashlib.sha256(fresh_payload).hexdigest()
+            or not fresh["complete"]
+            or not fresh["sha256_complete"]
+            or "failure_class" in fresh
+        ):
             raise RuntimeError("fresh XML export after fault failed")
-        return {
-            "passed": True,
-            "response": response,
-            "fresh_xml": fresh,
-            "active_count": manager.active_count,
-            "tree_cleaned": lease.tree.cleaned,
-            "poisoned": lease.poisoned,
-        }
+        report.update(
+            passed=True, active_count=manager.active_count, tree_cleaned=lease.tree.cleaned, poisoned=lease.poisoned
+        )
+    except BaseException as exc:
+        failed(report, exc, phase)
     finally:
-        if not request.done():
-            request.cancel()
-        await asyncio.gather(request, return_exceptions=True)
-        manager.shutdown()
+        try:
+            if not request.done():
+                request.cancel()
+            outcomes = await asyncio.gather(request, return_exceptions=True)
+            if isinstance(outcomes[0], BaseException):
+                failed(report, outcomes[0], "interrupted_request", finalization=True)
+        except BaseException as exc:
+            failed(report, exc, "request_finalization", finalization=True)
+        for moment in ("before_shutdown", "after_shutdown"):
+            if moment == "after_shutdown":
+                try:
+                    manager.shutdown()
+                except BaseException as exc:
+                    failed(report, exc, "manager_shutdown", finalization=True)
+            try:
+                report[moment] = {
+                    "active_count": manager.active_count,
+                    "tree_cleaned": lease.tree.cleaned if lease is not None else None,
+                    "poisoned": lease.poisoned if lease is not None else None,
+                }
+            except BaseException as exc:
+                failed(report, exc, moment, finalization=True)
+    return report
 
 
 def wait_record(path: Path, process: subprocess.Popen[bytes], deadline: float) -> dict[str, Any]:
@@ -452,6 +573,7 @@ def run_case(case: str, directory: Path) -> dict[str, Any]:
     active: dict[str, Any] | None = None
     ended = False
     report: dict[str, Any] = {"case": case, "passed": False}
+    phase = "controller_startup"
     with (directory / "stdout.txt").open("xb") as stdout, (directory / "stderr.txt").open("xb") as stderr:
         process = subprocess.Popen(
             [python_executable(), "-I", str(SCRIPT), "--controller", case, str(directory)],
@@ -483,6 +605,7 @@ def run_case(case: str, directory: Path) -> dict[str, Any]:
             report["bound_identities"] = binding.identities
             report["active"] = active
             require_active(request_done=process.poll() is not None, all_running=binding.all_running())
+            phase = "fault_observation"
             record(directory / "go.json", {"bound": True})
             fault = wait_record(directory / "fault.json", process, time.monotonic() + 2)
             started = fault["monotonic"]
@@ -501,6 +624,7 @@ def run_case(case: str, directory: Path) -> dict[str, Any]:
                 process.wait(timeout=2)
                 report["parent_returncode"] = process.returncode
             else:
+                phase = "controller_result"
                 result = wait_record(directory / "result.json", process, time.monotonic() + 18)
                 report["controller_result"] = result
                 if result.get("passed") is not True:
@@ -509,33 +633,59 @@ def run_case(case: str, directory: Path) -> dict[str, Any]:
                 if process.returncode != 0:
                     raise RuntimeError("controller exited unsuccessfully")
             report["passed"] = True
-        except Exception as exc:
-            report["failure_class"] = type(exc).__name__
-            report["failure"] = str(exc)[:256]
+        except BaseException as exc:
+            failed(report, exc, phase)
         finally:
             # Own Popen only; no unbound PID or foreign process-group signals.
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=3)
+            controller_ended = False
+            try:
+                if process.poll() is None:
+                    process.kill()
+            except BaseException as exc:
+                failed(report, exc, "controller_stop", finalization=True)
+            try:
+                process.wait(timeout=3)
+                controller_ended = process.poll() is not None
+            except BaseException as exc:
+                failed(report, exc, "controller_wait", finalization=True)
+            report["controller_end_confirmed"] = controller_ended
             if binding is not None:
-                ended = binding.wait(time.monotonic() + 3) or ended
+                try:
+                    ended = binding.wait(time.monotonic() + 3) or ended
+                except BaseException as exc:
+                    failed(report, exc, "bound_exit_observation", finalization=True)
                 report["all_bound_roles_ended_before_harness_cleanup"] = ended
-                binding.close()
-            if active is not None:
+                try:
+                    binding.close()
+                except BaseException as exc:
+                    failed(report, exc, "bound_observer_close", finalization=True)
+            if active is not None and controller_ended and ended:
                 try:
                     report["temporary_cleanup"] = cleanup_owned_temp(
                         directory / "runtime",
                         active["java"]["temporary"],
                         ended=ended,
                         evidence=directory / "temporary-before-harness-cleanup.json",
+                        remove=report["passed"] and case == "parent",
                     )
                     if not temporary_result_allowed(case, report["temporary_cleanup"]):
                         report["passed"] = False
                         report["temporary_cleanup_error"] = "ProductTemporaryDirectoryRetained"
-                except Exception as exc:
-                    report["passed"] = False
+                except BaseException as exc:
+                    failed(report, exc, "temporary_cleanup", finalization=True)
                     report["temporary_cleanup_error"] = type(exc).__name__
-    record(directory / "outer-result.json", report)
+            elif active is not None:
+                report["passed"] = False
+                report["temporary_cleanup"] = {
+                    "harness_removed": False,
+                    "inspection_skipped_reason": "controller or bound role end unconfirmed",
+                }
+    try:
+        record(directory / "outer-result.json", report)
+    except BaseException as exc:
+        # Keep the existing primary diagnosis in the catalog, without retrying
+        # this exclusive publication or writing a replacement case receipt.
+        failed(report, exc, "outer_result_publication", finalization=True)
     return report
 
 
@@ -545,14 +695,25 @@ def run_catalog(output: Path) -> dict[str, Any]:
     if output.exists() or raw.exists():
         raise FileExistsError("evidence output already exists")
     raw.mkdir(mode=0o700, parents=True)
-    results = [run_case(case, raw / case) for case in cases_for_platform(sys.platform)]
+    cases = cases_for_platform(sys.platform)
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        try:
+            result = run_case(case, raw / case)
+        except BaseException as exc:
+            result = {"case": case, "passed": False}
+            failed(result, exc, "run_case")
+        results.append(result)
+        if result.get("passed") is not True:
+            break
     report = {
-        "schema_version": 1,
-        "passed": all(result["passed"] for result in results),
+        "schema_version": 2,
+        "passed": len(results) == len(cases) and all(result["passed"] for result in results),
         "platform": sys.platform,
         "python": sys.version,
         "pid": os.getpid(),
         "cases": results,
+        "not_started": list(cases[len(results) :]),
         "scope": "source runtime; actual ASGI disconnect and native leases; fixed ten-second Java-shaped helper, not JVM",
         "helper_sha256": hashlib.sha256(SCRIPT.read_bytes()).hexdigest(),
         "source_sha256_scope": "selected lifecycle implementation files, not complete workspace",
