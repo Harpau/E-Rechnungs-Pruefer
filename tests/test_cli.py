@@ -24,7 +24,7 @@ def test_cli_uses_configured_defaults_without_opening_browser(monkeypatch: pytes
 
     cli.main()
 
-    run.assert_called_once_with("app.main:app", host="127.0.0.2", port=8181, reload=False)
+    run.assert_called_once_with("app.main:app", host="127.0.0.2", port=8181, reload=False, timeout_graceful_shutdown=0)
     timer.assert_not_called()
     browser_open.assert_not_called()
 
@@ -42,7 +42,7 @@ def test_cli_forwards_explicit_server_arguments(monkeypatch: pytest.MonkeyPatch)
 
     cli.main()
 
-    run.assert_called_once_with("app.main:app", host="192.0.2.10", port=9090, reload=True)
+    run.assert_called_once_with("app.main:app", host="192.0.2.10", port=9090, reload=True, timeout_graceful_shutdown=0)
     timer.assert_not_called()
 
 
@@ -85,7 +85,7 @@ def test_cli_open_uses_reachable_browser_host_without_starting_thread(
 
     assert [interval for interval, _callback in scheduled] == [1.2]
     browser_open.assert_called_once_with(f"http://{browser_host}:8765")
-    run.assert_called_once_with("app.main:app", host=bind_host, port=8765, reload=False)
+    run.assert_called_once_with("app.main:app", host=bind_host, port=8765, reload=False, timeout_graceful_shutdown=0)
 
 
 def test_cli_open_with_api_token_creates_separate_browser_session(
@@ -125,7 +125,7 @@ def test_cli_open_with_api_token_creates_separate_browser_session(
     assert api_token not in opened_url
     assert cli.os.environ[DESKTOP_TOKEN_ENV] == desktop_token
     assert cli.os.environ[DESKTOP_PORT_ENV] == "8765"
-    run.assert_called_once_with("app.main:app", host="127.0.0.1", port=8765, reload=False)
+    run.assert_called_once_with("app.main:app", host="127.0.0.1", port=8765, reload=False, timeout_graceful_shutdown=0)
 
 
 def test_cli_without_open_does_not_publish_browser_session_for_api_token(
@@ -148,4 +148,4 @@ def test_cli_without_open_does_not_publish_browser_session_for_api_token(
     assert DESKTOP_PORT_ENV not in cli.os.environ
     timer.assert_not_called()
     browser_open.assert_not_called()
-    run.assert_called_once_with("app.main:app", host="127.0.0.1", port=8080, reload=False)
+    run.assert_called_once_with("app.main:app", host="127.0.0.1", port=8080, reload=False, timeout_graceful_shutdown=0)

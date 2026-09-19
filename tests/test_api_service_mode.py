@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.desktop_security import DESKTOP_COOKIE_NAME, DesktopSessionMiddleware, OneTimeBrowserSessions
 from app.main import app
 from app.ui_contract import UI_REVISION, UI_REVISION_HEADER
+
+
+@pytest.fixture(autouse=True)
+def running_application():
+    # Browser and bearer clients share one running application, as in service
+    # mode. Own its lifespan once even when a test uses several auth clients.
+    with TestClient(app):
+        yield
 
 
 def _service_api_client(token: str) -> TestClient:

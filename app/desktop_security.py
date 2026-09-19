@@ -12,7 +12,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.types import ASGIApp
 
+from .processing.observation import BEARER_SCOPE_KEY, OBSERVATION_HEADER, OBSERVATION_PATH
 from .ui_contract_rules import UI_REVISION_HEADER, is_ui_revision_required
+from .upload_ingress import operation_for_scope
 
 DESKTOP_TOKEN_ENV = "EINVOICE_DESKTOP_TOKEN"
 DESKTOP_PORT_ENV = "EINVOICE_DESKTOP_PORT"
@@ -181,28 +183,49 @@ class DesktopSessionMiddleware:
         self.ui_revision = ui_revision
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http" or not (self.token or self.api_token or self.browser_sessions):
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
+        # This marker is authority supplied only by this middleware, never a
+        # request header or a value left over in an externally supplied scope.
+        scope = {**scope, BEARER_SCOPE_KEY: False}
         request = Request(scope, receive=receive)
-        response = self._authorize(request)
+        path = scope["path"]
+        root = scope.get("root_path", "")
+        if root and (path == root or path.startswith(root + "/")):
+            path = path[len(root) :]
+        observation_required = path == OBSERVATION_PATH or (
+            operation_for_scope(scope) is not None and OBSERVATION_HEADER.decode("ascii") in request.headers
+        )
+        if not observation_required and not (self.token or self.api_token or self.browser_sessions):
+            await self.app(scope, receive, send)
+            return
+        response = self._authorize(request, observation_required=observation_required)
         if response is not None:
             await response(scope, receive, send)
             return
 
         await self.app(scope, receive, send)
 
-    def _authorize(self, request: Request) -> Response | None:
+    def _authorize(self, request: Request, *, observation_required: bool = False) -> Response | None:
         token = self.token
         if not self._host_is_allowed(request):
             return self._forbidden(request, "Der lokale Hostname ist nicht zulässig.")
+        authorization = request.headers.get("authorization")
+        if observation_required:
+            if not authorization or not self._bearer_is_allowed(authorization):
+                return self._forbidden(
+                    request, "Die Verarbeitungsbeobachtung erfordert ein gültiges API-Zugriffstoken."
+                )
+            request.scope[BEARER_SCOPE_KEY] = True
+            return None
         if request.url.path == "/api/health":
             return None
 
-        authorization = request.headers.get("authorization")
         if request.url.path.startswith("/api/") and authorization:
             if self._bearer_is_allowed(authorization):
+                request.scope[BEARER_SCOPE_KEY] = True
                 return None
             return self._forbidden(request, "Das API-Zugriffstoken ist ungültig.")
 

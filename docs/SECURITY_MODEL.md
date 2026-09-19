@@ -18,9 +18,9 @@
 6. Downloads aus dem KoSIT-Installer erfolgen nur nach ausdrücklichem Benutzeraufruf. Für KoSIT Validator und
    XRechnung ist `packaging/kosit/components.lock.json` maßgeblich. Der Windows-Lock unter
    `packaging/windows/components.lock.json` spiegelt diese beiden Einträge und ergänzt die festgeschriebene
-   Java-Laufzeit; der Build verifiziert alle SHA-256-Prüfsummen. Der zentrale KoSIT-Lock pinnt Validator 1.6.2
-   und die XRechnung-3.0.2-Konfiguration 2026-01-31 mit CEN-Regeln 1.3.15 und
-   XRechnung-Schematron 2.5.0.
+   Java-Laufzeit; der Build verifiziert alle SHA-256-Prüfsummen. Der zentrale KoSIT-Lock pinnt Validator 1.6.3
+   und die XRechnung-3.0.2-Konfiguration 2026-08-31 mit CEN-Regeln 1.3.16 und
+   XRechnung-Schematron 2.6.0.
 
 ## Wesentliche Bedrohungen und Kontrollen
 
@@ -38,13 +38,81 @@ Kennwortgeschützte PDFs werden abgelehnt. Verschlüsselte PDFs, die sich mit ei
 
 ### Ressourcenverbrauch
 
-Uploadgröße, XML-Strukturposten, technische Zeilenanzahl, technische Tabellenzeit und KoSIT-Laufzeit sind
-begrenzt. Der XML-Preflight greift vor dem vollständigen Baumaufbau; die technische Pfadbildung arbeitet linear,
-und Namespacezeilen teilen sich dasselbe Zeilenbudget. Bei Hybrid-PDFs gilt `MAX_UPLOAD_BYTES` sowohl für die
-ausgewählte Rechnungs-XML als auch für die Summe der dekodierten Anhänge; zusätzlich werden höchstens 100
-eingebettete Dateien verarbeitet. Das Dekompressionslimit von pypdf 6 bildet eine weitere Obergrenze. Da solche
-Prüfungen nicht jede Speicherallokation vor dem ersten Parsercallback verhindern können, sind für den
-Netzwerkbetrieb weiterhin Prozess-, Speicher- und Parallelitätslimits notwendig.
+Der HTTP-Verarbeitungspfad schützt `/api/analyze`, `/api/xml`, `/api/report` und `/api/report/pdf` gemeinsam.
+Begrenzte und eindeutige HTTP-Header werden vor der bisherigen Browser-/Bearer-Authentifizierung geprüft.
+Erst danach werden Requestrepräsentation und Konfiguration validiert und einer von zwei Auftragsplätzen
+reserviert. Eine abgewiesene Anfrage liest keinen Body und löst deshalb kein `100 Continue` aus. Es gibt keine
+automatische FastAPI-Multipart-Verarbeitung oder temporäre Upload-Spooldatei. Der Receivekanal hat jeweils genau
+einen Leser; nach vollständigem Body übernimmt dieser Controller die Disconnectüberwachung.
+
+| Grenze | Festgelegter Standard |
+|---|---|
+| Datei | 25 MiB; `MAX_UPLOAD_BYTES` darf nur auf eine positive kleinere Grenze gesetzt werden |
+| Gesamter Multipart-Body / Nicht-Dateianteil | Dateilimit + 64 KiB / höchstens 64 KiB |
+| Dateiparts | genau eine Datei; nur die zur Route gehörenden optionalen Felder, keine Duplikate |
+| HTTP-Header nach ASGI-Übergabe | 64 Header, zusammen 16 KiB, Einzelwert 8 KiB; Content-Type 1 KiB |
+| Partheader / Dateiname / Feldwert / Parserfeed | 4 KiB / 1.024 Byte / 64 Byte / 64 KiB |
+| Upload | 120 s insgesamt, höchstens 15 s bis zum nächsten Receiveereignis |
+| Prozessstart / reine Pythonphase | 15 s / 30 s; KoSIT-Wartezeit zählt nicht zur Pythonphase |
+| Verarbeitung insgesamt | 60 s + angeforderte KoSIT-Frist; standardmäßig 120 s, höchstens 360 s |
+| KoSIT-Frist | 1..300 s, Standard 60 s |
+| Abbruch-Cleanup / Antwortversand | 5 s / 30 s |
+| JSON / HTML / PDF / XML-Ausgabe | 128 MiB / 128 MiB / 64 MiB / 25 MiB |
+| Java stdout / stderr / gesammelte VARL-Dateien | 2 MiB / 2 MiB / 2 MiB insgesamt bei höchstens 8 Kandidaten |
+
+Ein Platz bleibt von Uploadbeginn bis zum belegten Prozessende und vollständigem Antwortversand beziehungsweise
+Abbruch belegt. Volle Kapazität führt ohne Warteschlange zu `503 analysis_capacity_error`, auch beim XML-Export;
+der Healthcheck bleibt unabhängig. Nicht bestätigtes Cleanup sperrt den betroffenen Platz. Diese Grenzen gelten
+**je Backendprozess**: Mehrere Uvicorn-Worker oder mehrere Instanzen vervielfachen Kapazität und Speicherbedarf.
+Die Antwort wird vollständig innerhalb ihres Budgets gesammelt und der kleine Metadatenvertrag geprüft, bevor
+HTTP 200 beginnt. Nach begonnenem Versand kann ein Disconnect/Sendetimeout nur noch die Verbindung beenden.
+
+Der Backend-Controller startet und besitzt Python-Worker, IPC-Supervisor, optionalen Java-Launcher und auf macOS
+den unabhängigen Wächter direkt. Rechnungsbytes werden erst nach bestätigter Start-/Limitbindung freigegeben.
+Die einmal im Parent gewählten Profile werden als konkrete Werte an die Rollen übergeben. Linux erhält
+2.048 MiB für vertrauenswürdige Python-Imports, danach 768 MiB für den Worker und 512 MiB für den Supervisor.
+macOS erhält dafür 4.096 / 1.536 / 1.024 MiB. Java erhält 4.096 MiB bei 512 MiB Java-Heap, der macOS-Wächter
+separat 64 MiB. Auf POSIX sind diese Werte zusätzlicher virtueller Adressraum über einer geprüften Basis;
+insbesondere macOS besitzt große gemeinsame Adressabbildungen. Das ist weder eine RSS-Grenze noch eine Zusage
+über den physischen RAM-Verbrauch. Das macOS-Profil wurde anhand wiederholter vollständiger synthetischer
+25-MiB-Exporte und CII-PDF-Berichte kalibriert; die kleineren Profile verarbeiteten diese regulären Fälle
+nicht zuverlässig. Die gemessenen RSS-Spitzen dieser sechs Proben waren rund 142 MiB für den Worker und
+23 MiB für den Supervisor; sie sind keine Zusage für beliebige Dokumente.
+
+Die vertrauenswürdige Adressraumbasis wird vor Rechnungsinput gemessen und nach derselben festen Grenze beim
+Start, nach Bibliotheksimports und im READY-Nachweis geprüft: höchstens 1 GiB unter Linux, 64 GiB unter macOS
+x86_64 und 512 GiB unter macOS arm64. Unbekannte macOS-Architekturen werden abgewiesen. Diese Obergrenzen
+begrenzen die zulässige Basis, nicht den Arbeitszuschlag: Das tatsächlich gesetzte Limit bleibt die gemessene
+Basis plus dem oben genannten unveränderten Rollenbudget. Rund 392 GiB virtueller Basis auf dem ARM64-CI-Runner
+sind kein entsprechender RAM-Verbrauch und keine freie Speicherreserve. Die macOS-CI verlangt vor dem
+Testkatalog begrenzte mmap- und Heap-Proben zur tatsächlichen Limitdurchsetzung; die neue ARM64-Grenze allein
+belegt weder diese Durchsetzung noch eine bestandene native ARM64-Abnahme.
+
+Windows verwendet dagegen Job-/Commitgrenzen: Worker 2.048 MiB beim Import und danach 768 MiB, Supervisor
+512 MiB und zusammen 4.096 MiB für Java-Launcher und JVM. Der äußere Auftragsjob ist insgesamt auf 6,5 GiB
+begrenzt. Diese Windowswerte benötigen ihre eigene native Kalibrierung; aus einem macOS-AS-Test folgt kein
+Windows-Commit- oder Linux-Nachweis. Java-Heap und gesamter JVM-Bedarf sind unterschiedliche Größen.
+Die äußere monotone Frist bleibt maßgeblich; ein Thread-Timeout allein beendet keine Verarbeitung.
+
+Der XML-Preflight greift weiterhin vor dem vollständigen Baumaufbau. Bei Hybrid-PDFs gilt das Dateibudget für die
+ausgewählte XML und die Summe aller dekodierten Anhänge, bei höchstens 100 Anhängen. Jede Dekoderstufe verwendet
+das verbleibende Gesamtbudget; bei Nullrest startet kein weiterer Dekoder. Strukturstreams verwenden unabhängig
+davon höchstens 25 MiB. Der Seitenbaum ist auf 10.000 Einträge (auch innere Knoten) und Tiefe 64 begrenzt. Diese
+Grenzen wählen keine Anhänge stillschweigend ab und führen keine neue fachliche Positionsgrenze ein. Sie ersetzen
+nicht das native Speicher-/Zeitlimit: Nicht jeder Dekoder verhindert jede Allokation bereits vor seinem Callback.
+
+Geltungsbereich ist der HTTP-Aufruf über den Manager. Direkte Bibliotheksaufrufe und CLI-Analysen erhalten damit
+nicht automatisch native Prozessisolation. Die neue Architektur ist keine vollständige Betriebssystem-Sandbox;
+Dateisystem-/Netzwerkrechte, JVM-/Containerquoten des Deployments und ein gesamtsystemweites Speicherbudget
+werden dadurch nicht zugesagt. Das gilt insbesondere für Java-Tempdaten trotz geschützter Pfade und begrenzter
+Ein-/Ausgaben. Die gesonderte Betriebshärtung ist nicht Teil dieser Änderung. Offene Dependency-/OS-Befunde bleiben
+unverändert freigaberelevant; Prozessgrenzen begründen keine CVE-Ausnahme.
+
+Die nativen Windows-/Linux-, installierten Dienst-/Desktop- und Frozen-Nachweise für diese neue Architektur
+müssen vor Freigabe nach [`RELEASE.md`](RELEASE.md) erbracht werden. Ein bestandener Unit- oder macOS-Quelltest
+ist kein Nachweis für diese anderen Auslieferungsformen.
+Der [Abnahmestand mit nativen Messwerten](UPLOAD_WORKER_ACCEPTANCE.md) dokumentiert die bestandenen
+Teilprüfungen und die noch offene Windows-Paketabnahme; die technische Gesamtfreigabe bleibt ausstehend.
 
 ### Cross-Site Scripting
 
@@ -52,7 +120,8 @@ Jinja2 escaped standardmäßig; die JavaScript-Oberfläche verwendet `escapeHtml
 
 ### Geschlossener Analysevertrag und Feldabdeckung
 
-`POST /api/analyze` validiert das Ergebnis gegen das geschlossene Analyseschema 2. Zusätzliche Parser- oder
+`POST /api/analyze` lässt das Ergebnis im begrenzten Worker gegen das geschlossene Analyseschema 2 validieren.
+Der HTTP-Parent deserialisiert dieses vollständige Modell nicht erneut. Zusätzliche Parser- oder
 Validatorfelder dürfen nicht versehentlich in die API gelangen. Die explizite Abbildung deckt Dokument,
 Capabilities, Parteien, Rollen, Zeiträume, Referenzen, Positionen, Nachlässe/Zuschläge, Steuern, Summen,
 Zahlungsanweisungen, Quelle, technische Darstellung und Laufzeit ab. Nicht verstandene XML-Daten werden nicht
@@ -161,6 +230,35 @@ Nicht-ASCII-Eingaben werden kontrolliert abgewiesen. Prozesse desselben kompromi
 weiterhin außerhalb der Schutzgrenze. Desktop-Installer und -Uninstaller verwenden zur kontrollierten Beendigung
 nur das benannte lokale Desktop-Shutdown-Ereignis.
 
+#### Begrenzte Beobachtung für API-Automatisierungen
+
+Ein Upload mit genau einem Header `X-Einvoice-Observation-Id` aus 32 kleingeschriebenen Hex-Zeichen aktiviert
+einen begrenzten Metadatensatz für diesen Auftrag. Aufnahme und `GET /api/processing-observation` mit derselben
+Kennung verlangen ein tatsächlich geprüftes API-Bearer-Token; Browsercookie, Bootstraptoken oder ein Sourcebetrieb
+ohne konfigurierten API-Key reichen nicht. Ohne Header wird kein Beobachtungsdatensatz aufbewahrt. Der öffentliche
+Healthcheck bleibt unverändert. Kollisionen mit einer noch aufbewahrten Kennung enden vor Eingabeannahme mit
+`409 observation_conflict`; normale Kapazitätsgrenzen bleiben unverändert.
+
+Der Parent bindet eigene Instanz-/Jobkennungen sowie native Prozessidentitäten. Das Ledger enthält keine
+Rechnungspuffer, Rechnungs-/Ergebnishashes, Dateinamen, Pfade, Argumentlisten, Token, Handlewerte oder freien
+Fehlermeldungen. Es wird ausschließlich im RAM geführt: maximal zwei belegte und 16 terminale Datensätze,
+höchstens 16 Ereignisse und 8 KiB serialisierte Daten pro Auftrag. Terminale Datensätze sind höchstens
+120 Sekunden abrufbar; abgelaufene Einträge werden beim nächsten Abruf oder Anlegen aus dem RAM-Ledger entfernt.
+Ein volles Archiv verdrängt sichtbar den ältesten terminalen Datensatz. Aktive oder gesperrte
+Leases werden nicht zeitgesteuert verdrängt. Fehlende oder unbrauchbare Beobachtung beweist keinen Erfolg.
+
+Die Lese-API liefert genau einen angefragten Datensatz, maximal 16 KiB und `Cache-Control: no-store`. Sie erlaubt
+keine Listen, Abfrageparameter, frei wählbaren Prozessziele, Wartezeiten oder Steuerbefehle. Sie verändert weder
+Dienstberechtigungen noch Ressourcenlimits. Beobachtungsfehler dürfen Produktfristen, Rechnungsergebnis und
+Cleanup nicht verändern. Der private IPC-Vertrag bleibt streng und begrenzt; beschädigte Kontrollnachrichten
+werden weiterhin fail-closed behandelt.
+
+Die Zustände unterscheiden Eingabeannahme, unmittelbar bevorstehenden Operationsaufruf, dessen anschließend
+übermittelte Start-/Endzeiten, natives Cleanup, ASGI-Versand und Leasefreigabe. Offene HTTP-Antworten oder ein
+vergangenes Eingabe-ACK beweisen keine aktive Rechnungsverarbeitung. Das vollständige Operationsintervall umfasst
+auch interne Wartezeiten und beweist keine kontinuierliche CPU-Auslastung. Bei hartem Abbruch kann der terminale
+Zeitsatz fehlen; daraus wird weder ein tatsächlicher Funktionsbeginn noch Rechenaktivität im Killmoment abgeleitet.
+
 #### Dienstmodus und Maschinenzustand
 
 Ein vom Backend-Mutex getrennter, globaler Setup-/Uninstall-Mutex serialisiert alle erhöhten Installations-,
@@ -236,13 +334,23 @@ Dieser Bootstrap wird gegen ein zeitlich begrenztes
 URL, Browser-Speicher, Cookie noch normalen Logs. Die Tabellen sind auf 32 ausstehende Bootstraplinks und 128
 aktive Browsersitzungen begrenzt; der jeweils älteste Eintrag wird bei voller Kapazität verdrängt.
 
-SCM-Kommandos steuern Start und Stopp. Vor dem ersten Java-Kindprozess tritt der Dienst einem
-Kill-on-close-Job-Objekt bei, das alle späteren Java-Prozesse bereits bei ihrer Erzeugung erben. Beim Stoppen werden
-Listener und IPC geordnet geschlossen und aktive KoSIT-Prozesse nur innerhalb einer dokumentierten Grenze beendet;
-ein harter Dienstabbruch schließt den Job und beendet den gesamten Kindprozessbaum. Konsolenausgabe und Prüfbericht
-werden bereits beim Lesen durch feste Bytebudgets begrenzt. Die temporäre Rechnungs-XML wird exklusiv angelegt und
-im `finally`-Pfad jeder kontrollierten Ausführung gelöscht. Sie verwendet unter Windows ausdrücklich kein
+SCM-Kommandos steuern Start und Stopp. Der Server schließt zuerst die HTTP-Auftragsannahme und signalisiert
+Upload-, Prozess- und Antwortaufträgen den Abbruch, bevor Uvicorn auf ihre Beendigung wartet. Die neuen
+Rollenkinder erhalten zusätzlich ihre auftragsbezogenen Jobbindungen bereits bei der Erzeugung.
+Der HTTP-Backendprozess hält die einzigen Handles der äußeren Auftragsjobs und der Rollenjobs. Jede Rolle wird
+bereits bei Erzeugung in diese Jobs aufgenommen; der JVM-Prozess gehört zum Job seines gebundenen Launchers.
+Beim Stoppen werden Listener und IPC geordnet geschlossen und alle Auftragsprozesse innerhalb der begrenzten
+Bereinigung beendet. Ein harter Dienstabbruch schließt die Parent-Handles der Kill-on-close-Jobs und beendet
+deren Prozesse. Der neue HTTP-Pfad setzt keinen nachträglichen Selbstbeitritt des SCM-Hosts zu einem Job voraus. Konsolenausgabe und Prüfbericht
+werden bereits beim Lesen durch feste Bytebudgets begrenzt. Die temporäre Rechnungs-XML wird exklusiv angelegt
+und nach bestätigtem Ende aller zugreifenden Prozesse gelöscht. Bei unbestätigtem Prozesscleanup bleiben der
+Auftragsplatz gesperrt und der gebundene Tempkontext zur sicheren Klärung erhalten; Dateien unter einer
+möglicherweise noch aktiven JVM werden nicht vorzeitig gelöscht. Sie verwendet unter Windows ausdrücklich kein
 Delete-on-close, weil der dafür erforderliche Delete-Share-Modus den Datei-Open des Java-Prozesses verhindern kann.
+Ein hartes Ende des Backendprozesses kann deshalb einen geschützten KoSIT-Tempbaum hinterlassen, obwohl die
+Prozessbindung seine Kinder beendet. Die Anwendung behauptet für diesen Fall keine nachträgliche Dateilöschung.
+Eine Bereinigung benötigt den belegten Prozessabschluss und eine Prüfung von Herkunft, Eigentümer, Rechten und
+Links des exakten Tempbaums; fremde oder nicht eindeutig zuordenbare Verzeichnisse werden nicht entfernt.
 Im Dienstmodus wird zuerst der private ProgramData-Elternpfad mit seiner administrativen, service-spezifischen
 DACL erneut verifiziert. Darunter wird der gesamte zufällige KoSIT-Tempbaum atomar mit einer geschützten,
 vererbbaren DACL für Service-SID, `SYSTEM` und Administratoren sowie einem begrenzenden `OWNER RIGHTS`-ACE
@@ -257,8 +365,8 @@ Normale Dienstlogs enthalten weder Tokens, Authorization-Header, Rechnungsbytes 
 ### Pfad- und Dateinamenmanipulation
 
 Upload- und Downloadnamen werden mit `Path(...).name` und einer Zeichen-Whitelist bereinigt. Temporäre
-KoSIT-Dateien bleiben unter einem neu angelegten, zufälligen Tempverzeichnis und werden nach der kontrollierten
-Ausführung entfernt; im Dienstmodus liegt dieser Baum unter dem verifizierten privaten ProgramData-Verzeichnis
+KoSIT-Dateien bleiben unter einem neu angelegten, zufälligen Tempverzeichnis und werden erst nach bestätigtem
+Ende aller zugreifenden Prozesse entfernt; im Dienstmodus liegt dieser Baum unter dem verifizierten privaten ProgramData-Verzeichnis
 und ist bereits ab seiner atomaren Erstellung durch die service-spezifische DACL geschützt.
 
 ### Falsche Validierungsentscheidung
@@ -274,6 +382,7 @@ Ein Prozessfehler ohne validen VARL-Bericht ist kein Rechnungsurteil. Eine vorha
 - netzwerk- oder mehrbenutzerfähige Benutzer-/Rollen-Authentifizierung, Autorisierung oder Mandantentrennung
 - Malware-Scanning beliebiger PDF-Inhalte
 - digitale Signaturprüfung
-- Hardware-Isolation des Java-Prozesses
+- vollständige Betriebssystem-Sandbox, JVM-/Container-Deploymentquoten oder Hardware-Isolation des Java-Prozesses
+- native Workergrenzen bei direkten Bibliotheks-/CLI-Aufrufen außerhalb des HTTP-Managers
 - Schutz gegen einen bereits kompromittierten lokalen Rechner
 - rechtssichere Langzeitarchivierung

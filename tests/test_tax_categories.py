@@ -2,12 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.analyzer import analyze_bytes
 from app.main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _client_lifespan():
+    # Real startup/stop per test; never inherit another client's closed admission.
+    with client:
+        yield
 
 
 def _analyze(path: Path) -> dict:

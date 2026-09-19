@@ -55,7 +55,9 @@ def main() -> None:
         browser_url = _interactive_browser_url(args.host, args.port)
         Timer(1.2, lambda: webbrowser.open(browser_url)).start()
 
-    uvicorn.run("app.main:app", host=args.host, port=args.port, reload=args.reload)
+    # Cancel active requests before lifespan shutdown so the manager can apply
+    # its bounded process-tree cleanup immediately on SIGTERM or reload.
+    uvicorn.run("app.main:app", host=args.host, port=args.port, reload=args.reload, timeout_graceful_shutdown=0)
 
 
 if __name__ == "__main__":

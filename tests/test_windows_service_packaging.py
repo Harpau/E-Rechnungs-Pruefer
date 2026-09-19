@@ -922,7 +922,7 @@ def test_windows_build_signs_owned_binaries_and_both_installers() -> None:
     assert "E-Rechnungs-Pruefer-Oeffnen.exe" in service_entrypoint
 
 
-def test_windows_build_is_bound_to_validated_inno_setup_7_0_2() -> None:
+def test_windows_build_is_bound_to_validated_inno_setup_7_1_0() -> None:
     install_script = _read("scripts/install_inno_setup.ps1")
     build_script = _read("scripts/build_windows.ps1")
     workflows = (
@@ -931,11 +931,11 @@ def test_windows_build_is_bound_to_validated_inno_setup_7_0_2() -> None:
     )
 
     for expected in (
-        'InnoSetupVersion = "7.0.2"',
+        'InnoSetupVersion = "7.1.0"',
         'InstallerFileName = "innosetup-$InnoSetupVersion-x64.exe"',
-        "https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/",
-        "5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1",
-        "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d",
+        "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/",
+        "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f",
+        "d06ebd38f38e3cee60a3c50cc45bd449d77e0bc6a5cabc607ea9886808e4de1a",
         'Join-Path $env:RUNNER_TEMP "inno-setup-$InnoSetupVersion"',
         '"/CURRENTUSER"',
         "Assert-CompilerHash",
@@ -945,9 +945,9 @@ def test_windows_build_is_bound_to_validated_inno_setup_7_0_2() -> None:
     for expected in (
         "[Parameter(Mandatory = $true)]",
         "[string]$InnoSetupCompiler",
-        "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d",
+        "d06ebd38f38e3cee60a3c50cc45bd449d77e0bc6a5cabc607ea9886808e4de1a",
         "Get-FileHash -LiteralPath $Iscc -Algorithm SHA256",
-        "festgeschriebenen Inno Setup 7.0.2 x64",
+        "festgeschriebenen Inno Setup 7.1.0 x64",
     ):
         assert expected in build_script
     assert 'Get-Command "ISCC.exe"' not in build_script
@@ -971,7 +971,7 @@ def test_offline_profile_inventory_is_read_only_bounded_and_version_pinned() -> 
     for forbidden in ("RegLoadAppKeyW", "RegLoadKey", "RegRestoreKey", "reg.exe load"):
         assert forbidden not in scanner
     for expected in (
-        'REGIPY_VERSION = "6.2.1"',
+        'REGIPY_VERSION = "6.3.0"',
         "OFFLINE_HIVE_MAX_BYTES = 256 * 1024 * 1024",
         "FILE_FLAG_OPEN_REPARSE_POINT",
         "FILE_SHARE_READ",
@@ -991,10 +991,8 @@ def test_offline_profile_inventory_is_read_only_bounded_and_version_pinned() -> 
         "len(values) != int(current.values_count)",
     ):
         assert expected in scanner
-    assert "regipy==6.2.1" in build_requirements
-    assert (
-        "regipy==6.2.1 --hash=sha256:b03110e5c4e12385e1ba53c032ccd120c6dcde1b71afb8c3b7aa4717a5a24e43"
-    ) in release_requirements
+    assert "regipy==6.3.0" in build_requirements
+    assert "regipy==6.3.0 --hash=sha256:" in release_requirements
     for expected in ("| Regipy |", "| Construct |", "| Inflection |", "| pytz |"):
         assert expected in third_party
 
@@ -1004,9 +1002,9 @@ def test_windows_ci_builds_and_tests_both_modes() -> None:
     release = _read(".github/workflows/release.yml")
 
     for workflow in (ci, release):
-        assert r".\scripts\test_windows_package.ps1" in workflow
-        assert r".\scripts\test_windows_mode_exclusion.ps1" in workflow
-        assert r".\scripts\test_windows_service_package.ps1" in workflow
+        assert "scripts/test_windows_package.ps1" in workflow
+        assert "scripts/test_windows_mode_exclusion.ps1" in workflow
+        assert "scripts/test_windows_service_package.ps1" in workflow
         assert "-BuildElevatedRecoveryTestInstaller" in workflow
         assert workflow.count("-AllowElevatedRecoveryTestContext") == 1
         assert "*-Windows-x64-Dienst-Setup.exe" in workflow

@@ -26,8 +26,58 @@ flowchart LR
     K --> L
     S --> L
     L --> V[Geschlossenes Analyseschema 2]
-    V --> M[FastAPI / JSON / HTML / PDF / Browser-UI]
+    V --> M[Worker: JSON / HTML / PDF]
+    M --> N[HTTP-Transport und Browser-UI]
 ```
+
+## HTTP-Auftragsgrenze
+
+Der fachliche Ablauf oben findet für HTTP-Aufträge im frischen Python-Worker statt. Der FastAPI-Parent bleibt
+für Header-/Authentifizierungsprüfung, begrenzten Empfang, Kapazität, Prozessbesitz und Transport zuständig:
+
+```mermaid
+flowchart TD
+    H[HTTP / Sicherheitsheader] --> A[Begrenzte Header / bestehende Authentifizierung]
+    A --> U[Requestgrenzen / einer von zwei Plätzen / RAM-Upload]
+    U --> P[Backend-Controller: Prozess- und Jobbesitz]
+    P --> W[Frischer Parser- und Renderer-Worker]
+    P --> S[IPC-Supervisor / KoSIT-Dateibroker]
+    P --> J[Optionaler Java-Launcher / begrenzte JVM]
+    P --> G[macOS: unabhängiger Gruppenwächter]
+    W <-->|Begrenzte Rahmen| S
+    S <-->|Einmalige KoSIT-Anforderung und Rohantwort| J
+    S --> R[Vollständige Ergebnisbytes / Metadaten / Cleanup]
+    R --> P
+    P --> O[HTTP 200 / begrenzter Versand / Platzfreigabe]
+```
+
+`app/upload_ingress.py` definiert Route, erlaubte Formfelder und OpenAPI gemeinsam. `app/http_upload.py` ist eine
+reine ASGI-Schicht ohne konkurrierende Bodyleser. Sie liest vor erfolgreicher Authentifizierung und Platzvergabe
+keinen Body und verwendet keine automatische Multipart-Spooldatei. Der Platz umfasst Upload, Start, Verarbeitung,
+Antwortpuffer, Versand und Cleanup. `/api/xml` gehört zu derselben Kapazität; eine zweite wartende PDF-Semaphore
+existiert nicht. Die zwei Plätze gelten je Backendprozess, nicht für alle Uvicorn-Worker eines Deployments zusammen.
+
+`app/processing/manager.py` ist Eigentümer **aller direkten Rollenkinder** und ihrer Prozess-/Jobhandles bereits
+ab Erzeugung. Der Supervisor erzeugt keine dieser Rollen, sondern vermittelt begrenzte IPC und die feste private
+KoSIT-Dateiablage. Vor Rechnungsbytes müssen erforderliche Rollen ihre Bereitschaft und Limitbindung bestätigen.
+Windows erzeugt Rollen angehalten mit expliziter Job- und Handlebindung; POSIX nutzt exklusive Auftragsgruppen,
+Parent-Tod-Bindungen und auf macOS zusätzlich einen kqueue-/EOF-Wächter mit absoluter Frist. Bei unklarem
+Prozessende wird der Platz gesperrt; es gibt keinen ungeschützten In-Process-Ersatzpfad.
+
+`app/configuration.py` enthält den reinen Settings-Typ und einen geschlossenen, validierten Snapshotvertrag.
+Nur `app/settings.py` lädt im Parent explizit Umgebung und Konfigurationsdateien. Rollen bekommen diesen Snapshot
+und eine begrenzte Umgebung, laden weder `.env` noch Browser-/API-Tokens nach und importieren `app.main` nicht.
+`app/processing/protocol.py` akzeptiert versionierte, längenbegrenzte Rahmen: Steuer-JSON höchstens 16 KiB,
+Binärblöcke höchstens 64 KiB und einen expliziten Endrahmen. Es gibt kein Pickle-/Objektdeserialisierungsprotokoll.
+
+`app/processing/operations.py` besitzt alle vier synchronen Operationen einschließlich Schema-2-Validierung,
+Serialisierung, Jinja-Bericht und ReportLab-PDF. Der Parent validiert nur die kleine feste Ergebnis-Metadatenliste
+und sammelt begrenzte Binärblöcke. Erst nach vollständig bestätigtem Ergebnis und nativer Bereinigung beginnt
+HTTP 200. Der bytegetreue XML-Export bleibt eine Extraktion ohne zusätzliche XML-Umschreibung oder fachliche Prüfung.
+
+Die konkreten Byte-, Zeit- und Speicherprofile stehen im [`Sicherheitsmodell`](SECURITY_MODEL.md#ressourcenverbrauch).
+Sie sind kein vollständiger OS-Sandboxvertrag und schützen direkte Bibliotheks-/CLI-Aufrufe nicht automatisch.
+Native Source-, Container- und eingefrorene Windows-Abnahmen bleiben getrennte Freigabevoraussetzungen.
 
 ## Komponenten
 
@@ -117,7 +167,7 @@ Adapter. Das konkrete Feldmapping ist in [`API_MIGRATION_V2.md`](API_MIGRATION_V
 ### Dokumenttyp, Profil und Rollen
 
 `app/document_types.py` enthält eine unveränderliche Registry der 62 von den gebündelten
-CEN-EN-16931-Validierungsartefakten 1.3.15 verwendeten UNTDID-1001-Codes. Die Auflösung unterscheidet
+CEN-EN-16931-Validierungsartefakten 1.3.16 verwendeten UNTDID-1001-Codes. Die Auflösung unterscheidet
 `known`, `unknown` und `missing`; ein unbekannter Rohcode bleibt erhalten. Für UBL wird zusätzlich geprüft, ob
 der Code mit `Invoice` beziehungsweise `CreditNote` kompatibel ist. Die Version und das Ergebnis werden unter
 `document.type` veröffentlicht.
@@ -161,7 +211,14 @@ Ablehnung kein fehlgeschlagener Verarbeitungslauf. Ein gemeinsamer Status wird b
 
 ### KoSIT
 
-`app/validators/kosit.py` validiert die Konfiguration, startet Java in einem temporären Verzeichnis, liest die von KoSIT serialisierte VARL-Berichtdatei und übernimmt Fehlermeldungen. Eine valide `<rep:assessment>`-Entscheidung ist maßgeblich. Startfehler ohne auswertbaren Bericht sind kein Rechnungsurteil.
+`app/validators/kosit.py` validiert die Konfiguration und interpretiert VARL-Berichte. Im HTTP-Pfad fordert der
+Parser-Worker die offizielle Prüfung über den einmaligen Supervisor-IPC-Aufruf an. `processing/kosit_runtime.py`
+erzeugt feste Javaargumente, schreibt die XML exklusiv in den privaten auftragsgebundenen Tempbaum und sammelt
+begrenzte Konsolenausgaben sowie unveränderte Berichtskandidaten. Der Worker parst die Rohberichte; Parent und
+Supervisor parsen kein Rechnungs-/VARL-XML. Eine valide `<rep:assessment>`-Entscheidung ist maßgeblich, auch bei
+abweichendem Prozesscode oder begrenzter Konsole. Start-/Transportfehler ohne auswertbaren Bericht sind kein
+Rechnungsurteil. Die direkte Bibliotheksschnittstelle bleibt getrennt verfügbar und erhält nicht automatisch die
+HTTP-Prozessgrenzen.
 
 Die für Installation und Windows-Paket zulässigen Artefakte stehen mit SHA-256 in
 `packaging/kosit/components.lock.json`. Der öffentliche Health-Endpunkt übernimmt nur die Versionsangaben aus
@@ -170,7 +227,7 @@ Die für Installation und Windows-Paket zulässigen Artefakte stehen mit SHA-256
 ### API und UI
 
 `app/main.py` bietet Upload-, Analyse-, HTML-/PDF-Bericht-, XML-Export- und Health-Endpunkte.
-`POST /api/analyze` validiert seine Antwort gegen `AnalysisResponse`. HTML und PDF veröffentlichen sechs
+`POST /api/analyze` erhält die im Worker gegen `AnalysisResponse` validierten und serialisierten Antwortbytes. HTML und PDF veröffentlichen sechs
 Schema-2-Header für Version, Syntax, die drei Achsen und den Darstellungsumfang; die beiden früheren
 Statusheader werden nicht mehr ausgegeben. Beide Berichts-Endpunkte verwenden standardmäßig
 `scope=readable`; `scope=complete` ergänzt die technischen Anhänge.
@@ -183,12 +240,12 @@ paginierten PDF-Bericht mit
 eingebetteten Noto-Unicode-Schriften. Vor dem Layout begrenzt der Renderer die Anzahl von Positionen,
 Prüfmeldungen und Hinweisen sowie Einzelwerte, Gesamttext und Zeilenumbrüche deterministisch. Nicht von Noto Sans
 oder Noto Sans SC abgedeckte Zeichen erscheinen als sichtbarer Unicode-Codepunkt. Bei mehr als 200 benötigten
-Seiten wird ein kompakter, gültiger Ersatzbericht erzeugt. PDF-Renderings laufen außerhalb des ASGI-Event-Loops
-und pro Prozess höchstens zweimal parallel. Auch die vorgelagerte Rechnungsanalyse einschließlich einer
-angeforderten KoSIT-Prüfung läuft außerhalb des Event-Loops und wird pro Prozess auf zwei gleichzeitige Analysen
-begrenzt, sodass Healthchecks und weitere lokale Requests während längerer Prüfungen beantwortbar bleiben. Sind
-beide Plätze belegt, antwortet die API sofort mit `503` und einem begrenzten `Retry-After`, statt weitere Arbeit
-hinter möglicherweise bereits abgebrochenen Clientanfragen aufzustauen.
+Seiten wird ein kompakter, gültiger Ersatzbericht erzeugt. Diese bestehende Darstellungsbegrenzung ist von der
+neuen vollständigen Ausgabegrenze getrennt: JSON/HTML höchstens 128 MiB, PDF 64 MiB und XML 25 MiB. Eine
+überschrittene Ausgabegrenze wird als technischer Ressourcenfehler abgewiesen, nicht als erfolgreiches gekürztes
+JSON/XML ausgegeben. Die HTTP-Auftragsgrenze oben hält Analyse und Rendering vom ASGI-Event-Loop fern; bei
+belegten Plätzen antwortet sie vor Bodyempfang mit `503` und begrenztem `Retry-After`. Healthcheck und Oberfläche
+benötigen keinen Rechnungsplatz.
 
 `app/ui_contract.py` bildet aus Anwendungsversion, Analyseschema und den Bytes von HTML, JavaScript und CSS eine
 SHA-256-Revision. Die Startseite ist nicht cachebar und referenziert ausschließlich revisionierte, unveränderlich

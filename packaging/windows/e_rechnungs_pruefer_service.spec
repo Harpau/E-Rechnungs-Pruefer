@@ -36,6 +36,13 @@ hidden_imports = sorted(
     set(
         collect_submodules("uvicorn")
         + [
+            "app.processing.bootstrap",
+            "app.processing.worker",
+            "app.processing.supervisor",
+            "app.processing.operations",
+            "app.processing.native",
+            "app.processing.watchdog",
+            "app.processing.windows",
             "ntsecuritycon",
             "pywintypes",
             "servicemanager",

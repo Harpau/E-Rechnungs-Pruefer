@@ -31,6 +31,10 @@ def _service_adapter_without_scm_registration() -> ERechnungsPrueferService:
 def test_loopback_server_applies_environment_before_import_and_never_changes_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    processing_manager = Mock()
+    processing_module = ModuleType("app.processing.manager")
+    processing_module.manager = processing_manager
+    monkeypatch.setitem(sys.modules, "app.processing.manager", processing_module)
     listener = Mock()
     listener.getsockname.return_value = ("127.0.0.1", 18080)
     reserve = Mock(return_value=(listener, 18080))
@@ -63,8 +67,10 @@ def test_loopback_server_applies_environment_before_import_and_never_changes_por
         access_log=False,
         log_config=None,
         log_level="warning",
+        timeout_graceful_shutdown=0,
     )
     listener.close.assert_called_once_with()
+    processing_manager.shutdown.assert_called_once_with()
 
 
 def test_loopback_reservation_fails_closed_on_conflict(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock
@@ -24,12 +25,15 @@ def test_entrypoint_explains_direct_start_only_for_the_dedicated_exit_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entrypoint = _load_entrypoint()
-    main = Mock(return_value=entrypoint.DIRECT_START_EXIT_CODE)
+    main = Mock(return_value=2)
+    service_module = ModuleType("app.windows_service")
+    service_module.main = main
+    service_module.DIRECT_START_EXIT_CODE = 2
+    monkeypatch.setitem(sys.modules, "app.windows_service", service_module)
     notice = Mock()
-    monkeypatch.setattr(entrypoint, "main", main)
     monkeypatch.setattr(entrypoint, "_show_direct_start_notice", notice)
 
-    assert entrypoint._run([]) == entrypoint.DIRECT_START_EXIT_CODE
+    assert entrypoint._run([]) == 2
     main.assert_called_once_with([])
     notice.assert_called_once_with()
 

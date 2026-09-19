@@ -7,11 +7,11 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$InnoSetupVersion = "7.0.2"
+$InnoSetupVersion = "7.1.0"
 $InstallerFileName = "innosetup-$InnoSetupVersion-x64.exe"
-$InstallerUrl = "https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/$InstallerFileName"
-$ExpectedInstallerSha256 = "5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1"
-$ExpectedCompilerSha256 = "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d"
+$InstallerUrl = "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/$InstallerFileName"
+$ExpectedInstallerSha256 = "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f"
+$ExpectedCompilerSha256 = "d06ebd38f38e3cee60a3c50cc45bd449d77e0bc6a5cabc607ea9886808e4de1a"
 
 if (-not $IsWindows) {
     throw "Inno Setup kann nur unter Windows installiert werden."

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from pypdf import PdfReader
+from pypdf import PdfReader, apply_configuration, get_configuration
+from pypdf.errors import LimitReachedError
+from pypdf.filters import decode_stream_data
+from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NullObject, PdfObject, StreamObject
 
 from .xml_utils import InvoiceInputError, sha256_hex
 
@@ -18,6 +22,90 @@ PREFERRED_EMBEDDED_XML_NAMES = (
     "creditnote.xml",
 )
 MAX_PDF_ATTACHMENTS = 100
+
+
+class ProcessingLimitError(InvoiceInputError):
+    """A known resource budget was exceeded, not an invoice-conformity decision."""
+
+
+@dataclass(frozen=True, slots=True)
+class PdfResourceLimits:
+    structure_stream_bytes: int = 25 * 1024 * 1024
+    page_tree_entries: int = 10_000
+    page_tree_depth: int = 64
+
+    def __post_init__(self) -> None:
+        for value in (self.structure_stream_bytes, self.page_tree_entries, self.page_tree_depth):
+            if type(value) is not int or value <= 0:
+                raise ValueError("PDF-Ressourcenlimits müssen positive ganze Zahlen sein.")
+
+
+def _decoder_configuration(maximum: int) -> dict[str, Any]:
+    if maximum <= 0:
+        raise ProcessingLimitError("Das Größenbudget für eingebettete PDF-Dateien ist ausgeschöpft.")
+    current = get_configuration()
+    names = (
+        "array_based_stream_maximum_output_length",
+        "jbig2_maximum_output_length",
+        "lzw_maximum_output_length",
+        "run_length_maximum_output_length",
+        "zlib_maximum_output_length",
+        "image_maximum_buffer_size",
+    )
+    return {name: min(maximum, getattr(current, name)) for name in names}
+
+
+def _resolved_filter_parameter(value: PdfObject, *, depth: int = 0) -> PdfObject:
+    """Resolve filter metadata under the structural budget, never the remaining output budget."""
+    if depth > 16:
+        raise ProcessingLimitError("Die PDF-Filterparameter sind zu tief verschachtelt.")
+    resolved = value.get_object()
+    if resolved is None:
+        raise InvoiceInputError("Die PDF enthält unvollständige Filterparameter.")
+    value = resolved
+    if isinstance(value, StreamObject):
+        # External JBIG2 decoding is disabled; do not copy or decode a global image stream here.
+        return value
+    if isinstance(value, DictionaryObject):
+        return DictionaryObject({key: _resolved_filter_parameter(item, depth=depth + 1) for key, item in value.items()})
+    if isinstance(value, ArrayObject):
+        return ArrayObject([_resolved_filter_parameter(item, depth=depth + 1) for item in value])
+    return value
+
+
+def _bounded_stream_data(stream: StreamObject, maximum: int) -> bytes:
+    configuration = _decoder_configuration(maximum)  # Reject zero before any decoder invocation.
+    # pypdf 6.19's get_data decodes a whole chain without checking every intermediate.
+    # Its narrow StreamObject/decoder adapter lets us retain each upstream decoder
+    # while checking each stage and resolving lazy metadata under the separate budget.
+    filters = _resolved_filter_parameter(stream.get("/Filter", NullObject()))
+    filter_items = (
+        list(filters) if isinstance(filters, ArrayObject) else ([] if isinstance(filters, NullObject) else [filters])
+    )
+    parameters = _resolved_filter_parameter(stream.get("/DecodeParms", NullObject()))
+    parameter_items = (
+        list(parameters)
+        if isinstance(parameters, ArrayObject)
+        else ([NullObject()] * len(filter_items) if isinstance(parameters, NullObject) else [parameters])
+    )
+    if len(parameter_items) != len(filter_items):
+        raise InvoiceInputError("Die PDF-Filterparameter passen nicht zur Filterkette.")
+    height = _resolved_filter_parameter(stream.get("/Height", NullObject()))
+    data = stream._data
+    for filter_name, parameter in zip(filter_items, parameter_items, strict=True):
+        stage = StreamObject()
+        stage._data = data
+        stage[NameObject("/Filter")] = filter_name
+        stage[NameObject("/DecodeParms")] = parameter
+        if not isinstance(height, NullObject):
+            stage[NameObject("/Height")] = height
+        with apply_configuration(**configuration):
+            data = decode_stream_data(stage)
+        if len(data) > maximum:
+            raise ProcessingLimitError("Ein PDF-Filterschritt überschreitet das zulässige Größenbudget.")
+    if len(data) > maximum:
+        raise ProcessingLimitError("Die eingebettete PDF-Datei überschreitet das zulässige Größenbudget.")
+    return data
 
 
 @dataclass(slots=True)
@@ -73,9 +161,12 @@ def _extract_pdf_xml(
     media_type: str,
     *,
     max_embedded_bytes: int | None = None,
+    resource_limits: PdfResourceLimits | None = None,
 ) -> ExtractedSource:
     try:
         reader = PdfReader(BytesIO(data), strict=False)
+    except LimitReachedError as exc:
+        raise ProcessingLimitError("Die PDF überschreitet ein zulässiges Verarbeitungsbudget.") from exc
     except Exception as exc:
         raise InvoiceInputError(f"Die PDF-Datei konnte nicht gelesen werden: {exc}") from exc
 
@@ -110,22 +201,31 @@ def _extract_pdf_xml(
 
             declared_size = embedded_file.size
             if max_embedded_bytes is not None and declared_size is not None and declared_size > max_embedded_bytes:
-                raise InvoiceInputError(
+                error_type = ProcessingLimitError if resource_limits is not None else InvoiceInputError
+                raise error_type(
                     f"Eine eingebettete {_embedded_file_kind(attachment_name)} "
                     "überschreitet die zulässige Größenbegrenzung."
                 )
 
-            payload = embedded_file.content
+            if resource_limits is None:
+                payload = embedded_file.content
+            else:
+                assert max_embedded_bytes is not None
+                remaining = max_embedded_bytes - total_embedded_bytes
+                # Resolve the stream under the fixed structural budget first. A reduced
+                # attachment budget must not constrain its containing object/XRef stream.
+                stream = embedded_file._embedded_file
+                payload = _bounded_stream_data(stream, remaining)
             if max_embedded_bytes is not None and len(payload) > max_embedded_bytes:
-                raise InvoiceInputError(
+                error_type = ProcessingLimitError if resource_limits is not None else InvoiceInputError
+                raise error_type(
                     f"Eine eingebettete {_embedded_file_kind(attachment_name)} "
                     "überschreitet die zulässige Größenbegrenzung."
                 )
             total_embedded_bytes += len(payload)
             if max_embedded_bytes is not None and total_embedded_bytes > max_embedded_bytes:
-                raise InvoiceInputError(
-                    "Die eingebetteten PDF-Dateien überschreiten zusammen die zulässige Größenbegrenzung."
-                )
+                error_type = ProcessingLimitError if resource_limits is not None else InvoiceInputError
+                raise error_type("Die eingebetteten PDF-Dateien überschreiten zusammen die zulässige Größenbegrenzung.")
 
             is_xml = _looks_like_xml(payload)
             attachment_rows.append(
@@ -140,6 +240,8 @@ def _extract_pdf_xml(
             if priority is not None:
                 invoice_candidates.append((priority, attachment_name, payload, is_xml))
         page_count = len(reader.pages)
+    except LimitReachedError as exc:
+        raise ProcessingLimitError("Die PDF überschreitet ein zulässiges Verarbeitungsbudget.") from exc
     except InvoiceInputError:
         raise
     except Exception as exc:
@@ -189,17 +291,35 @@ def extract_source(
     media_type: str | None = None,
     *,
     max_embedded_bytes: int | None = None,
+    resource_limits: PdfResourceLimits | None = None,
 ) -> ExtractedSource:
     safe_name = Path(filename or "rechnung.xml").name
     detected_type = media_type or "application/octet-stream"
 
     if _looks_like_pdf(data):
-        return _extract_pdf_xml(
-            data,
-            safe_name,
-            detected_type,
-            max_embedded_bytes=max_embedded_bytes,
-        )
+        if resource_limits is not None:
+            if type(max_embedded_bytes) is not int or max_embedded_bytes <= 0:
+                raise ValueError("Begrenzte PDF-Verarbeitung benötigt ein positives Anhangsbudget.")
+            configuration = {
+                **_decoder_configuration(resource_limits.structure_stream_bytes),
+                "maximum_declared_stream_length": resource_limits.structure_stream_bytes,
+                "page_tree_maximum_entries": resource_limits.page_tree_entries,
+                "page_tree_maximum_depth": resource_limits.page_tree_depth,
+                "disable_legacy_handling": True,
+                # Invoice extraction must never start an external image decoder.
+                "jbig2dec_binary": None,
+            }
+            context: AbstractContextManager[Any] = apply_configuration(**configuration)
+        else:
+            context = nullcontext()
+        with context:
+            return _extract_pdf_xml(
+                data,
+                safe_name,
+                detected_type,
+                max_embedded_bytes=max_embedded_bytes,
+                resource_limits=resource_limits,
+            )
 
     if _looks_like_xml(data):
         return ExtractedSource(

@@ -27,12 +27,13 @@ def test_repository_component_lock_is_valid() -> None:
     locked = components._load_lock(PROJECT_ROOT / "packaging/windows/components.lock.json")
     kosit_lock = json.loads((PROJECT_ROOT / "packaging/kosit/components.lock.json").read_text(encoding="utf-8"))
 
-    assert locked["validator"]["version"] == "KoSIT Validator 1.6.2"
-    assert locked["xrechnung"]["version"].endswith("2026-01-31")
-    assert locked["java"]["filename"].endswith("windows_hotspot_21.0.11_10.zip")
+    assert locked["validator"]["version"] == "KoSIT Validator 1.6.3"
+    assert locked["xrechnung"]["version"].endswith("2026-08-31")
+    assert locked["java"]["filename"].endswith("windows_hotspot_25.0.4.1_1.zip")
     assert locked["validator"] == kosit_lock["components"]["validator"]
     assert locked["xrechnung"] == kosit_lock["components"]["xrechnung"]
-    assert kosit_lock["standards"]["cen_en16931"] == "1.3.15"
+    assert kosit_lock["standards"]["cen_en16931"] == "1.3.16"
+    assert kosit_lock["standards"]["xrechnung_schematron"] == "2.6.0"
 
 
 def test_load_lock_rejects_unknown_schema_and_invalid_digest(tmp_path: Path) -> None:
@@ -89,7 +90,7 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
         "workflow_dispatch:",
         "environment: release",
         "id-token: write",
-        "uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43",
+        "uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c",
         "client-id: ${{ secrets.AZURE_CLIENT_ID }}",
         "tenant-id: ${{ secrets.AZURE_TENANT_ID }}",
         "subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}",
@@ -101,7 +102,7 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
         "git cat-file -t $env:GITHUB_REF_NAME",
         "Der Release-Tag muss annotiert sein.",
         "Manuelle Signiertests dürfen nur auf main gestartet werden.",
-        'python-version: "3.13.14"',
+        'python-version: "3.14.7"',
         "python -m pip install --require-hashes --only-binary=:all:",
         "-r packaging/windows/requirements-release.txt",
         "python -m pip install --no-deps --no-build-isolation -e .",
@@ -211,7 +212,7 @@ def test_manual_release_preview_uploads_internal_recovery_installer_separately()
         "mehr als 260 Zeichen",
         "Windows 11 x64",
         "vorherige Patchversion → Zielversion",
-        "Für 2.0.2 sind das",
+        f"Für {(PROJECT_ROOT / 'VERSION').read_text().strip()} sind das",
         "nur bei den jeweils genannten Auslösern",
         "ja/nein",
         "taggenauen Artefakte",
@@ -259,7 +260,7 @@ def test_windows_release_dependencies_are_exactly_pinned_and_hashed() -> None:
 
 
 def test_pypdf_runtime_and_windows_lock_require_patched_version() -> None:
-    minimum = Version("6.15.0")
+    minimum = Version("6.19.0")
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     requirement_files = [
         Requirement(value) for value in project["project"]["dependencies"] if Requirement(value).name.lower() == "pypdf"
@@ -272,6 +273,8 @@ def test_pypdf_runtime_and_windows_lock_require_patched_version() -> None:
 
     assert len(requirement_files) == 2
     assert all(minimum in requirement.specifier for requirement in requirement_files)
+    assert all(Version("6.15.0") not in requirement.specifier for requirement in requirement_files)
+    assert all(Version("6.16.0") not in requirement.specifier for requirement in requirement_files)
     assert all(Version("7.0.0") not in requirement.specifier for requirement in requirement_files)
 
     lock = (PROJECT_ROOT / "packaging/windows/requirements-release.txt").read_text(encoding="utf-8")
@@ -282,7 +285,13 @@ def test_pypdf_runtime_and_windows_lock_require_patched_version() -> None:
     )
     assert match is not None
     assert Version(match.group("version")) >= minimum
-    assert match.group("digest") == "14e001d6504822cb1ca9c7ed9a69bccb320f59b320730f55af804361abe4d5ee"
+    metadata = json.loads(
+        (PROJECT_ROOT / "packaging/windows/requirements-release.txt.metadata.json").read_text(encoding="utf-8")
+    )
+    package = next(item for item in metadata["packages"] if item["name"] == "pypdf")
+    assert package["version"] == match.group("version")
+    assert package["sha256"] == match.group("digest")
+    assert package["filename"] == f"pypdf-{package['version']}-py3-none-any.whl"
 
 
 def test_windows_desktop_package_covers_ui_revision_contract() -> None:
@@ -576,8 +585,8 @@ def test_windows_package_test_callers_confirm_isolation() -> None:
     package_docs = (PROJECT_ROOT / "docs/WINDOWS_PACKAGE.md").read_text(encoding="utf-8")
     release_docs = (PROJECT_ROOT / "docs/RELEASE.md").read_text(encoding="utf-8")
 
-    assert ".\\scripts\\test_windows_package.ps1 -ConfirmIsolatedEnvironment" in ci
-    assert ".\\scripts\\test_windows_package.ps1 -RequireSignature -ConfirmIsolatedEnvironment" in release
+    assert "scripts/test_windows_package.ps1 -ConfirmIsolatedEnvironment" in ci
+    assert "scripts/test_windows_package.ps1 -RequireSignature -ConfirmIsolatedEnvironment" in release
     for documentation in (package_docs, release_docs):
         assert ".\\scripts\\test_windows_package.ps1 -ConfirmIsolatedEnvironment" in documentation
         assert "sauberen, entbehrlichen Windows-VM" in documentation

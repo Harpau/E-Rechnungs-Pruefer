@@ -854,3 +854,30 @@ def test_desktop_mutex_distinguishes_absence_errors_and_close_failure(
     error.return_value = 6
     with pytest.raises(OSError, match="nicht freigegeben"):
         conflicts._desktop_mutex_exists()
+
+
+def test_real_pinned_regipy_reads_synthetic_hive_and_inline_string_without_disk() -> None:
+    """Exercise 6.3's corrected inline REG_SZ decoding with the real parser."""
+    package = pytest.importorskip("regipy", reason="Regipy is part of the native Windows build profile")
+    assert package.__version__ == conflicts.REGIPY_VERSION
+    snapshot = _valid_hive_header()
+    base = conflicts.REGISTRY_HEADER_BYTES
+    root = base + 0x20
+    conflicts.struct.pack_into("<i2sH", snapshot, root, -88, b"nk", 0x24)
+    conflicts.struct.pack_into("<II", snapshot, root + 40, 1, 0x80)
+    conflicts.struct.pack_into("<H", snapshot, root + 76, 4)
+    snapshot[root + 80 : root + 84] = b"ROOT"
+    conflicts.struct.pack_into("<iI", snapshot, base + 0x80, -8, 0x90)
+    conflicts.struct.pack_into("<i2sHIIIHH", snapshot, base + 0x90, -32, b"vk", 4, 0x80000004, 0x00420041, 1, 1, 0)
+    snapshot[base + 0xA8 : base + 0xAC] = b"Demo"
+    original = bytes(snapshot)
+    opened = conflicts._regipy_hive_from_bytes(original)
+    try:
+        assert opened.hive.root.name == "ROOT"
+        values = list(opened.hive.root.get_values(trim_values=False))
+        assert len(values) == 1
+        assert values[0].name == "Demo"
+        assert values[0].value == "AB"
+        assert opened.hive._stream.getvalue() == original
+    finally:
+        opened.hive._stream.close()

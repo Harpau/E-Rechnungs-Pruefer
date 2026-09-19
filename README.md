@@ -29,7 +29,7 @@ Reine Sicht- oder Scan-PDFs ohne eingebettete strukturierte XML werden bewusst n
 - optionale KoSIT-Prüfung mit zuverlässiger Auswertung des VARL-Berichts
 - geschlossenes Analyseschema 2 mit getrennten Achsen für offizielle Konformität, interne Prüfung und
   technischen Verarbeitungsabschluss
-- versionierte Dokumenttypauflösung für 62 UNTDID-1001-Codes aus CEN EN 16931 1.3.15 sowie abgeleitete
+- versionierte Dokumenttypauflösung für 62 UNTDID-1001-Codes aus CEN EN 16931 1.3.16 sowie abgeleitete
   Dokument-, Gläubiger-/Schuldner- und erwartete Zahlungsrollen
 - übersichtliche Rechnungsdarstellung mit 30 wesentlichen Kopffakten, expliziter Rechnungsart sowie getrenntem
   Dokument- und erwartetem Zahlungsfluss
@@ -100,6 +100,16 @@ docker compose up --build
 
 Der Port wird in `compose.yaml` ausschließlich an `127.0.0.1` gebunden. Das lokale `vendor/`-Verzeichnis wird eingebunden, damit eine optionale KoSIT-Installation erhalten bleibt.
 
+Das Laufzeitimage enthält Python, Java und die benötigten Bibliotheken, jedoch keine Shell,
+Paketverwaltung oder Pip. Diagnosebefehle und die optionale Einrichtung werden direkt mit Python gestartet:
+
+```sh
+docker compose exec app python scripts/install_kosit.py
+```
+
+Der Dienstname ist in `compose.yaml` festgelegt. Abhängigkeiten werden durch einen erneuten Image-Build
+aktualisiert. Für die KoSIT-Einrichtung muss das eingebundene `vendor/` für UID 10001 beschreibbar sein.
+
 ## Oberfläche und Berichtsausgaben
 
 - **Prüfbericht JSON** lädt die vollständige Schema-2-Analyse.
@@ -130,6 +140,12 @@ python -m app --reload
 .\.venv\Scripts\Activate.ps1
 python -m app --reload
 ```
+
+Der Start über `python -m app` begrenzt auch den Abbruch laufender Verarbeitung bei Stop oder Reload.
+Wer Uvicorn direkt aufruft, muss dieselbe Einstellung angeben:
+`uvicorn app.main:app --timeout-graceful-shutdown 0`.
+Dadurch werden laufende Requests vor dem Anwendungsshutdown abgebrochen; der Prozessmanager
+wendet anschließend sein begrenztes Cleanupbudget an. Ein unbestätigter Prozessabbruch bleibt ein Fehler.
 
 Vollständige Qualitätsprüfung:
 
@@ -211,8 +227,8 @@ Der Installer:
 Die Anwendung verwendet KoSIT ohne `-p/--print`, liest primär die erzeugte `*-report.xml` und wertet die ausdrückliche VARL-Entscheidung `<rep:accept/>` oder `<rep:reject/>` aus. Java-, JAR-, Konfigurations- und Timeoutfehler werden als „nicht ausgeführt“ und nicht als Rechnungsablehnung ausgewiesen.
 
 Die Sperrdatei [`packaging/kosit/components.lock.json`](packaging/kosit/components.lock.json) legt derzeit
-KoSIT Validator **1.6.2** und die XRechnung-Validator-Konfiguration **2026-01-31** für XRechnung **3.0.2**
-fest. Darin enthalten sind CEN-EN-16931-Regeln **1.3.15** und XRechnung-Schematron **2.5.0**. Installer und
+KoSIT Validator **1.6.3** und die XRechnung-Validator-Konfiguration **2026-08-31** für XRechnung **3.0.2**
+fest. Darin enthalten sind CEN-EN-16931-Regeln **1.3.16** und XRechnung-Schematron **2.6.0**. Installer und
 Windows-Build prüfen die festgelegten SHA-256-Werte; `/api/health` veröffentlicht die Komponentenversionen ohne
 lokale Pfade.
 

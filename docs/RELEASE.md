@@ -33,13 +33,20 @@ Nachweis für den Inhalt des späteren Tag-Builds.
 
 ```sh
 ./scripts/check.sh
-python -m pip_audit --strict .
-python -m pip_audit --strict --disable-pip --require-hashes \
-  -r packaging/windows/requirements-release.txt
+make audit
 ```
 
-Der Projektmodus prüft die in `pyproject.toml` deklarierten Fremdabhängigkeiten, ohne das lokal editierbar
-installierte und nicht auf PyPI veröffentlichte Projekt selbst als externe Distribution zu behandeln.
+`make audit` erfasst die tatsächlich installierten Fremdpakete einschließlich Entwicklungs- und
+Bootstrapwerkzeugen; nur die identitäts- und pfadgeprüfte eigene Editable-Installation wird ausgenommen.
+Zusätzlich wird der Windows-Lock unabhängig auditiert. Der zusätzliche CI-Projektresolveraudit ist kein
+Nachweis über die installierte Entwicklungsumgebung. Die vollständige OS-/Python-Matrix, die nativen
+Lockprofile und der Container-Audit sind in [`DEPENDENCY_MAINTENANCE.md`](DEPENDENCY_MAINTENANCE.md) beschrieben.
+
+Source-Releases und das maßgebliche Quality-Gate verwenden auf Linux x64 CPython 3.14.7 und
+`packaging/python/requirements-source-release.txt` samt Sidecar. Installation mit
+`--require-hashes --only-binary=:all:`, anschließend `--no-deps --no-build-isolation -e .`;
+`dependency_lock.py verify --installed` prüft die exakte Umgebung. Der Build läuft mit `--no-isolation`.
+Nach dem Build werden Inventar und Audit erneut aus derselben Umgebung erstellt.
 
 Die anonymisierten CII-/UBL-Beispiele und die Hybrid-PDF sind durch die Regressionstests abgedeckt. Eine
 zusätzliche manuelle Sichtprüfung ist nur erforderlich, wenn eine Änderung ein visuelles Verhalten einführt,
@@ -47,6 +54,64 @@ das nicht sinnvoll automatisiert prüfbar ist, oder wenn ein konkreter automatis
 erfordert. Reine Parser- und Renderingänderungen mit ausreichenden Regressionstests lösen keine pauschale
 Drei-Formate-Sichtprüfung aus. Dasselbe gilt für KoSIT-Annahme, -Ablehnung und technische Startfehler: Die
 automatisierten Fälle genügen, solange keine neue, nur visuell beurteilbare Darstellung betroffen ist.
+
+### Gate für Upload- und Workergrenzen
+
+Die neue HTTP-Prozessarchitektur benötigt eigene native Nachweise; erfolgreiche Tests einer vorherigen
+Thread-/Java-Integration oder eines anderen Betriebssystems dürfen nicht übernommen werden. Die folgenden
+Prüfungen sind vor ihrer Freigabe offen, bis aktuelle, artefakt- und kontextgebundene Evidence sie bestätigt:
+
+- Source/Wheel und finale Linux-Container je unterstützter Architektur: echte frische Rollenkinder, gesetzte
+  Speicher-/Zeitgrenzen vor Rechnungseingang, Schema 2, HTML/PDF, ursprüngliche XML-Bytes, beide Plätze und
+  Überlast ohne Warteschlange. 25-MiB-Export und begrenzte größere synthetische CII-/UBL-Beispiele kalibrieren
+  zulässige Arbeit; sie beweisen nicht die Verarbeitbarkeit beliebiger Dokumente bis zur Dateigrenze.
+- Gepackte Windows-EXEs sowie installierter Desktop und Dienst unter ihrer tatsächlichen Identität:
+  Rollenstart ohne Tray/SCM-Rekursion, Jobbindung bereits bei Erzeugung, Kaltstart, Service-SID-Tempzugriff,
+  offizielle CII-/UBL-Annahme und -Ablehnung sowie technische Java-/Timeoutfehler ohne erfundenes Rechnungsurteil.
+- Begrenzte synthetische Negativfälle für Timeout, Worker-/Supervisor-/Parentverlust, Startup-Abbruch,
+  Clientdisconnect, Sendetimeout und Shutdown. Alle bekannten Kinder müssen über gebundene Handles/PIDs und
+  Pipe-EOF beendet bestätigt sein; unklarer Zustand sperrt den Platz. Keine Host-DoS-Proben, keine fremden PIDs
+  oder unbegrenzten Lastgeneratoren. Jeder native Testhelfer besitzt einen eigenen äußeren Stop.
+- Reale HTTP-Verbindungen: 413/503/Authfehler vor `100 Continue`, Headergrenzen, Keep-alive nach abgewiesenen
+  Uploads, zwei blockierte Uploads bei weiterhin erreichbarem Healthcheck und Freigabe nach Disconnect.
+  Die Loopbacktests `tests/test_http_transport.py` benötigen eine Umgebung mit erlaubten lokalen Sockets;
+  ihre synthetischen Leases beweisen Transportverhalten, nicht native Workergrenzen.
+- Kontrollierter Stopp schließt vor dem Uvicorn-Drain die Annahme und beendet Aufträge einschließlich
+  Antwortversand und KoSIT-Dateizugriff. Standard-SCM-Wartegrenze: 60 + 15 = 75 Sekunden. Tempcleanup und
+  Wiederanlauf müssen sowohl beim Erfolg als auch bei den begrenzten Abbruchfällen nachgewiesen sein.
+
+PR-/CI-Teilabnahmen verwenden ausschließlich die tatsächlich gebundenen unsigned Artefakte und einen eigenen
+Controllerplan vor Produktmutationen. Signierte Main-/Client-/Reboot-Releaseabnahmen folgen erst nach der
+separaten Gate-/Mergeentscheidung; ein unsigned Server-Runner ersetzt keine signierte Client-Abnahme. Vorhandene
+versiegelte Evidence bleibt unverändert. Offene Dependency-/OS-Befunde und das Nullbefund-Gate bleiben von diesen
+Ressourcengrenzen unabhängig; es entstehen weder Ausnahme noch automatischer Merge-/Tag-/Publikationsschritt.
+
+### Nachweis der installierten Windows-Verarbeitung
+
+Die Paketprobe verwendet ownergebundene Beobachtungsdatensätze nach dem
+[Sicherheitsmodell](SECURITY_MODEL.md#begrenzte-beobachtung-für-api-automatisierungen). Sie liest keine fremden
+Eingabe-Pipes und benötigt dafür kein `PROCESS_DUP_HANDLE`. Ein schneller abgeschlossener Worker kann über
+seine gebundene Historie und bestätigtes Cleanup nachgewiesen werden. Eine frühere Eingabebestätigung oder ein
+offener HTTP-Request reicht nicht als Nachweis fortdauernder Verarbeitung.
+
+Der Healthfall erfasst begrenzt vollständige Anfrageintervalle und bewertet sie gegen die nachträglich
+übermittelten tatsächlichen Operationsintervalle beider Aufträge. Mindestens drei ganze Healthintervalle und
+der vollständige zusätzliche 503-Kapazitätsabruf müssen darin liegen. Langsame, fehlerhafte oder abgebrochene
+Randproben dürfen nicht durch Auswahl schnellerer Proben verschwinden. Fehlende Überlappung bleibt
+`INCONCLUSIVE`; die Testdaten werden nicht adaptiv vergrößert und Worker nicht künstlich angehalten.
+
+Die gezielten Abbrüche belegen einen vollständig angenommenen Auftrag mit bestätigtem unmittelbar
+bevorstehendem Operationsaufruf, zuletzt ohne bekannten Abschluss, und anschließend fristgerechtes Rollenende
+sowie Recovery. Sie beweisen keinen tatsächlichen Funktionsbeginn oder CPU-Aktivität exakt beim Kill.
+Bekannte vorherige Fertigstellung, stale Kontext-/Zeitbindung, unvollständige Rollenidentität oder HTTP-200
+verhindern einen Fault-PASS. Parentverlust kann das letzte Ownerereignis vernichten; fehlende Enddaten werden
+nicht als positive Aktivität interpretiert. Rollen-, Antwort- und Cleanupbelege bleiben getrennt.
+
+Vor der Installation muss `scripts/processing_observation_conformance.py` auf Windows seinen exakt gebundenen
+Pflichtfallkatalog vollständig bestehen. Der Guard prüft jede Setup-/Call-/Teardownphase, keine Skips/XFails,
+die echten nativen Identitäts-/Cleanupbelege sowie aktuellen Quellen- und GitHub-Laufbezug. Ein Exitcode 0 allein
+genügt nicht. Alle drei Paket-Kontexte prüfen dieses Receipt erneut vor ihrer ersten Produktmutation.
+Diese Konformität ist eine Vorbedingung, kein Ersatz für die installierte Desktop-/Dienstprüfung.
 
 ### Analyseschema-2-Gate
 
@@ -120,10 +185,10 @@ $InnoSetupCompiler = .\scripts\install_inno_setup.ps1
     -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
 ```
 
-Die CI- und signierten GitHub-Builds installieren zusätzlich den offiziellen Inno-Setup-7.0.2-x64-Compiler aus
+Die CI- und signierten GitHub-Builds installieren zusätzlich den offiziellen Inno-Setup-7.1.0-x64-Compiler aus
 seinem unveränderlichen Releaseasset, prüfen Installer und Compiler gegen die festgeschriebenen SHA-256-Werte
 und übergeben ausschließlich diesen Compilerpfad an den Windows-Build. Die signierten GitHub-Builds verwenden
-außerdem exakt CPython 3.13.14 und installieren sämtliche Laufzeit-, Test- und Buildabhängigkeiten ausschließlich
+außerdem exakt CPython 3.14.7 und installieren sämtliche Laufzeit-, Test- und Buildabhängigkeiten ausschließlich
 aus `packaging/windows/requirements-release.txt`. Dort sind alle Pakete samt
 transitiven Abhängigkeiten auf die ausgewählten Windows-x64-Wheels und deren SHA-256-Hashes festgelegt. Dadurch
 verwenden manueller Probelauf und späterer Tag-Lauf dieselbe Python-Abhängigkeitsbasis. Der allgemeinere
@@ -132,6 +197,14 @@ Abhängigkeitsbereiche.
 
 Im signierten Vorab-Probelauf werden sämtliche Paket-, Modusausschluss- und Recoverytest-Aufrufe zusätzlich mit
 `-RequireSignature` ausgeführt.
+
+Bereits unsignierte PR-/CI-Paketläufe binden vor dem ersten Installeraufruf den tatsächlich ausgecheckten
+Commit, Run, Attempt, Job, Runner, Installerbytes und Testskripte an einen eigenen Teilplan.
+`acceptance_context.py run-ci` konsumiert den einmaligen Guard unmittelbar vor dem Prozessstart und erhält
+Rohlogs sowie terminale Receipts; jeder Nicht-PASS sperrt den Teil-Lauf. Die vorhandenen Signatur- und
+Kollisionsprüfungen bleiben im Pakettest aktiv. Diese Evidence wird 14 Tage als separates Actions-Artefakt
+bewahrt und ersetzt nicht den nachfolgenden Main-Kandidatenplan oder die Clientabnahme. Details:
+[`acceptance-tooling.md`](acceptance-tooling.md).
 
 Die Pakettests verwenden die echten Produkt-IDs, Dienstnamen, Registry- und Laufzeitpfade. Sie dürfen deshalb nur
 in einer sauberen, entbehrlichen Windows-VM oder unter einer eigenen Testidentität laufen.
@@ -144,8 +217,12 @@ reines, bei einer Dienstdeinstallation erhaltenes ProgramData den Desktopmodus n
 Der zusätzlich unter `build\windows\test-installer` erzeugte und signierte VM-Recovery-Testinstaller ist
 präprozessorseitig der einzige Build, der `/ALLOWELEVATEDTESTCONTEXT=1` unterstützt. Er wird weder nach `dist`
 noch in das normale Windows-Artefakt oder einen GitHub Release übernommen; der produktive Dienst-Installer in
-`dist` enthält diesen Testpfad nicht. Nur ein manueller signierter Vorab-Probelauf auf `main` stellt ihn für
-einen Tag als separates internes Actions-Artefakt bereit.
+`dist` enthält diesen Testpfad nicht. Die unsignierte CI erhält ihn für 14 Tage als separates
+`windows-recovery-test-installer-<Commit>-<Run-ID>-<Versuch>`-Artefakt, auch wenn eine nachfolgende Paketprüfung
+fehlschlägt. Ein manueller signierter Vorab-Probelauf auf `main` stellt die signierte Testdatei für einen Tag
+als separates internes Actions-Artefakt bereit. Beide Artefakte unterliegen den Repository-Zugriffsregeln;
+der separate Name macht sie in einem öffentlichen Repository nicht vertraulich. Die lokale Abnahme prüft
+die erhaltenen Testinstallerbytes gegen Pfad, Größe und SHA-256 des Dienst-Recovery-Kindkontexts.
 Der opt-in Hard-Kill-Lauf erkennt seinen service-only Commit-Checkpoint nur über vollständig geparste, DACL- und
 Transaktions-ID-geprüfte persistente Marker und beendet ausschließlich den exakt von ihm gestarteten
 Setup-Prozessbaum. Ein nicht eindeutig erreichter Checkpoint oder ein anderer als der ausdrücklich angeforderte
@@ -178,11 +255,11 @@ Für KoSIT und XRechnung ist
 
 | Komponente | Festgelegter Stand | SHA-256 |
 |---|---|---|
-| KoSIT Validator | `validator-1.6.2-standalone.jar` / 1.6.2 | `244978514ad48f67c7573acfffc8f4fd73d81feda6f276710033f9913579857e` |
-| XRechnung-Konfiguration | `xrechnung-3.0.2-validator-configuration-2026-01-31.zip` | `6a5a5911a421b25fbc423f62f93f894df7b236f5d73ca4f84bb222a945082704` |
+| KoSIT Validator | `validator-1.6.3-standalone.jar` / 1.6.3 | `799e64befca97d4080e03608c80b85dd5a5ecc5f4ae4f35d1116ec2855b9a7c9` |
+| XRechnung-Konfiguration | `xrechnung-3.0.2-validator-configuration-2026-08-31.zip` | `2530cd107c414511c5d0462ec10f886910395abfca820db82e83d70bf01221a8` |
 
-Die darin ausgewiesenen Standards sind XRechnung 3.0.2, Konfigurationsstand 2026-01-31,
-CEN-EN-16931-Regeln 1.3.15 und XRechnung-Schematron 2.5.0. Dateiname, URL, Version und Hash müssen gemeinsam
+Die darin ausgewiesenen Standards sind XRechnung 3.0.2, Konfigurationsstand 2026-08-31,
+CEN-EN-16931-Regeln 1.3.16 und XRechnung-Schematron 2.6.0. Dateiname, URL, Version und Hash müssen gemeinsam
 aktualisiert werden; `app/component_versions.py`, Health-Antwort, Tests und Dokumenttyp-Registry müssen denselben
 Stand nennen. Ein Hash- oder Versionsunterschied ist ein Releasefehler.
 
@@ -279,8 +356,8 @@ Befund kann durch dokumentierte Einzelentscheidung als nicht blockierend eingest
 Best-Effort-Kompatibilität entsteht keine vollständige Supportzusage.
 
 Unter Windows 11 verbleiben zwei fokussierte Upgrades von der unmittelbar vorher veröffentlichten Patchversion
-derselben Release-Linie. Für 2.0.2 sind das die unveränderten, veröffentlichten und signierten
-2.0.1-Produktinstaller als Baseline auf zwei getrennten Snapshots:
+derselben Release-Linie. Für 2.0.3 sind das die unveränderten, veröffentlichten und signierten
+2.0.2-Produktinstaller als Baseline auf zwei getrennten Snapshots:
 
 1. Beim Desktop-Upgrade bleibt ein Alt-Tab mit warmem Cache geöffnet. Es muss kontrolliert mit
    `403 desktop_session_error` oder `409 ui_version_mismatch` samt Wiederöffnungshinweis enden. Ein neues

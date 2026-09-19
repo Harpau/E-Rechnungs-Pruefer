@@ -283,6 +283,10 @@ def test_show_windows_message_uses_error_icon(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_desktop_server_starts_opens_and_stops(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    processing_manager = Mock()
+    processing_module = ModuleType("app.processing.manager")
+    processing_module.manager = processing_manager
+    monkeypatch.setitem(sys.modules, "app.processing.manager", processing_module)
     listener = Mock()
     fake_uvicorn_server = SimpleNamespace(run=Mock(), should_exit=False)
     config = object()
@@ -317,6 +321,7 @@ def test_desktop_server_starts_opens_and_stops(tmp_path: Path, monkeypatch: pyte
         access_log=False,
         log_config=None,
         log_level="warning",
+        timeout_graceful_shutdown=0,
     )
     assert windows_launcher.os.environ[windows_launcher.DESKTOP_TOKEN_ENV] == "x" * 32
     assert windows_launcher.os.environ[windows_launcher.DESKTOP_PORT_ENV] == "8765"
@@ -330,6 +335,7 @@ def test_desktop_server_starts_opens_and_stops(tmp_path: Path, monkeypatch: pyte
     browser_open.assert_called_once_with(windows_launcher.desktop_bootstrap_url(8765, "x" * 32))
     server.wait()
     server.stop()
+    processing_manager.shutdown.assert_called_once_with()
 
     assert fake_uvicorn_server.should_exit is True
     listener.close.assert_called_once_with()

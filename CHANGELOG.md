@@ -4,6 +4,58 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Begrenzte HTTP-Verarbeitung für 2.0.3
+
+- Die vier Upload-Endpunkte prüfen Header und Authentifizierung vor der Bodyverarbeitung. Genau eine Datei,
+  höchstens 25 MiB und ein zusätzliches Multipart-Budget von 64 KiB sind zulässig; Übergröße endet früh mit
+  `413 upload_limit_error` statt der bisherigen späten 422-Antwort.
+- Zwei Auftragsplätze je Backendprozess umfassen jetzt auch Upload, XML-Export, Ergebnisversand und Cleanup.
+  Überlast wird ohne Warteschlange mit `503` und `Retry-After` abgewiesen. Upload, Verarbeitung und Antwortversand
+  erhalten eigene Fristen; Verbindungsabbrüche lösen die begrenzte Prozessbereinigung aus.
+- HTTP-Rechnungsanalyse, PDF-Extraktion und Berichtrendering laufen in frischen, begrenzten Prozessen. Der Backend-
+  Controller besitzt alle Rollenkinder und ihre Betriebssystembindungen bereits während des Starts. Nur vollständig
+  bestätigte Ergebnisse gelangen als Schema 2, HTML/PDF beziehungsweise byteidentisches XML in die Antwort.
+- pypdf-Dekoder verwenden das verbleibende Anhangsbudget; PDF-Strukturstreams und Seitenbaumknoten besitzen eigene
+  Grenzen. Technische Ressourcenabbrüche werden separat ausgewiesen und gelten nie als offizielle Rechnungsablehnung.
+- Der geschützte KoSIT-Berichtszugriff berücksichtigt die unterschiedlichen Windows-Zeitstempel der Datei-APIs,
+  damit unveränderte Java-Prüfberichte nicht fälschlich als nachträglich verändert zurückgewiesen werden.
+- Für diese neue Prozessarchitektur sind native Plattform-, Frozen-/Installations- und Shutdownabnahmen erforderlich.
+  Diese Änderungen ersetzen keine Sicherheitsupdates und ändern das bestehende Dependency-/Container-Freigabegate nicht.
+- Authentifizierte Automatisierungen können einzelne Aufträge mit `X-Einvoice-Observation-Id` zur begrenzten
+  RAM-Beobachtung markieren und ihren Zustand über `GET /api/processing-observation` abrufen. Die Funktion
+  speichert ausschließlich Prozess-/Zeitmetadaten und erfordert ausdrücklich das API-Bearer-Token.
+- Die Windows-Paketprüfung verwendet diese gebundenen Lebenszyklusnachweise statt fremder Eingabe-Pipe-Handles.
+  Ein vollständiger nativer Pflichtfallkatalog muss vor jeder Paketinstallation bestanden sein. Historische
+  Aktivität, zeitliche Überlappung und gezielte Unterbrechung erhalten getrennte Nachweiskriterien.
+- Die Versanddiagnose erkennt den erfolgreichen ASGI-Abschluss auch dann, wenn Uvicorn gleichzeitig einen
+  regulären Disconnect meldet. Vorzeitige Abbrüche, Sendfehler, Timeout und Cancellation bleiben Fehler;
+  Antwortversand und laufende Verarbeitung haben getrennte Abbruchregeln. Auch Fehlerantworten erhalten
+  den passenden Versandnachweis, und Cancellation gibt den Auftragsplatz erst nach dem erforderlichen Cleanup frei.
+- Normale Windows-Paketfälle benötigen zusätzlich zum externen Empfang einen positiven Versandabschluss des
+  Owners. Widersprüche stoppen die Prüfung vor dem Recovery-Auftrag und erhalten die bisherigen Nachweise.
+
+## 2.0.3 – 2026-09-16
+
+### Sicherheitswartung und Abhängigkeiten
+
+- Laufzeit-, Entwicklungs- und Windows-Buildpakete auf aktuelle kompatible stabile Versionen aktualisiert;
+  insbesondere pypdf 6.19 und HTTPX2/HTTPCore2 2.13 sowie pip 26.2.1 schließen die gemeldeten Auditbefunde.
+- Windows-, Source- und Docker-Builds verwenden vollständige, native und gehashte Paketlisten. Die Audits
+  prüfen auch Entwicklungswerkzeuge sowie tatsächlich installierte plattformabhängige Pakete.
+- Docker trennt Buildwerkzeuge von der Laufzeit: Das finale Image enthält weder Shell noch Pip oder
+  Betriebssystem-Paketmanager. Bibliotheken, Java, Zertifikate und vollständige Herkunftsmetadaten bleiben
+  erhalten; amd64 und arm64 werden einschließlich expliziter KoSIT-Einrichtung nativ geprüft.
+- KoSIT Validator 1.6.3 und XRechnung-Konfiguration 2026-08-31 mit CEN-EN-16931-Regeln 1.3.16 und
+  XRechnung-Schematron 2.6.0 eingebunden. Die CEN-Regeln ordnen die UBL-Dokumenttypen 502 und 503 jetzt
+  der CreditNote-Syntax zu; interne Hinweise und offizielle Regelbefunde berücksichtigen diesen Stand.
+- Windows-Laufzeit und Dockerbasis auf Python 3.14.7 aktualisiert; Quellinstallationen unterstützen weiterhin
+  Python ab 3.11. Java, Installer- und CI-Werkzeuge werden mit verifizierten Versionen und Hashes gebunden.
+- CPython 3.14.7 erhält in Docker und den Windows-Paketen den gezielten Upstream-Sicherheitsfix für
+  CVE-2026-15806: Für HTTPS gespeicherte urllib-Zugangsdaten werden nicht mehr für HTTP verwendet.
+  Private Build-Interpreter, exakte Quell-/Patchhashes und Prüfungen der ausgelieferten Laufzeit sichern den Backport.
+- Abnahme-Kontexte binden Commit, Lauf, Ziel und Artefakte vor Paketmutationen. Nutzerwarte-Kontexte sind
+  120 Minuten gültig; alte oder bereits verbrauchte Kontexte werden zurückgewiesen.
+
 ## 2.0.2 – 2026-08-17
 
 ### Windows-Oberfläche und KoSIT-Ausführung

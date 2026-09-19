@@ -35,12 +35,21 @@ $OpenClient = Join-Path $BundleRoot "E-Rechnungs-Pruefer-Oeffnen.exe"
 $DistRoot = Join-Path $ProjectRoot "dist"
 $PublishBundleRoot = Join-Path $BuildRoot "publish-bundle"
 $TestInstallerRoot = Join-Path $BuildRoot "test-installer"
+$SecurityEvidenceRoot = Join-Path $BuildRoot "security"
+$FrozenRuntimeVerifier = Join-Path $ProjectRoot "packaging\windows\verify_frozen_runtime.py"
 
 if (-not $IsWindows) {
     throw "Das Windows-Paket kann nur unter Windows gebaut werden."
 }
 if (-not [Environment]::Is64BitProcess) {
     throw "Der Build muss mit einem x64-Python-Prozess laufen."
+}
+
+# Verify the private, patched interpreter before removing build output or collecting code.
+# The helper never patches a runtime in verify-runtime mode.
+$RuntimeVerification = & $Python (Join-Path $ProjectRoot "scripts\cpython_security.py") verify-runtime
+if ($LASTEXITCODE -ne 0) {
+    throw "Die private CPython-Laufzeit enthält nicht den verifizierten Sicherheitsbackport."
 }
 
 $AzureSigningValues = @(
@@ -69,6 +78,8 @@ Remove-Item $BuildRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $BundleRoot -ItemType Directory -Force | Out-Null
 New-Item $WorkRoot -ItemType Directory -Force | Out-Null
 New-Item $DistRoot -ItemType Directory -Force | Out-Null
+New-Item $SecurityEvidenceRoot -ItemType Directory -Force | Out-Null
+$RuntimeVerification | Set-Content -LiteralPath (Join-Path $SecurityEvidenceRoot "cpython-runtime.json") -Encoding utf8
 
 & $Python -m PyInstaller `
     --clean `
@@ -106,6 +117,17 @@ foreach ($ExpectedExecutable in @($DesktopExecutable, $ServiceExecutable, $OpenC
     if (-not (Test-Path -LiteralPath $ExpectedExecutable)) {
         throw "Das erwartete PyInstaller-Artefakt wurde nicht erzeugt: $ExpectedExecutable"
     }
+}
+
+# Read all actual frozen PYZ payloads and run the synthetic security regressions
+# before any application binary is signed or included in an installer.
+& $Python $FrozenRuntimeVerifier `
+    --executable $DesktopExecutable `
+    --executable $ServiceExecutable `
+    --executable $OpenClient `
+    --output (Join-Path $SecurityEvidenceRoot "frozen-runtime.json")
+if ($LASTEXITCODE -ne 0) {
+    throw "Der Sicherheitsbackport fehlt in mindestens einem eingefrorenen Windows-Artefakt."
 }
 
 function Resolve-SignTool {
@@ -287,16 +309,16 @@ if ($SigningEnabled) {
     Write-Warning "Keine Signierkonfiguration gesetzt; die Pakete werden für Tests unsigniert gebaut."
 }
 
-$ExpectedIsccSha256 = "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d"
+$ExpectedIsccSha256 = "d06ebd38f38e3cee60a3c50cc45bd449d77e0bc6a5cabc607ea9886808e4de1a"
 $Iscc = [System.IO.Path]::GetFullPath($InnoSetupCompiler)
 if (-not (Test-Path -LiteralPath $Iscc -PathType Leaf)) {
-    throw "Der festgeschriebene Inno-Setup-7.0.2-Compiler wurde nicht gefunden: $Iscc"
+    throw "Der festgeschriebene Inno-Setup-7.1.0-Compiler wurde nicht gefunden: $Iscc"
 }
 $ActualIsccSha256 = (Get-FileHash -LiteralPath $Iscc -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($ActualIsccSha256 -ne $ExpectedIsccSha256) {
-    throw "Der angegebene Compiler entspricht nicht dem festgeschriebenen Inno Setup 7.0.2 x64: $Iscc"
+    throw "Der angegebene Compiler entspricht nicht dem festgeschriebenen Inno Setup 7.1.0 x64: $Iscc"
 }
-Write-Host "Inno Setup 7.0.2 x64: $Iscc (SHA-256 $ActualIsccSha256)"
+Write-Host "Inno Setup 7.1.0 x64: $Iscc (SHA-256 $ActualIsccSha256)"
 
 & $Iscc `
     "/DAppVersion=$Version" `

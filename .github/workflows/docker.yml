@@ -1,0 +1,440 @@
+name: Docker validation
+
+on:
+  workflow_call:
+    inputs:
+      retain_image:
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      retain_image:
+        description: "Geprüfte Images 14 Tage als Artefakte erhalten"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    name: Native Docker ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            trivy_asset: 64bit
+            trivy_sha256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            trivy_asset: ARM64
+            trivy_sha256: b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: Prepare only locked public KoSIT components
+        run: |
+          mkdir -p .cache/docker-evidence .cache/kosit-downloads vendor/kosit/validator
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          from scripts.install_kosit import download, load_lock, safe_extract, verify_locked_digest
+          lock = load_lock(Path("packaging/kosit/components.lock.json"))
+          cache = Path(".cache/kosit-downloads")
+          for name, component in lock["components"].items():
+              target = cache / component["filename"]
+              download(component["url"], target)
+              verify_locked_digest(target, component["sha256"])
+              if name == "validator":
+                  shutil.copy2(target, Path("vendor/kosit/validator") / target.name)
+              else:
+                  safe_extract(target, Path("vendor/kosit/xrechnung"))
+          Path(".cache/docker-evidence/config-archive-name.txt").write_text(lock["components"]["xrechnung"]["filename"])
+          PY
+      - name: Build final image once
+        id: build
+        run: |
+          docker build --pull --platform linux/${{ matrix.arch }} --build-arg TARGETARCH=${{ matrix.arch }} \
+            --iidfile .cache/docker-evidence/image-id.txt --tag e-rechnung-pruefer:validated-${{ matrix.arch }} .
+          image_id=$(cat .cache/docker-evidence/image-id.txt)
+          docker image inspect "$image_id" > .cache/docker-evidence/image-inspect.json
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          evidence = Path(".cache/docker-evidence")
+          image = json.loads((evidence / "image-inspect.json").read_text())[0]
+          if image["Architecture"] != "${{ matrix.arch }}" or image["Os"] != "linux" or image["Config"]["User"] != "appuser":
+              raise SystemExit("Final image architecture, OS or non-root user is wrong")
+          binding = {"image_id": image["Id"], "architecture": image["Architecture"],
+                     "commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+                     "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "job": os.environ["GITHUB_JOB"],
+                     "runner": os.environ["RUNNER_NAME"]}
+          (evidence / "build-binding.json").write_text(json.dumps(binding, indent=2))
+          PY
+      - name: Start the exact image without external networking
+        id: runtime
+        run: |
+          config_archive=$(cat .cache/docker-evidence/config-archive-name.txt)
+          container_id=$(docker run --detach --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+            --mount type=bind,source="$PWD/vendor/kosit",target=/app/vendor/kosit,readonly \
+            --mount type=bind,source="$PWD/.cache/kosit-downloads",target=/locked-components,readonly \
+            --env KOSIT_ENABLED=true --env KOSIT_JAVA_BIN=/usr/bin/java \
+            --env KOSIT_TIMEOUT_SECONDS=120 \
+            '${{ steps.build.outputs.image_id }}')
+          echo "container_id=$container_id" >> "$GITHUB_OUTPUT"
+          echo "config_archive=$config_archive" >> "$GITHUB_OUTPUT"
+          docker inspect "$container_id" > .cache/docker-evidence/container-inspect.json
+          inspect_sha256=$(python -c "import hashlib; from pathlib import Path; print(hashlib.sha256(Path('.cache/docker-evidence/container-inspect.json').read_bytes()).hexdigest())")
+          docker exec "$container_id" python scripts/check_container_mounts.py capture-container \
+            --container-id "$container_id" --image-id '${{ steps.build.outputs.image_id }}' \
+            --inspect-sha256 "$inspect_sha256" > .cache/docker-evidence/engine-container-facts.json
+          # Only lstat and public mount metadata are read; no host file contents or mutations.
+          sudo "$(command -v python)" scripts/check_container_mounts.py capture-host \
+            --inspect .cache/docker-evidence/container-inspect.json \
+            --container-id "$container_id" --image-id '${{ steps.build.outputs.image_id }}' \
+            > .cache/docker-evidence/engine-host-facts.json
+          python scripts/check_container_mounts.py check \
+            --inspect .cache/docker-evidence/container-inspect.json \
+            --host-facts .cache/docker-evidence/engine-host-facts.json \
+            --container-facts .cache/docker-evidence/engine-container-facts.json \
+            --container-id "$container_id" --image-id '${{ steps.build.outputs.image_id }}' \
+            --output .cache/docker-evidence/engine-network-mounts.json
+      - name: Capture complete final-image Python, OS and Java inventories
+        if: always() && steps.runtime.outcome == 'success'
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          docker exec "$container_id" python scripts/dependency_audit.py capture \
+            --lock packaging/docker/requirements-runtime-${{ matrix.arch }}.txt --output /tmp/python-inventory.json
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/python-inventory.json').read_text())" > .cache/docker-evidence/python-inventory.json
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/var/lib/dpkg/status').read_text())" > .cache/docker-evidence/dpkg-status.txt
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/etc/os-release').read_text())" > .cache/docker-evidence/os-release.txt
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/usr/share/e-rechnung-pruefer/runtime-rootfs-manifest.json').read_text())" > .cache/docker-evidence/runtime-rootfs-manifest.json
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/usr/share/e-rechnung-pruefer/builder-inventory.json').read_text())" > .cache/docker-evidence/builder-inventory.json
+          docker exec "$container_id" java -version > .cache/docker-evidence/java-version.txt 2>&1
+      - name: Verify retained runtime bytes against their build manifest
+        if: always() && steps.runtime.outcome == 'success'
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          status=0
+          # This process only inventories the read-only filesystem; functional probes retain UID 10001.
+          docker exec --user 0 "$container_id" python scripts/check_container_coverage.py verify-payload \
+            --manifest /usr/share/e-rechnung-pruefer/runtime-rootfs-manifest.json --root / \
+            --output /tmp/runtime-payload-check.json || status=$?
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/runtime-payload-check.json').read_text())" > .cache/docker-evidence/runtime-payload-check.json
+          exit "$status"
+      - name: Verify non-root runtime, certificates, DNS, timezone and native rendering
+        if: always() && steps.runtime.outcome == 'success'
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          status=0
+          docker exec "$container_id" python scripts/test_container_runtime.py --output /tmp/runtime-smoke.json || status=$?
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/runtime-smoke.json').read_text())" > .cache/docker-evidence/runtime-smoke.json
+          exit "$status"
+      - name: Exercise explicit KoSIT HTTPS setup in the exact final image
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          # Only this explicit setup container has networking. No invoice or host data is mounted.
+          # The production installer verifies both downloaded public component hashes.
+          docker run --name einvoice-setup-${{ matrix.arch }} --cap-drop ALL --security-opt no-new-privileges \
+            '${{ steps.build.outputs.image_id }}' python scripts/install_kosit.py \
+            > .cache/docker-evidence/kosit-network-setup.log 2>&1
+          docker inspect einvoice-setup-${{ matrix.arch }} > .cache/docker-evidence/setup-container-inspect.json
+          docker cp einvoice-setup-${{ matrix.arch }}:/app/.env.kosit .cache/docker-evidence/setup.env.kosit
+          docker rm einvoice-setup-${{ matrix.arch }}
+      - name: Real HTTP analysis, byte-exact XML and rendered PDF smoke
+        if: always() && steps.runtime.outcome == 'success'
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          capture_backend_memory() {
+            docker exec "$container_id" python -c '
+          from pathlib import Path
+          fields = ("Name", "Pid", "PPid", "VmPeak", "VmSize", "VmHWM", "VmRSS", "Threads")
+          values = {line.partition(":")[0]: line for line in Path("/proc/1/status").read_text().splitlines() if line.partition(":")[0] in fields}
+          if set(values) != set(fields) or values["Pid"].partition(":")[2].strip() != "1":
+              raise SystemExit("Incomplete bound backend memory inventory")
+          print("\n".join(values[field] for field in fields))
+          '
+          }
+          status=0
+          evidence_status=0
+          # This is the actual PID-1 HTTP backend, not the separate test harness.
+          # /proc reports virtual and resident memory separately, in kernel kB.
+          capture_backend_memory > .cache/docker-evidence/backend-memory-before.txt || evidence_status=$?
+          docker exec "$container_id" python scripts/test_container.py --expect-kosit --output /tmp/http-smoke.json || status=$?
+          capture_backend_memory > .cache/docker-evidence/backend-memory-after.txt || evidence_status=$?
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/http-smoke.json').read_text())" > .cache/docker-evidence/http-smoke.json || evidence_status=$?
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          exit "$evidence_status"
+      - name: Real bound KoSIT acceptance, rejection and technical-failure smoke
+        if: always() && steps.runtime.outcome == 'success'
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          status=0
+          docker exec "$container_id" python scripts/test_kosit_components.py --vendor-root /app/vendor/kosit \
+            --java /usr/bin/java --config-archive '/locked-components/${{ steps.runtime.outputs.config_archive }}' \
+            --output /tmp/kosit-smoke.json || status=$?
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/kosit-smoke.json').read_text())" > .cache/docker-evidence/kosit-smoke.json
+          exit "$status"
+      - name: Calibrate real Java through the bounded processing manager
+        if: always() && steps.runtime.outcome == 'success'
+        timeout-minutes: 7
+        shell: bash
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          docker exec "$container_id" python -c "from pathlib import Path; Path('/tmp/processing-kosit-evidence').mkdir(mode=0o700)"
+          status=0
+          docker exec "$container_id" python scripts/processing_kosit_probe.py \
+            --vendor-root /app/vendor/kosit --java /usr/bin/java \
+            --config-archive '/locked-components/${{ steps.runtime.outputs.config_archive }}' \
+            --output /tmp/processing-kosit-evidence/catalog.json \
+            > .cache/docker-evidence/processing-kosit.stdout.txt \
+            2> .cache/docker-evidence/processing-kosit.stderr.txt || status=$?
+          docker exec "$container_id" python -c '
+          import sys, tarfile
+          with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+              archive.add("/tmp/processing-kosit-evidence", arcname="processing-kosit-evidence")
+          ' > .cache/docker-evidence/processing-kosit-raw.tar \
+            2> .cache/docker-evidence/processing-kosit-archive.stderr.txt || status=1
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/processing-kosit-evidence/catalog.json').read_text())" \
+            > .cache/docker-evidence/processing-kosit.json \
+            2> .cache/docker-evidence/processing-kosit-json.stderr.txt || status=1
+          exit "$status"
+      - name: Complete bounded native processing catalog in the exact final image
+        if: always() && steps.runtime.outcome == 'success'
+        timeout-minutes: 7
+        shell: bash
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          # Six fixed cases have independent 15/60-second outer deadlines;
+          # the step also has a fixed outer ceiling. Raw synthetic outputs use
+          # the existing 256-MiB tmpfs (normally less than 32 MiB in total).
+          docker exec "$container_id" python -c "from pathlib import Path; Path('/tmp/processing-smoke-evidence').mkdir(mode=0o700)"
+          status=0
+          docker exec "$container_id" python scripts/processing_smoke.py \
+            --case small --case xml_25mib --case cii_large --case ubl_large --case hybrid_pdf --case parallel \
+            --output /tmp/processing-smoke-evidence/catalog.json \
+            > .cache/docker-evidence/processing-smoke.stdout.txt \
+            2> .cache/docker-evidence/processing-smoke.stderr.txt || status=$?
+          # Docker's archive API cannot read tmpfs. Preserve its complete raw
+          # tree as a stdlib stream, even after a failed case, without unpacking.
+          docker exec "$container_id" python -c '
+          import sys, tarfile
+          with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+              archive.add("/tmp/processing-smoke-evidence", arcname="processing-smoke-evidence")
+          ' > .cache/docker-evidence/processing-smoke-raw.tar \
+            2> .cache/docker-evidence/processing-smoke-archive.stderr.txt || status=1
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/processing-smoke-evidence/catalog.json').read_text())" \
+            > .cache/docker-evidence/processing-smoke.json \
+            2> .cache/docker-evidence/processing-smoke-json.stderr.txt || status=1
+          exit "$status"
+      - name: Active processing cancellation and role-death catalog in the exact final image
+        if: always() && steps.runtime.outcome == 'success'
+        timeout-minutes: 7
+        shell: bash
+        run: |
+          container_id='${{ steps.runtime.outputs.container_id }}'
+          docker exec "$container_id" python -c "from pathlib import Path; Path('/tmp/processing-lifecycle-evidence').mkdir(mode=0o700)"
+          status=0
+          docker exec "$container_id" python scripts/processing_lifecycle_probe.py \
+            --output /tmp/processing-lifecycle-evidence/catalog.json \
+            > .cache/docker-evidence/processing-lifecycle.stdout.txt \
+            2> .cache/docker-evidence/processing-lifecycle.stderr.txt || status=$?
+          docker exec "$container_id" python -c '
+          import sys, tarfile
+          with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+              archive.add("/tmp/processing-lifecycle-evidence", arcname="processing-lifecycle-evidence")
+          ' > .cache/docker-evidence/processing-lifecycle-raw.tar \
+            2> .cache/docker-evidence/processing-lifecycle-archive.stderr.txt || status=1
+          docker exec "$container_id" python -c "from pathlib import Path; print(Path('/tmp/processing-lifecycle-evidence/catalog.json').read_text())" \
+            > .cache/docker-evidence/processing-lifecycle.json \
+            2> .cache/docker-evidence/processing-lifecycle-json.stderr.txt || status=1
+          exit "$status"
+      - name: Fetch hash-pinned vulnerability scanner
+        id: scanner
+        if: always() && steps.build.outcome == 'success'
+        env:
+          TRIVY_ARCH: ${{ matrix.trivy_asset }}
+          TRIVY_SHA256: ${{ matrix.trivy_sha256 }}
+        run: |
+          mkdir -p .cache/trivy-bin
+          curl --fail --location --retry 3 \
+            "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-${TRIVY_ARCH}.tar.gz" \
+            --output .cache/trivy.tar.gz
+          echo "$TRIVY_SHA256  .cache/trivy.tar.gz" | sha256sum --check
+          tar -xzf .cache/trivy.tar.gz -C .cache/trivy-bin trivy
+          .cache/trivy-bin/trivy --version > .cache/docker-evidence/trivy-version.txt
+      - name: Audit final-image OS, Java runtime and Python libraries without exclusions
+        if: always() && steps.scanner.outcome == 'success'
+        run: |
+          .cache/trivy-bin/trivy image --image-src docker --scanners vuln --ignorefile /dev/null --list-all-pkgs \
+            --ignore-unfixed=false --exit-code 1 --format json --output .cache/docker-evidence/trivy-image.json \
+            '${{ steps.build.outputs.image_id }}'
+      - name: Audit locked KoSIT Java libraries without exclusions
+        if: always() && steps.scanner.outcome == 'success'
+        run: |
+          .cache/trivy-bin/trivy rootfs --scanners vuln --ignorefile /dev/null --ignore-unfixed=false --list-all-pkgs \
+            --exit-code 1 --format json --output .cache/docker-evidence/trivy-kosit.json vendor/kosit
+      - name: Require complete retained OS and Python scan coverage
+        if: always() && steps.scanner.outcome == 'success'
+        run: |
+          python scripts/check_container_coverage.py check \
+            --manifest .cache/docker-evidence/runtime-rootfs-manifest.json \
+            --trivy-image .cache/docker-evidence/trivy-image.json \
+            --inventory .cache/docker-evidence/python-inventory.json \
+            --output .cache/docker-evidence/runtime-scan-coverage.json
+      - name: Require actual OS, Java runtime and shaded-JAR scan coverage
+        if: always() && steps.scanner.outcome == 'success'
+        run: |
+          python - <<'PY'
+          import json
+          import zipfile
+          from pathlib import Path
+          evidence = Path(".cache/docker-evidence")
+          image = json.loads((evidence / "trivy-image.json").read_text())
+          java = json.loads((evidence / "trivy-kosit.json").read_text())
+          os_packages = [p for r in image.get("Results", []) if r.get("Class") == "os-pkgs" for p in r.get("Packages", [])]
+          if not os_packages or not any(p["Name"].startswith("openjdk-21-") for p in os_packages):
+              raise SystemExit("Image scan did not inventory the OS and Java runtime")
+          scanned = {(p["Name"], p["Version"]) for r in java.get("Results", []) for p in r.get("Packages", [])}
+          lock = json.loads(Path("packaging/kosit/components.lock.json").read_text())
+          jar = Path("vendor/kosit/validator") / lock["components"]["validator"]["filename"]
+          expected = set()
+          with zipfile.ZipFile(jar) as archive:
+              for name in archive.namelist():
+                  if name.startswith("META-INF/maven/") and name.endswith("/pom.properties"):
+                      properties = dict(line.split("=", 1) for line in archive.read(name).decode().splitlines()
+                                        if "=" in line and not line.startswith("#"))
+                      expected.add((properties["groupId"] + ":" + properties["artifactId"], properties["version"]))
+          if not expected or not expected <= scanned:
+              raise SystemExit(f"Java inventory missing from vulnerability scan: {sorted(expected - scanned)}")
+          (evidence / "java-inventory-coverage.json").write_text(json.dumps({"passed": True, "maven_components": sorted(expected)}, indent=2))
+          PY
+      - name: Preserve exactly the tested image
+        if: success() && inputs.retain_image
+        shell: bash
+        run: |
+          docker image save '${{ steps.build.outputs.image_id }}' | gzip > .cache/docker-evidence/image-${{ matrix.arch }}.tar.gz
+          sha256sum .cache/docker-evidence/image-${{ matrix.arch }}.tar.gz > .cache/docker-evidence/image-${{ matrix.arch }}.tar.gz.sha256
+      - name: Preserve container diagnostics
+        if: always() && steps.runtime.outputs.container_id != ''
+        run: |
+          docker logs '${{ steps.runtime.outputs.container_id }}' > .cache/docker-evidence/container.log 2>&1
+          docker inspect '${{ steps.runtime.outputs.container_id }}' > .cache/docker-evidence/container-final-inspect.json
+      - name: Stop the successfully tested ephemeral process
+        if: success() && steps.runtime.outputs.container_id != ''
+        run: docker stop '${{ steps.runtime.outputs.container_id }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: docker-evidence-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .cache/docker-evidence/
+            !.cache/docker-evidence/*.tar.gz
+          retention-days: 14
+          if-no-files-found: error
+          include-hidden-files: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: success() && inputs.retain_image
+        with:
+          name: docker-image-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .cache/docker-evidence/image-${{ matrix.arch }}.tar.gz
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+          include-hidden-files: true
+
+  audit:
+    name: Audit exact Docker Python inventories
+    needs: docker
+    if: always() && !cancelled()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: Install the locked source auditor
+        id: auditor
+        run: |
+          mkdir -p audit-evidence
+          python -m venv "$RUNNER_TEMP/einvoice-docker-auditor"
+          source "$RUNNER_TEMP/einvoice-docker-auditor/bin/activate"
+          python -m pip install --force-reinstall --require-hashes --only-binary=:all: -r packaging/python/requirements-source-release.txt
+          echo "$RUNNER_TEMP/einvoice-docker-auditor/bin" >> "$GITHUB_PATH"
+      - name: Capture the complete independent auditor inventory
+        id: auditor_inventory
+        if: always() && steps.auditor.outcome == 'success'
+        run: |
+          python scripts/dependency_audit.py capture --output audit-evidence/source-auditor-inventory.json \
+            --lock packaging/python/requirements-source-release.txt
+      - name: Verify native auditor wheels and both Docker lock profiles
+        if: always() && steps.auditor_inventory.outcome == 'success'
+        run: |
+          python scripts/dependency_lock.py verify --lock packaging/python/requirements-source-release.txt --installed
+          python scripts/dependency_lock.py check --lock packaging/docker/requirements-linux-amd64.txt
+          python scripts/dependency_lock.py check --lock packaging/docker/requirements-linux-arm64.txt
+      - name: Audit the auditor independently of both image results
+        if: always() && steps.auditor_inventory.outcome == 'success'
+        run: |
+          python scripts/dependency_audit.py audit --inventory audit-evidence/source-auditor-inventory.json \
+            --output audit-evidence/source-auditor-audit.json
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: always() && steps.auditor_inventory.outcome == 'success'
+        id: image_evidence
+        with:
+          pattern: docker-evidence-*-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: docker-evidence
+      - name: Audit every native final-image inventory
+        if: always() && steps.image_evidence.outcome == 'success' && steps.auditor_inventory.outcome == 'success'
+        run: |
+          mkdir -p audit-evidence
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.dependency_audit import compare_lock, validate_inventory
+          from scripts.docker_runtime_lock import check_runtime_lock, verify_runtime_inventory
+          for arch in ("amd64", "arm64"):
+              parent = Path(f"packaging/docker/requirements-linux-{arch}.txt")
+              runtime = Path(f"packaging/docker/requirements-runtime-{arch}.txt")
+              metadata = check_runtime_lock(runtime, parent, Path.cwd())
+              evidence = Path(f"docker-evidence/docker-evidence-{arch}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}")
+              inventory = json.loads((evidence / "python-inventory.json").read_text())
+              validate_inventory(inventory)
+              verify_runtime_inventory(metadata, inventory)
+              builder = json.loads((evidence / "builder-inventory.json").read_text())
+              validate_inventory(builder)
+              compare_lock(builder, Path("packaging/docker/requirements-builder.txt"))
+              if builder.get("excluded_editable") is not None:
+                  raise SystemExit("Unexpected editable builder distribution")
+          PY
+          result=0
+          for arch in amd64 arm64; do
+            python scripts/dependency_audit.py audit \
+              --inventory "docker-evidence/docker-evidence-${arch}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/python-inventory.json" \
+              --output "audit-evidence/pip-audit-${arch}.json" || result=1
+            python scripts/dependency_audit.py audit \
+              --inventory "docker-evidence/docker-evidence-${arch}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/builder-inventory.json" \
+              --output "audit-evidence/builder-pip-audit-${arch}.json" || result=1
+          done
+          exit "$result"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: docker-python-audits-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: audit-evidence/
+          retention-days: 14
+          if-no-files-found: error

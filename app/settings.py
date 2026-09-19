@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass
 from pathlib import Path
+
+from .configuration import Settings as Settings
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -20,10 +21,6 @@ def _load_env_file(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key:
             os.environ.setdefault(key, value)
-
-
-for _env_name in (".env", ".env.kosit"):
-    _load_env_file(PROJECT_ROOT / _env_name)
 
 
 def _resolve_path(value: str) -> Path:
@@ -116,28 +113,29 @@ def _discover_repositories(scenarios: tuple[Path, ...]) -> tuple[Path, ...]:
     return tuple(repositories)
 
 
-_JAR_FROM_ENV = os.getenv("KOSIT_VALIDATOR_JAR")
-_SCENARIOS_FROM_ENV = os.getenv("KOSIT_SCENARIOS")
-_REPOSITORIES_FROM_ENV = os.getenv("KOSIT_REPOSITORIES")
-_DEFAULT_SCENARIOS = _split_paths(_SCENARIOS_FROM_ENV) if _SCENARIOS_FROM_ENV else _discover_scenarios()
-
-
-@dataclass(frozen=True, slots=True)
-class Settings:
-    max_upload_bytes: int = _positive_int_env("MAX_UPLOAD_BYTES", 25 * 1024 * 1024)
-    max_technical_rows: int = _positive_int_env("MAX_TECHNICAL_ROWS", 100_000)
-    max_xml_structure_items: int = _positive_int_env("MAX_XML_STRUCTURE_ITEMS", 100_000)
-    max_technical_seconds: float = _positive_float_env("MAX_TECHNICAL_SECONDS", 5.0)
-    kosit_enabled: bool = _bool_env("KOSIT_ENABLED", True)
-    kosit_java_bin: str = os.getenv("KOSIT_JAVA_BIN", _discover_java_bin())
-    kosit_validator_jar: Path | None = _resolve_path(_JAR_FROM_ENV) if _JAR_FROM_ENV else _discover_validator_jar()
-    kosit_scenarios: tuple[Path, ...] = _DEFAULT_SCENARIOS
-    kosit_repositories: tuple[Path, ...] = (
-        _split_paths(_REPOSITORIES_FROM_ENV) if _REPOSITORIES_FROM_ENV else _discover_repositories(_DEFAULT_SCENARIOS)
+def load_settings(*, load_env_files: bool = True) -> Settings:
+    """Explicit application loader; worker code imports only ``configuration``."""
+    if load_env_files:
+        for env_name in (".env", ".env.kosit"):
+            _load_env_file(PROJECT_ROOT / env_name)
+    jar = os.getenv("KOSIT_VALIDATOR_JAR")
+    scenarios_env = os.getenv("KOSIT_SCENARIOS")
+    repositories_env = os.getenv("KOSIT_REPOSITORIES")
+    scenarios = _split_paths(scenarios_env) if scenarios_env else _discover_scenarios()
+    return Settings(
+        max_upload_bytes=_positive_int_env("MAX_UPLOAD_BYTES", 25 * 1024 * 1024),
+        max_technical_rows=_positive_int_env("MAX_TECHNICAL_ROWS", 100_000),
+        max_xml_structure_items=_positive_int_env("MAX_XML_STRUCTURE_ITEMS", 100_000),
+        max_technical_seconds=_positive_float_env("MAX_TECHNICAL_SECONDS", 5.0),
+        kosit_enabled=_bool_env("KOSIT_ENABLED", True),
+        kosit_java_bin=os.getenv("KOSIT_JAVA_BIN", _discover_java_bin()),
+        kosit_validator_jar=_resolve_path(jar) if jar else _discover_validator_jar(),
+        kosit_scenarios=scenarios,
+        kosit_repositories=_split_paths(repositories_env) if repositories_env else _discover_repositories(scenarios),
+        kosit_timeout_seconds=int(os.getenv("KOSIT_TIMEOUT_SECONDS", "60")),
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "8080")),
     )
-    kosit_timeout_seconds: int = int(os.getenv("KOSIT_TIMEOUT_SECONDS", "60"))
-    host: str = os.getenv("HOST", "127.0.0.1")
-    port: int = int(os.getenv("PORT", "8080"))
 
 
-settings = Settings()
+settings = load_settings()

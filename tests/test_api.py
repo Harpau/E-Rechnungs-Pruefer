@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +15,13 @@ from app.main import app
 from app.ui_contract import UI_REVISION, UI_STATIC_PREFIX
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _client_lifespan():
+    # Real startup/stop per test; never inherit another client's closed admission.
+    with client:
+        yield
 
 
 def _official_checkbox(page: str):
@@ -36,7 +42,7 @@ def test_health_endpoint():
     assert set(payload) == {"status", "version", "analysis_schema_version", "kosit"}
     assert set(payload["kosit"]) == {"configured", "components"}
     assert isinstance(payload["kosit"]["configured"], bool)
-    assert payload["kosit"]["components"]["cen_en16931"] == "1.3.15"
+    assert payload["kosit"]["components"]["cen_en16931"] == "1.3.16"
 
 
 def test_health_endpoint_does_not_expose_kosit_configuration_details(monkeypatch):
@@ -67,18 +73,12 @@ def test_health_endpoint_does_not_expose_kosit_configuration_details(monkeypatch
 
 
 def test_analysis_capacity_returns_retryable_503_without_queueing(cii_path, monkeypatch):
-    occupied_slots = threading.BoundedSemaphore(1)
-    occupied_slots.acquire()
-    monkeypatch.setattr(main_module, "_analysis_slots", occupied_slots)
-
-    try:
-        response = client.post(
-            "/api/analyze",
-            files={"file": (cii_path.name, cii_path.read_bytes(), "application/xml")},
-            data={"official": "false"},
-        )
-    finally:
-        occupied_slots.release()
+    monkeypatch.setattr(main_module.manager, "try_acquire", lambda: None)
+    response = client.post(
+        "/api/analyze",
+        files={"file": (cii_path.name, cii_path.read_bytes(), "application/xml")},
+        data={"official": "false"},
+    )
 
     assert response.status_code == 503
     assert response.headers["retry-after"] == str(main_module._ANALYSIS_RETRY_AFTER_SECONDS)
@@ -332,7 +332,29 @@ def test_report_header_maps_official_status(
                 "source": "KoSIT-Anbindung",
             }
         ]
-    monkeypatch.setattr("app.analyzer.KositValidator.validate", lambda _self, _xml, _filename: result)
+    # A synthetic worker boundary is explicit: monkeypatching parent functions
+    # must not be mistaken for changing a separately started parser process.
+    from app.processing.manager import BufferedResult
+    from app.processing.operations import execute_operation
+
+    class SyntheticLease:
+        async def run(self, upload, app_settings):
+            rendered = execute_operation(
+                upload.operation,
+                bytes(upload.payload),
+                upload.filename,
+                upload.media_type,
+                app_settings=app_settings,
+                official=upload.options.official,
+                scope=upload.options.scope,
+                official_validator=lambda _xml, _filename: result,
+            )
+            return BufferedResult([rendered.body], len(rendered.body), rendered.media_type, rendered.headers)
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(main_module.manager, "try_acquire", SyntheticLease)
 
     response = client.post(
         "/api/report",
@@ -376,8 +398,8 @@ def test_pdf_xml_export_rejects_decoded_attachment_over_limit(monkeypatch, pdf_b
 
     assert response.status_code == 422
     assert response.json() == {
-        "detail": "Eine eingebettete XML-Datei überschreitet die zulässige Größenbegrenzung.",
-        "type": "invoice_input_error",
+        "detail": "Die Rechnung überschreitet das zulässige Verarbeitungsbudget.",
+        "type": "processing_limit_error",
     }
 
 
@@ -389,9 +411,9 @@ def test_api_rejects_raw_upload_over_limit(monkeypatch):
         files={"file": ("zu-gross.xml", b"<Invoice />", "application/xml")},
     )
 
-    assert response.status_code == 422
-    assert response.json()["type"] == "invoice_input_error"
-    assert "größer als die zulässigen" in response.json()["detail"]
+    assert response.status_code == 413
+    assert response.json()["type"] == "upload_limit_error"
+    assert "Größenbegrenzung" in response.json()["detail"]
 
 
 def test_index_and_examples_are_available():

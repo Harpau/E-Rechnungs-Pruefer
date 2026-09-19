@@ -182,17 +182,18 @@ def test_line_finding_keeps_array_index_separate_from_business_identifier(identi
 @pytest.mark.parametrize("path", ["/api/analyze", "/api/report", "/api/report/pdf"])
 def test_analysis_endpoints_return_sanitized_422_for_overlong_public_value(path: str) -> None:
     overlong_id = "X" * 1001
-    response = TestClient(app).post(
-        path,
-        files={
-            "file": (
-                "synthetische-zu-lange-kennung.xml",
-                _ubl(profile=EN_PROFILE, document_id=overlong_id),
-                "application/xml",
-            )
-        },
-        data={"official": "false"},
-    )
+    with TestClient(app) as client:
+        response = client.post(
+            path,
+            files={
+                "file": (
+                    "synthetische-zu-lange-kennung.xml",
+                    _ubl(profile=EN_PROFILE, document_id=overlong_id),
+                    "application/xml",
+                )
+            },
+            data={"official": "false"},
+        )
 
     assert response.status_code == 422
     assert response.json()["type"] == "invoice_input_error"
@@ -202,17 +203,18 @@ def test_analysis_endpoints_return_sanitized_422_for_overlong_public_value(path:
 
 def test_public_value_at_declared_length_boundary_remains_exact() -> None:
     document_id = "X" * 1000
-    response = TestClient(app).post(
-        "/api/analyze",
-        files={
-            "file": (
-                "synthetische-grenzwert-kennung.xml",
-                _ubl(profile=EN_PROFILE, document_id=document_id),
-                "application/xml",
-            )
-        },
-        data={"official": "false"},
-    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/analyze",
+            files={
+                "file": (
+                    "synthetische-grenzwert-kennung.xml",
+                    _ubl(profile=EN_PROFILE, document_id=document_id),
+                    "application/xml",
+                )
+            },
+            data={"official": "false"},
+        )
 
     assert response.status_code == 200
     assert response.json()["document"]["id"] == document_id
@@ -221,17 +223,18 @@ def test_public_value_at_declared_length_boundary_remains_exact() -> None:
 @pytest.mark.parametrize("path", ["/api/analyze", "/api/report", "/api/report/pdf"])
 def test_analysis_endpoints_process_large_finite_decimals_without_http_500(path: str) -> None:
     amount = f"{'9' * 128}.00"
-    response = TestClient(app, raise_server_exceptions=False).post(
-        path,
-        files={
-            "file": (
-                "synthetischer-grosser-betrag.xml",
-                _ubl_with_large_consistent_amount(amount),
-                "application/xml",
-            )
-        },
-        data={"official": "false"},
-    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            path,
+            files={
+                "file": (
+                    "synthetischer-grosser-betrag.xml",
+                    _ubl_with_large_consistent_amount(amount),
+                    "application/xml",
+                )
+            },
+            data={"official": "false"},
+        )
 
     assert response.status_code == 200
     if path == "/api/analyze":
@@ -243,25 +246,26 @@ def test_analysis_endpoints_process_large_finite_decimals_without_http_500(path:
 def test_analyze_handles_three_wide_decimal_operands_with_a_controlled_finding() -> None:
     operand = "9" * 100
     base_quantity = f".{('0' * 99)}1"
-    response = TestClient(app, raise_server_exceptions=False).post(
-        "/api/analyze",
-        files={
-            "file": (
-                "synthetische-dreifach-breite-dezimalwerte.xml",
-                _ubl(
-                    profile=EN_PROFILE,
-                    invoice_lines=_invoice_line(
-                        "1",
-                        quantity=operand,
-                        price=operand,
-                        base_quantity=base_quantity,
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/analyze",
+            files={
+                "file": (
+                    "synthetische-dreifach-breite-dezimalwerte.xml",
+                    _ubl(
+                        profile=EN_PROFILE,
+                        invoice_lines=_invoice_line(
+                            "1",
+                            quantity=operand,
+                            price=operand,
+                            base_quantity=base_quantity,
+                        ),
                     ),
-                ),
-                "application/xml",
-            )
-        },
-        data={"official": "false"},
-    )
+                    "application/xml",
+                )
+            },
+            data={"official": "false"},
+        )
 
     assert response.status_code == 200
     findings = _finding_by_id(response.json(), "internal")
@@ -274,17 +278,18 @@ def test_analyze_handles_three_wide_decimal_operands_with_a_controlled_finding()
 @pytest.mark.parametrize("path", ["/api/analyze", "/api/report", "/api/report/pdf"])
 def test_analysis_endpoints_reject_oversized_decimal_operands_without_expanding_the_context(path: str) -> None:
     amount = "9" * (MAX_DECIMAL_DIGITS + 1)
-    response = TestClient(app, raise_server_exceptions=False).post(
-        path,
-        files={
-            "file": (
-                "synthetischer-zu-grosser-betrag.xml",
-                _ubl(profile=EN_PROFILE, payable=amount),
-                "application/xml",
-            )
-        },
-        data={"official": "false"},
-    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            path,
+            files={
+                "file": (
+                    "synthetischer-zu-grosser-betrag.xml",
+                    _ubl(profile=EN_PROFILE, payable=amount),
+                    "application/xml",
+                )
+            },
+            data={"official": "false"},
+        )
 
     assert response.status_code == 422
     assert response.json()["type"] == "invoice_input_error"
@@ -579,10 +584,11 @@ def test_xml_export_keeps_original_card_identifier_bytes_unchanged() -> None:
         """,
     )
 
-    response = TestClient(app).post(
-        "/api/xml",
-        files={"file": ("synthetische-kartenzahlung.xml", payload, "application/xml")},
-    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/xml",
+            files={"file": ("synthetische-kartenzahlung.xml", payload, "application/xml")},
+        )
 
     assert response.status_code == 200
     assert response.content == payload
