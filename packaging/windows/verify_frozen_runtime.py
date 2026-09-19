@@ -26,6 +26,7 @@ EXECUTABLE_NAMES = (
 APPLICATION_MODULES = {
     "app.main": "app/main.py",
     "app.configuration": "app/configuration.py",
+    "app.desktop_security": "app/desktop_security.py",
     "app.http_upload": "app/http_upload.py",
     "app.report_templates": "app/report_templates.py",
     "app.server_runtime": "app/server_runtime.py",
@@ -39,6 +40,7 @@ APPLICATION_MODULES = {
             "kosit_runtime",
             "manager",
             "native",
+            "observation",
             "operations",
             "posix",
             "protocol",

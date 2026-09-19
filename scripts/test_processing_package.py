@@ -9,6 +9,7 @@ Missing active-phase evidence is INCONCLUSIVE, never a successful kill test.
 from __future__ import annotations
 
 import argparse
+import copy
 import ctypes
 import hashlib
 import http.client
@@ -25,8 +26,9 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, TypeGuard
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,8 +43,26 @@ HELD_XML_BYTES = 25 * 1024**2
 HELD_SEND_SECONDS = 25.0  # Five seconds below the unchanged product send deadline.
 HELD_OBSERVE_SECONDS = 15.0
 _native_ctypes: Any = ctypes
-PROCESS_ACCESS = 0x1000 | 0x400 | 0x40 | 0x100000 | 1
-OBSERVATION_COUNTER_MAX = 2**31 - 1
+PROCESS_ACCESS = 0x1000 | 0x400 | 0x100000 | 1
+OBSERVATION_HEADER = "X-Einvoice-Observation-Id"
+OBSERVATION_LIMIT = 16 * 1024
+OBSERVATION_PHASES = (
+    "admitted",
+    "ready",
+    "input_received",
+    "operation_entering",
+    "operation_finished",
+    "result_received",
+    "processing_error",
+    "upload_failed",
+    "cleanup_started",
+    "cleanup_confirmed",
+    "response_sending",
+    "response_send_complete",
+    "transport_failed",
+    "lease_released",
+    "poisoned",
+)
 
 
 class ProbeError(RuntimeError):
@@ -98,58 +118,6 @@ class ProcessIdentity:
     def public(self) -> dict[str, Any]:
         # Never emit command lines, pipe handles, token paths or token values.
         return {key: value for key, value in asdict(self).items() if key != "argv"}
-
-
-def new_input_observation(identity: ProcessIdentity) -> dict[str, Any]:
-    def counters() -> dict[str, Any]:
-        return {
-            "attempts": 0,
-            "successes": 0,
-            "failures": 0,
-            "last_seconds": None,
-            "max_seconds": None,
-            "counter_saturated": False,
-        }
-
-    return {
-        "source": {"pid": identity.pid, "created": identity.created, "role": "worker", "channel": "input"},
-        "scope": "existing calls only; measured durations are not individual call deadlines",
-        "duplicate": counters(),
-        "peek": counters(),
-        "marker_seen": False,
-    }
-
-
-def _observation_start(observation: dict[str, Any] | None) -> float | None:
-    if observation is not None:
-        try:
-            return time.monotonic()
-        except BaseException:
-            pass
-    return None
-
-
-def _record_observation_call(
-    observation: dict[str, Any] | None, name: str, started: float | None, success: bool
-) -> None:
-    if observation is None:
-        return
-    counter = observation[name]
-    for key in ("attempts", "successes" if success else "failures"):
-        if counter[key] == OBSERVATION_COUNTER_MAX:
-            counter["counter_saturated"] = True
-        else:
-            counter[key] += 1
-    try:
-        duration = time.monotonic() - started if started is not None else None
-        if duration is None or not math.isfinite(duration) or duration < 0:
-            raise ValueError("Invalid diagnostic clock")
-        counter["last_seconds"] = duration
-        counter["max_seconds"] = max(counter["max_seconds"] or 0.0, duration)
-    except BaseException:
-        # A clock/diagnostic failure must not replace the native API failure.
-        counter["last_seconds"] = None
-        counter["timing_unavailable"] = True
 
 
 class _ObjectBasicInformation(ctypes.Structure):
@@ -208,14 +176,294 @@ def validate_role_counts(counts: dict[str, int], jobs: int) -> None:
         raise ProbeError("Complete direct role inventory was not bound.")
 
 
-def require_active(*, marker_seen: bool, requests_done: bool) -> None:
-    if not marker_seen or requests_done:
-        raise Inconclusive("Active synthetic input after READY could not be observed without a race.")
-
-
 def validate_health(samples: list[float]) -> None:
     if len(samples) < 3 or any(not math.isfinite(s) or not 0 <= s < 1 for s in samples):
         raise ProbeError("Health response did not remain below one second for every sample.")
+
+
+def _integer(value: Any, *, minimum: int = 0, maximum: int = 2**63 - 1) -> TypeGuard[int]:
+    return type(value) is int and minimum <= value <= maximum
+
+
+def _hex_id(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 32 and all(c in "0123456789abcdef" for c in value)
+
+
+def _fields(value: Any, names: set[str]) -> bool:
+    return isinstance(value, dict) and set(value) == names
+
+
+class ObservationTracker:
+    """One bound job; immutable owner history, never a native action authority."""
+
+    def __init__(self, binding: PackageBinding, observation_id: str, operation: str) -> None:
+        if not _hex_id(observation_id) or operation not in {"analyze", "export_xml", "report_html", "report_pdf"}:
+            raise ProbeError("Invalid fixed observation request.")
+        self.binding, self.observation_id, self.operation = binding, observation_id, operation
+        self.envelope: dict[str, Any] = {}
+        self.history: list[dict[str, Any]] = []
+        self.poll_count = 0
+
+    @property
+    def record(self) -> dict[str, Any]:
+        return self.envelope.get("record", {})
+
+    @property
+    def phases(self) -> set[str]:
+        return {e["phase"] for e in self.record.get("events", [])}
+
+    def update(self, value: Any, *, before: tuple[int, int], after: tuple[int, int]) -> None:
+        if (
+            not _fields(value, {"schema_version", "instance_id", "snapshot", "evicted_records", "record"})
+            or type(value["schema_version"]) is not int
+            or value["schema_version"] != 1
+            or not _hex_id(value["instance_id"])
+            or not _integer(value["evicted_records"])
+            or len(json.dumps(value).encode("utf-8")) > OBSERVATION_LIMIT
+        ):
+            raise Inconclusive("Observation envelope is invalid or over budget.")
+        record, stamp = value["record"], value["snapshot"]
+        if not _fields(
+            record,
+            {"observation_id", "job_id", "operation", "parent", "roles", "clock", "available", "revision", "events"},
+        ):
+            raise Inconclusive("Observation record fields differ.")
+        if record["available"] is not True:
+            raise Inconclusive("Owner observation is explicitly unavailable.")
+        if (
+            record["observation_id"] != self.observation_id
+            or not _hex_id(record["job_id"])
+            or record["operation"] != self.operation
+            or not _fields(record["parent"], {"pid", "creation_time"})
+            or not _integer(record["parent"]["pid"], minimum=1, maximum=2**32 - 1)
+            or not _integer(record["parent"]["creation_time"], minimum=1)
+            or record["parent"] != {"pid": self.binding.parent_pid, "creation_time": self.binding.parent_created}
+        ):
+            raise Inconclusive("Owner job or parent identity differs.")
+        if (
+            not _fields(stamp, {"kind", "frequency", "ticks"})
+            or stamp["kind"] != "qpc"
+            or not _integer(stamp["frequency"], minimum=1)
+            or not _integer(stamp["ticks"], minimum=1)
+            or not _fields(record["clock"], {"kind", "frequency"})
+            or record["clock"] != {"kind": "qpc", "frequency": stamp["frequency"]}
+            or type(record["clock"]["frequency"]) is not int
+            or before[1] != stamp["frequency"]
+            or after[1] != stamp["frequency"]
+            or after[0] < before[0]
+            or not before[0] - 1 <= stamp["ticks"] <= after[0] + 1
+        ):
+            raise Inconclusive("Owner QPC snapshot is stale or has a different clock.")
+        events, roles = record["events"], record["roles"]
+        if (
+            not isinstance(events, list)
+            or not 1 <= len(events) <= 16
+            or not _integer(record["revision"], minimum=len(events))
+            or not isinstance(roles, list)
+            or len(roles) > 2
+            or len(json.dumps(record).encode("utf-8")) > 8192
+        ):
+            raise Inconclusive("Owner history exceeds its fixed contract.")
+        phases: set[str] = set()
+        last_at = 0
+        for sequence, event in enumerate(events, 1):
+            phase = event.get("phase") if isinstance(event, dict) else None
+            names = {"sequence", "phase", "at"} | ({"started", "finished"} if phase == "operation_finished" else set())
+            if (
+                not _fields(event, names)
+                or phase not in OBSERVATION_PHASES
+                or phase in phases
+                or type(event["sequence"]) is not int
+                or event["sequence"] != sequence
+                or not _integer(event["at"], minimum=1)
+                or not last_at <= event["at"] <= stamp["ticks"] + 1
+                or (sequence == 1 and phase != "admitted")
+            ):
+                raise Inconclusive("Owner event sequence or timestamp is invalid.")
+            prerequisites = {
+                "ready": {"admitted"},
+                "input_received": {"ready"},
+                "operation_entering": {"input_received"},
+                "operation_finished": {"operation_entering"},
+                "result_received": {"operation_finished"},
+                "cleanup_confirmed": {"cleanup_started"},
+                "response_sending": {"cleanup_confirmed"},
+                "response_send_complete": {"response_sending"},
+                "lease_released": {"admitted"},
+                "poisoned": {"admitted"},
+            }
+            if (
+                not prerequisites.get(phase, set()).issubset(phases)
+                or "lease_released" in phases
+                or "poisoned" in phases
+            ):
+                raise Inconclusive("Owner lifecycle transition is invalid.")
+            if phase == "operation_finished":
+                ready = next(e["at"] for e in events[: sequence - 1] if e["phase"] == "ready")
+                if (
+                    not _integer(event["started"], minimum=1)
+                    or not _integer(event["finished"], minimum=1)
+                    or not ready - 1 <= event["started"] <= event["finished"] <= event["at"] + 1
+                ):
+                    raise Inconclusive("Authoritative operation interval is invalid.")
+            phases.add(phase)
+            last_at = event["at"]
+        role_names, pids = set(), {self.binding.parent_pid}
+        for role in roles:
+            if (
+                not _fields(role, {"role", "pid", "parent_pid", "creation_time", "exit_code"})
+                or role["role"] not in {"worker", "supervisor"}
+                or role["role"] in role_names
+                or not _integer(role["pid"], minimum=1, maximum=2**32 - 1)
+                or role["pid"] in pids
+                or type(role["parent_pid"]) is not int
+                or role["parent_pid"] != self.binding.parent_pid
+                or not _integer(role["creation_time"], minimum=self.binding.parent_created + 1)
+                or (
+                    role["exit_code"] is not None
+                    and not _integer(role["exit_code"], minimum=-(2**31), maximum=2**32 - 1)
+                )
+            ):
+                raise Inconclusive("Owner role identity or exit binding is invalid.")
+            role_names.add(role["role"])
+            pids.add(role["pid"])
+        if "ready" in phases and role_names != {"worker", "supervisor"}:
+            raise Inconclusive("READY does not bind the complete role inventory.")
+        if self.envelope:
+            previous = self.record
+            if (
+                value["instance_id"] != self.envelope["instance_id"]
+                or record["job_id"] != previous["job_id"]
+                or value["evicted_records"] < self.envelope["evicted_records"]
+                or record["revision"] < previous["revision"]
+                or events[: len(previous["events"])] != previous["events"]
+                or (record["revision"] == previous["revision"] and record != previous)
+            ):
+                raise Inconclusive("Owner history changed or was replaced.")
+            for old in previous["roles"]:
+                current = next((r for r in roles if r["role"] == old["role"]), None)
+                if (
+                    current is None
+                    or any(current[k] != old[k] for k in old if k != "exit_code")
+                    or (old["exit_code"] is not None and current["exit_code"] != old["exit_code"])
+                ):
+                    raise Inconclusive("A bound role identity or exit status changed.")
+        if not self.envelope or record["revision"] != self.record["revision"]:
+            if len(self.history) >= 32:
+                raise Inconclusive("Fixed observer revision budget exceeded.")
+            self.history.append(copy.deepcopy(value))
+        self.envelope = copy.deepcopy(value)
+
+
+def require_owner_cleanup(tracker: ObservationTracker, *, released: bool = True) -> None:
+    if (
+        "cleanup_confirmed" not in tracker.phases
+        or "poisoned" in tracker.phases
+        or (released and "lease_released" not in tracker.phases)
+        or len(tracker.record.get("roles", [])) != 2
+        or any(type(role["exit_code"]) is not int for role in tracker.record["roles"])
+    ):
+        raise Inconclusive("Complete owner-confirmed native cleanup is missing.")
+
+
+def validate_distinct_jobs(trackers: list[ObservationTracker]) -> None:
+    if (
+        not trackers
+        or any(not t.envelope for t in trackers)
+        or len({t.envelope["instance_id"] for t in trackers}) != 1
+        or len({t.observation_id for t in trackers}) != len(trackers)
+        or len({t.record["job_id"] for t in trackers}) != len(trackers)
+        or any(len(t.record["roles"]) != 2 for t in trackers)
+        or len({r["pid"] for t in trackers for r in t.record["roles"]}) != 2 * len(trackers)
+    ):
+        raise Inconclusive("Independent request/job/role identities are not distinct and complete.")
+
+
+def require_active_observation(
+    trackers: list[ObservationTracker], *, now: tuple[int, int], requests_done: bool
+) -> None:
+    if requests_done or not trackers:
+        raise Inconclusive("The request completed before the bound action.")
+    validate_distinct_jobs(trackers)
+    terminal = {
+        "operation_finished",
+        "result_received",
+        "processing_error",
+        "upload_failed",
+        "cleanup_started",
+        "transport_failed",
+        "poisoned",
+        "lease_released",
+    }
+    for tracker in trackers:
+        stamp = tracker.envelope.get("snapshot", {})
+        if (
+            not {"ready", "input_received", "operation_entering"}.issubset(tracker.phases)
+            or tracker.phases & terminal
+            or stamp.get("frequency") != now[1]
+            or not 0 <= now[0] - stamp.get("ticks", 0) < now[1]
+        ):
+            raise Inconclusive("Fresh owner input/entering evidence is unavailable or terminal.")
+
+
+def validate_health_overlap(
+    trackers: list[ObservationTracker], samples: list[dict[str, Any]], capacity: dict[str, Any]
+) -> dict[str, Any]:
+    if len(trackers) != 2 or not 3 <= len(samples) <= 400:
+        raise Inconclusive("Bounded health sample or two-job evidence missing.")
+    validate_distinct_jobs(trackers)
+    intervals = []
+    frequencies = set()
+    for tracker in trackers:
+        terminal = next((e for e in tracker.record.get("events", []) if e["phase"] == "operation_finished"), None)
+        if terminal is None:
+            raise Inconclusive("Actual completed operation interval is unavailable.")
+        intervals.append((terminal["started"], terminal["finished"]))
+        frequencies.add(tracker.record["clock"]["frequency"])
+    if len(frequencies) != 1:
+        raise Inconclusive("The operations have different clock domains.")
+    frequency = frequencies.pop()
+    start, end = max(v[0] for v in intervals), min(v[1] for v in intervals)
+    witnesses = []
+    for index, sample in enumerate(samples):
+        first, last = sample.get("started"), sample.get("finished")
+        if (
+            not _integer(first, minimum=1)
+            or not _integer(last, minimum=first)
+            or sample.get("frequency") != frequency
+            or type(sample.get("ok")) is not bool
+        ):
+            raise Inconclusive("Health interval has no bound clock/outcome.")
+        overlaps = first < end - 1 and last > start + 1
+        boundary = first <= end + 1 and last >= start - 1
+        if overlaps and (not sample["ok"] or last - first >= frequency):
+            raise ProbeError("A slow or failed health request overlapped both operations.")
+        if boundary and not overlaps and (not sample["ok"] or last - first >= frequency):
+            raise Inconclusive("Failed health request has an ambiguous overlap boundary.")
+        if first > start + 1 and last < end - 1:
+            witnesses.append(index)
+    if len(witnesses) < 3:
+        raise Inconclusive("Fewer than three complete health intervals overlap both operations.")
+    if not capacity or "unavailable" in capacity:
+        raise Inconclusive("No capacity request could be launched in the actual overlap.")
+    if (
+        not _integer(capacity.get("started"), minimum=1)
+        or not _integer(capacity.get("finished"), minimum=capacity.get("started", 1))
+        or capacity.get("frequency") != frequency
+        or capacity.get("ok") is not True
+        or capacity.get("status") != 503
+        or capacity.get("error_type") != "analysis_capacity_error"
+        or not 0 <= capacity["finished"] - capacity["started"] < frequency
+    ):
+        raise ProbeError("Third request did not prove timely exact capacity503.")
+    if not start + 1 < capacity["started"] <= capacity["finished"] < end - 1:
+        raise Inconclusive("Capacity interval did not lie wholly within both operations.")
+    return {
+        "operation_intervals": intervals,
+        "frequency": frequency,
+        "witness_indices": witnesses[:3],
+        "all_overlapping_samples_checked": True,
+    }
 
 
 def processing_fixture(nonce: str) -> tuple[bytes, bytes]:
@@ -275,28 +523,19 @@ class WindowsAPI:
         self._define(self.k, "OpenProcess", [D, ctypes.c_int, D], H)
         self._define(self.k, "CloseHandle", [H], ctypes.c_int)
         self._define(self.k, "GetProcessTimes", [H, P, P, P, P], ctypes.c_int)
+        self._define(self.k, "GetExitCodeProcess", [H, P], ctypes.c_int)
         self._define(self.k, "QueryFullProcessImageNameW", [H, D, P, P], ctypes.c_int)
         self._define(self.k, "WaitForSingleObject", [H, D], D)
         self._define(self.k, "TerminateProcess", [H, D], ctypes.c_int)
         self._define(self.k, "CreateToolhelp32Snapshot", [D, D], H)
         self._define(self.k, "Process32FirstW", [H, P], ctypes.c_int)
         self._define(self.k, "Process32NextW", [H, P], ctypes.c_int)
-        self._define(self.k, "DuplicateHandle", [H, H, H, P, D, ctypes.c_int, D], ctypes.c_int)
-        self._define(self.k, "GetCurrentProcess", [], H)
-        self._define(self.k, "PeekNamedPipe", [H, P, D, P, P, P], ctypes.c_int)
         self._define(self.k, "LocalFree", [H], H)
         self._define(self.k, "QueryPerformanceCounter", [P], ctypes.c_int)
         self._define(self.k, "QueryPerformanceFrequency", [P], ctypes.c_int)
         self._define(self.n, "NtQueryInformationProcess", [H, D, P, D, P], ctypes.c_int32)
-        self._last_ntstatus: Any = None
         try:
             self._define(self.n, "NtQueryObject", [H, D, P, D, P], ctypes.c_int32)
-        except (AttributeError, OSError):
-            pass
-        try:
-            # Resolve before observation, never on the native failure path.
-            self._define(self.n, "RtlGetLastNtStatus", [], ctypes.c_int32)
-            self._last_ntstatus = self.n.RtlGetLastNtStatus
         except (AttributeError, OSError):
             pass
         self._define(self.s, "CommandLineToArgvW", [ctypes.c_wchar_p, P], P)
@@ -346,6 +585,13 @@ class WindowsAPI:
 
     def terminate(self, handle: int) -> None:
         self._check(self.k.TerminateProcess(handle, 71), "TerminateProcess")
+
+    def exit_code(self, handle: int) -> int | None:
+        if self.alive(handle):
+            return None
+        value = ctypes.c_uint32()
+        self._check(self.k.GetExitCodeProcess(handle, ctypes.byref(value)), "GetExitCodeProcess")
+        return int(value.value)
 
     def children(self, parent: int) -> list[int]:
         class Entry(ctypes.Structure):
@@ -475,21 +721,6 @@ class WindowsAPI:
             result["failure"] = failure_details(exc)
         return result
 
-    def _correlated_status(self) -> dict[str, Any]:
-        # DuplicateHandle documents GetLastError only. This optional last-NT
-        # value can be stale or overwritten during ctypes/Python return; it is
-        # never treated as the proven originating status or a PASS condition.
-        result: dict[str, Any] = {"status": "unavailable", "origin_guaranteed": False}
-        try:
-            query = getattr(self, "_last_ntstatus", None)
-            if query is not None:
-                value = query()
-                if type(value) is int and -(2**31) <= value < 2**32:
-                    result.update(status="observed", value=value & 0xFFFFFFFF)
-        except BaseException as exc:
-            result["failure"] = failure_details(exc)
-        return result
-
     def _security_call(self, name: str, *args: Any) -> Any:
         try:
             return getattr(self.security, name)(*args)
@@ -498,7 +729,7 @@ class WindowsAPI:
             raise
 
     def open(self, pid: int, parent_pid: int) -> tuple[int, ProcessIdentity]:
-        # QUERY_LIMITED_INFORMATION | QUERY_INFORMATION | DUP_HANDLE | SYNCHRONIZE | TERMINATE
+        # QUERY_LIMITED_INFORMATION | QUERY_INFORMATION | SYNCHRONIZE | TERMINATE
         h = self.k.OpenProcess(PROCESS_ACCESS, False, pid)
         self._check(h, "OpenProcess")
         try:
@@ -526,55 +757,6 @@ class WindowsAPI:
         except BaseException:
             with self.owned(lambda: self.close(h)):
                 raise
-
-    def peek_marker(
-        self, handle: int, input_handle: int, marker: bytes, observation: dict[str, Any] | None = None
-    ) -> bool:
-        duplicate = ctypes.c_void_p()
-        current_process = self.k.GetCurrentProcess()
-        started = _observation_start(observation)
-        succeeded = self.k.DuplicateHandle(handle, input_handle, current_process, ctypes.byref(duplicate), 0, False, 2)
-        if not succeeded:
-            code = _native_ctypes.get_last_error()
-            correlated = self._correlated_status()
-            # End-clock uses native QPC on Windows: capture both statuses first.
-            _record_observation_call(observation, "duplicate", started, False)
-            if observation is not None:
-                observation["last_native_failure"] = {
-                    "api": "DuplicateHandle",
-                    "winerror": code,
-                    "correlated_last_ntstatus": correlated,
-                }
-            raise native_failure(_native_ctypes.WinError(code), "DuplicateHandle", winerror=code)
-        _record_observation_call(observation, "duplicate", started, True)
-        with self.owned(lambda: self.close(int(duplicate.value or 0))):
-            raw = ctypes.create_string_buffer(65536)
-            read = ctypes.c_uint32()
-            available = ctypes.c_uint32()
-            started = _observation_start(observation)
-            succeeded = self.k.PeekNamedPipe(
-                duplicate, raw, len(raw), ctypes.byref(read), ctypes.byref(available), None
-            )
-            if not succeeded:
-                code = _native_ctypes.get_last_error()
-                correlated = self._correlated_status()
-                _record_observation_call(observation, "peek", started, False)
-                if observation is not None:
-                    observation["last_native_failure"] = {
-                        "api": "PeekNamedPipe",
-                        "winerror": code,
-                        "correlated_last_ntstatus": correlated,
-                    }
-                if code in (109, 232, 233):
-                    return False
-                raise native_failure(
-                    ProbeError("Bound input pipe cannot be observed safely."), "PeekNamedPipe", winerror=code
-                )
-            _record_observation_call(observation, "peek", started, True)
-            found = marker in raw.raw[: read.value]
-            if observation is not None:
-                observation["marker_seen"] = observation["marker_seen"] or found
-            return found
 
     def listener(self, port: int, parent: int) -> None:
         size = ctypes.c_uint32(256 * 1024)
@@ -622,7 +804,12 @@ def context_binding(action: str) -> dict[str, Any]:
 
 
 class Request:
-    def __init__(self, port: int, token: str, payload: bytes, *, export: bool = False) -> None:
+    def __init__(
+        self, port: int, token: str, payload: bytes, *, export: bool = False, observation_id: str | None = None
+    ) -> None:
+        if observation_id is not None and not _hex_id(observation_id):
+            raise ProbeError("Invalid upload observation ID.")
+        self.observation_id = observation_id
         self.done = threading.Event()
         self.record: dict[str, Any] = {}
         self.error: BaseException | None = None
@@ -633,11 +820,14 @@ class Request:
     def _run(self, token: str, payload: bytes, export: bool) -> None:
         try:
             media, body = multipart(payload, export=export)
+            headers = {"Authorization": "Bearer " + token, "Content-Type": media}
+            if self.observation_id is not None:
+                headers[OBSERVATION_HEADER] = self.observation_id
             self.connection.request(
                 "POST",
                 "/api/xml" if export else "/api/report/pdf",
                 body,
-                {"Authorization": "Bearer " + token, "Content-Type": media},
+                headers,
             )
             del body
             self._transport_socket = self.connection.sock
@@ -730,10 +920,10 @@ class HeldHTTPConnection(http.client.HTTPConnection):
 class HeldResponseRequest(Request):
     connection: HeldHTTPConnection
 
-    def __init__(self, port: int, token: str, payload: bytes) -> None:
+    def __init__(self, port: int, token: str, payload: bytes, *, observation_id: str | None = None) -> None:
         if len(payload) != HELD_XML_BYTES:
             raise ProbeError("Only the fixed 25MiB XML response case is permitted.")
-        super().__init__(port, token, payload, export=True)
+        super().__init__(port, token, payload, export=True, observation_id=observation_id)
         self.connection = HeldHTTPConnection(port)
         self.header_ready = threading.Event()
         self.release_reading = threading.Event()
@@ -829,18 +1019,178 @@ def validate_held_memory(metrics: dict[str, Any]) -> None:
         previous_peaks = peaks
 
 
+class ObserverHTTPConnection(http.client.HTTPConnection):
+    """Deadline abort targets this socket object, never a reused descriptor."""
+
+    def __init__(self, port: int) -> None:
+        super().__init__("127.0.0.1", port, timeout=1)
+        self.channel = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.channel.settimeout(1)
+        self.expired = threading.Event()
+
+    def connect(self) -> None:
+        if self.expired.is_set():
+            raise ProbeError("Absolute observer HTTP deadline expired.")
+        self.sock = self.channel
+        self.channel.connect(("127.0.0.1", self.port))
+        if self.expired.is_set():
+            raise ProbeError("Absolute observer HTTP deadline expired.")
+
+    def expire(self) -> None:
+        self.expired.set()
+        try:
+            self.channel.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        finally:
+            self.channel.close()
+
+
+def bounded_get(port: int, path: str, *, headers: dict[str, str], limit: int) -> tuple[int, str | None, bytes]:
+    conn = ObserverHTTPConnection(port)
+    timer = threading.Timer(1, conn.expire)
+    timer.daemon = True
+    started = time.monotonic()
+    timer.start()
+    primary = False
+    response: http.client.HTTPResponse | None = None
+    try:
+        conn.request("GET", path, headers=headers)
+        response = conn.getresponse()
+        raw = response.read(limit + 1)
+        if conn.expired.is_set() or time.monotonic() - started >= 1 or len(raw) > limit:
+            raise ProbeError("Observer HTTP time/size budget exceeded.")
+        return response.status, response.getheader("Cache-Control"), raw
+    except BaseException:
+        primary = True
+        raise
+    finally:
+        cleanup_error = False
+        closers = [timer.cancel]
+        if response is not None:
+            closers.append(response.close)
+        closers.extend((conn.close, conn.channel.close, partial(timer.join, 1)))
+        for close in closers:
+            try:
+                close()
+            except BaseException:
+                cleanup_error = True
+        if (cleanup_error or timer.is_alive()) and not primary:
+            raise ProbeError("Observer deadline/socket cleanup is unconfirmed.")
+
+
 def health(port: int) -> float:
     started = time.monotonic()
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
-    try:
-        conn.request("GET", "/api/health")
-        response = conn.getresponse()
-        raw = response.read(16385)
-        if response.status != 200 or len(raw) > 16384 or json.loads(raw).get("status") != "ok":
-            raise ProbeError("Health response invalid.")
-    finally:
-        conn.close()
+    status, _cache, raw = bounded_get(port, "/api/health", headers={}, limit=16384)
+    if status != 200 or json.loads(raw).get("status") != "ok":
+        raise ProbeError("Health response invalid.")
     return time.monotonic() - started
+
+
+def fetch_observation(api: WindowsAPI, tracker: ObservationTracker, token: str) -> bool:
+    """One bounded authenticated GET; missing admission is not a terminal receipt."""
+    tracker.poll_count += 1
+    if tracker.poll_count > 400:
+        raise Inconclusive("Fixed observation GET budget exceeded.")
+    before = api.qpc()
+    try:
+        status, cache, raw = bounded_get(
+            tracker.binding.port,
+            "/api/processing-observation",
+            headers={"Authorization": "Bearer " + token, OBSERVATION_HEADER: tracker.observation_id},
+            limit=OBSERVATION_LIMIT,
+        )
+        after = api.qpc()
+        if before[1] != after[1] or not 0 <= after[0] - before[0] < before[1] or len(raw) > OBSERVATION_LIMIT:
+            raise Inconclusive("Observation GET exceeded its time/size budget.")
+        if status == 404:
+            if tracker.envelope:
+                raise Inconclusive("Previously bound owner record disappeared or was evicted.")
+            return False
+        if status != 200 or cache != "no-store":
+            raise Inconclusive("Authenticated owner observation was not available.")
+        try:
+            value = json.loads(raw)
+        except (ValueError, UnicodeError) as exc:
+            raise Inconclusive("Owner observation JSON is invalid.") from exc
+        tracker.update(value, before=before, after=after)
+        return True
+    except (OSError, http.client.HTTPException) as exc:
+        raise Inconclusive("Bound observation transport failed.") from exc
+
+
+def timed_health(api: WindowsAPI, port: int) -> dict[str, Any]:
+    start, frequency = api.qpc()
+    sample: dict[str, Any] = {"started": start, "frequency": frequency, "ok": False}
+    try:
+        sample["elapsed_seconds"] = health(port)
+        sample["ok"] = True
+    except (OSError, ProbeError, ValueError) as exc:
+        sample["failure"] = failure_details(exc)
+    end, end_frequency = api.qpc()
+    if frequency != end_frequency or end < start:
+        raise Inconclusive("Health QPC domain changed.")
+    sample["finished"] = end
+    return sample
+
+
+def active_receipt(trackers: list[ObservationTracker]) -> list[dict[str, Any]]:
+    return [
+        {
+            "instance_id": t.envelope["instance_id"],
+            "observation_id": t.observation_id,
+            "job_id": t.record["job_id"],
+            "snapshot_ticks": t.envelope["snapshot"]["ticks"],
+            "frequency": t.envelope["snapshot"]["frequency"],
+            "revision": t.record["revision"],
+        }
+        for t in trackers
+    ]
+
+
+def bind_live_roles(
+    api: WindowsAPI,
+    trackers: list[ObservationTracker],
+    binding: PackageBinding,
+    held: dict[int, tuple[int, ProcessIdentity, str]],
+    metrics: dict[str, Any],
+) -> None:
+    """Fault-only live binding; normal fast completions need no stale PID open."""
+    expected = {r["pid"]: r for t in trackers for r in t.record["roles"]}
+    if len(expected) != 2 * len(trackers) or set(api.children(binding.parent_pid)) != set(expected):
+        raise Inconclusive("Live role inventory differs from the exact owner records.")
+    for pid, role in expected.items():
+        if role["exit_code"] is not None:
+            raise Inconclusive("An owner-bound role has already ended.")
+        handle, identity = api.open(pid, binding.parent_pid)
+        try:
+            actual_role = role_of(identity, binding)
+            if identity.created != role["creation_time"] or actual_role != role["role"]:
+                raise Inconclusive("Live process creation/role differs from the owner binding.")
+        except BaseException:
+            with api.owned(partial(api.close, handle)):
+                raise
+        held[pid] = (handle, identity, actual_role)
+        record: dict[str, Any] = {"role": actual_role, "identity": identity.public()}
+        metrics[str(pid)] = record
+        record_access(api, handle, record, "bound")
+        record_memory(api, handle, record, "bound")
+
+
+def collect_owner_records(
+    api: WindowsAPI, trackers: list[ObservationTracker], token: str, *, deadline: float, released: bool
+) -> None:
+    while True:
+        for tracker in trackers:
+            fetch_observation(api, tracker, token)
+        if all("cleanup_confirmed" in t.phases and (not released or "lease_released" in t.phases) for t in trackers):
+            validate_distinct_jobs(trackers)
+            for tracker in trackers:
+                require_owner_cleanup(tracker, released=released)
+            return
+        if time.monotonic() >= deadline:
+            raise Inconclusive("Complete terminal owner evidence did not arrive.")
+        time.sleep(min(0.05, max(0, deadline - time.monotonic())))
 
 
 def wait_ended(api: WindowsAPI, handles: list[int], seconds: float = 5) -> None:
@@ -856,6 +1206,7 @@ def validate_stop_receipt(receipt: Any, report: dict[str, Any], clock: tuple[int
         "schema_version": 1,
         "action": "stop-bound-parent",
         **{key: report[key] for key in ("nonce", "package", "controller", "ready_sha256")},
+        "active_observations": report["active_observations"],
     }
     if (
         not isinstance(receipt, dict)
@@ -870,6 +1221,11 @@ def validate_stop_receipt(receipt: Any, report: dict[str, Any], clock: tuple[int
         or frequency != clock[1]
         or frequency != report["qpc_frequency"]
         or not report["ready_qpc_ticks"] <= ticks <= clock[0]
+        or len(report["active_observations"]) != 1
+        or any(
+            item["frequency"] != frequency or not 0 <= ticks - item["snapshot_ticks"] < frequency
+            for item in report["active_observations"]
+        )
     ):
         raise ProbeError("Stop receipt native clock differs or is out of sequence.")
     return ticks, frequency
@@ -972,7 +1328,6 @@ def failure_snapshot(
     parent: tuple[int, ProcessIdentity] | None,
     held: dict[int, tuple[int, ProcessIdentity, str]],
     requests: list[Request],
-    seen: set[int],
     started: float,
     discovered_count: int,
 ) -> dict[str, Any]:
@@ -981,10 +1336,13 @@ def failure_snapshot(
 
     def observe(handle: int, identity: ProcessIdentity, role: str) -> None:
         item: dict[str, Any] = {"pid": identity.pid, "created": identity.created, "role": role}
-        if role == "worker":
-            item["input_marker_observed"] = identity.pid in seen
         try:
             item["state"] = "alive" if api.alive(handle) else "ended"
+            if item["state"] == "ended":
+                try:
+                    item["exit_code"] = api.exit_code(handle)
+                except BaseException as exc:
+                    item["exit_code_unavailable"] = failure_details(exc)
         except BaseException as exc:
             item.update(state="unavailable", failure=failure_details(exc))
         processes.append(item)
@@ -998,7 +1356,6 @@ def failure_snapshot(
     return {
         "phase": phase,
         "elapsed_seconds": time.monotonic() - started,
-        "marker_seen_count": len(seen),
         "bound_role_counts": dict(Counter(role for _, _, role in held.values())),
         "last_discovered_count": discovered_count,
         "bound_processes": processes,
@@ -1007,6 +1364,28 @@ def failure_snapshot(
         "request_failures": [failure_details(r.error) if r.error else None for r in requests[:3]],
         "requests_truncated": len(requests) > 3,
     }
+
+
+def passive_failure_capture(requests: list[Request], *, started: float) -> list[dict[str, Any]]:
+    """At most two seconds for already started clients; no new request/action."""
+    deadline = min(time.monotonic() + 2, started + 85)
+    result = []
+    for request in requests[:3]:
+        error: dict[str, Any] | None = None
+        try:
+            if getattr(request.thread, "ident", None) is not None:
+                request.thread.join(max(0, deadline - time.monotonic()))
+        except BaseException as exc:
+            error = failure_details(exc)
+        result.append(
+            {
+                **request.record,
+                "done": request.done.is_set(),
+                "failure": failure_details(request.error) if request.error else None,
+                "observation_failure": error,
+            }
+        )
+    return result
 
 
 def observe_held_responses(
@@ -1117,7 +1496,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
     output.mkdir(mode=0o700)
     nonce = uuid4().hex
     report: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "case": args.case,
         "status": "INCONCLUSIVE",
         "nonce": nonce,
@@ -1126,7 +1505,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
         "role_job_runtime_commit_limit": "not externally observable without retaining private product job handles; no limit claim",
         "frozen_scope": "installed desktop/service EXE; unsigned CI technical probe only",
         "memory_scope": "kernel process-lifetime peaks through query, not job limits; reused backend peaks include earlier cases",
-        "ready_measurement_scope": "upper bound from HTTP request start to first observed invoice marker; includes upload/IPC, not exact internal READY time",
+        "ready_measurement_scope": "owner READY and input ACK; operation_entering is not authoritative operation start",
         "cold_start_scope": "fresh role processes; OS/filesystem/antivirus caches are not flushed",
         "process_metrics": {},
     }
@@ -1134,7 +1513,8 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
     held: dict[int, tuple[int, ProcessIdentity, str]] = {}
     parent_handle = 0
     bound_parent: tuple[int, ProcessIdentity] | None = None
-    seen: set[int] = set()
+    trackers: list[ObservationTracker] = []
+    auxiliary: list[Request] = []
     primary_error: BaseException | None = None
     cleanup_details: list[dict[str, Any]] = []
     phase = "open-parent"
@@ -1162,76 +1542,69 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
         validate_health(report["baseline_health_seconds"])
         phase = "prepare-requests"
         xml_export = args.case in {"xml25", "held-responses"}
-        payload, marker = (maximum_xml(), b"") if xml_export else processing_fixture(nonce)
+        payload = maximum_xml() if xml_export else processing_fixture(nonce)[0]
         report["synthetic_input"] = {"size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
         count = 2 if args.case in {"health", "held-responses"} else 1
+        trackers = [
+            ObservationTracker(b, uuid4().hex, "export_xml" if xml_export else "report_pdf") for _ in range(count)
+        ]
         held_requests = (
-            [HeldResponseRequest(b.port, token, payload) for _ in range(count)] if args.case == "held-responses" else []
+            [HeldResponseRequest(b.port, token, payload, observation_id=t.observation_id) for t in trackers]
+            if args.case == "held-responses"
+            else []
         )
         requests = (
             list(held_requests)
             if held_requests
-            else [Request(b.port, token, payload, export=xml_export) for _ in range(count)]
+            else [Request(b.port, token, payload, export=xml_export, observation_id=t.observation_id) for t in trackers]
         )
         requests_started = time.monotonic()
         phase = "start-requests"
         for request in requests:
             request.start()
-        del token
-        deadline = time.monotonic() + 20
-        while True:
-            phase = "discover-children"
-            discovered = api.children(b.parent_pid)
-            discovered_count = len(discovered)
-            for pid in discovered:
-                if pid not in held:
-                    phase = "open-role"
-                    handle, p = api.open(pid, b.parent_pid)
-                    try:
-                        phase = "validate-role"
-                        role = role_of(p, b)
-                    except BaseException:
-                        try:
-                            api.close(handle)
-                        except BaseException as close_error:
-                            cleanup_details.append(failure_details(close_error))
-                        raise
-                    held[pid] = (handle, p, role)
-                    metrics: dict[str, Any] = {"role": role, "identity": p.public()}
-                    report["process_metrics"][str(pid)] = metrics
-                    record_access(api, handle, metrics, "bound")
-                    if role == "worker":
-                        metrics["input_observation"] = new_input_observation(p)
-                    record_memory(api, handle, metrics, "bound")
-                handle, p, role = held[pid]
-                phase = "observe-input"
-                if role == "worker" and pid not in seen and marker:
-                    metrics = report["process_metrics"][str(pid)]
-                    try:
-                        observed = api.peek_marker(handle, int(p.argv[4]), marker, metrics["input_observation"])
-                    except BaseException:
-                        record_access(api, handle, metrics, "input-observation-failed")
-                        raise
-                    if observed:
-                        seen.add(pid)
-                        metrics["input_after_ready_upper_bound_seconds"] = time.monotonic() - requests_started
-            workers = {pid for pid, (_, _, role) in held.items() if role == "worker"}
-            if len(held) == count * 2 and (xml_export or (len(workers) == count and seen == workers)):
-                break
-            if any(r.done.is_set() for r in requests) or time.monotonic() >= deadline:
-                raise Inconclusive("Live role/active-input observation raced with completion or startup.")
-            time.sleep(0.002)
-        phase = "validate-inventory"
-        validate_role_counts(dict(Counter(role for _, _, role in held.values())), count)
-        report["processes"] = [
-            {**p.public(), "role": role, "input_after_ready_observed": p.pid in seen} for _, p, role in held.values()
-        ]
-        if not xml_export:
-            require_active(marker_seen=len(seen) == count, requests_done=any(r.done.is_set() for r in requests))
-            if args.case == "controlled-stop":
-                report["ready_qpc_ticks"], report["qpc_frequency"] = api.qpc()
+        deadline = requests_started + 20
         phase = "case-" + args.case
-        if args.case == "held-responses":
+        if args.case == "health":
+            samples: list[dict[str, Any]] = []
+            report["health_intervals"] = samples
+            capacity_evidence: dict[str, Any] = {}
+            report["third_request_capacity"] = capacity_evidence
+            # Reserve ten of the 400 GETs/job for final and cleanup evidence.
+            for _ in range(390):
+                cycle = time.monotonic()
+                if cycle >= deadline:
+                    break
+                samples.append(timed_health(api, b.port))
+                for tracker in trackers:
+                    fetch_observation(api, tracker, token)
+                if not capacity_evidence and all("operation_entering" in t.phases for t in trackers):
+                    try:
+                        require_active_observation(
+                            trackers, now=api.qpc(), requests_done=any(r.done.is_set() for r in requests)
+                        )
+                    except Inconclusive:
+                        capacity_evidence["unavailable"] = "active_operation_overlap_not_provable"
+                    else:
+                        capacity = Request(b.port, token, b"<synthetic-capacity/>", export=True)
+                        auxiliary.append(capacity)
+                        first, frequency = api.qpc()
+                        capacity.start()
+                        capacity.thread.join(1)
+                        last, actual_frequency = api.qpc()
+                        capacity_evidence.update(
+                            started=first,
+                            finished=last,
+                            frequency=frequency,
+                            ok=capacity.done.is_set() and capacity.error is None,
+                            **capacity.record,
+                        )
+                        if actual_frequency != frequency or not capacity_evidence["ok"]:
+                            raise ProbeError("Capacity client did not finish within its fixed deadline.")
+                if all("operation_finished" in t.phases for t in trackers):
+                    break
+                time.sleep(max(0, min(deadline - time.monotonic(), 0.05 - (time.monotonic() - cycle))))
+        elif args.case == "held-responses":
+            collect_owner_records(api, trackers, token, deadline=deadline, released=False)
             held_evidence: dict[str, Any] = {}
             report["held_responses"] = held_evidence
             observe_held_responses(
@@ -1240,47 +1613,45 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                 parent_metrics,
                 b,
                 held_requests,
-                [h for h, _, _ in held.values()],
-                acceptance._read(args.token_file).decode("ascii").strip(),
+                [],
+                token,
                 requests_started,
                 evidence=held_evidence,
             )
-        elif args.case == "health":
-            samples = []
-            for _ in range(3):
-                if any(r.done.is_set() for r in requests):
-                    raise Inconclusive("Two active jobs ended before health sampling.")
-                samples.append(health(b.port))
-            validate_health(samples)
-            report["loaded_health_seconds"] = samples
-            require_active(marker_seen=True, requests_done=any(r.done.is_set() for r in requests))
-            capacity_started = time.monotonic()
-            capacity = Request(
-                b.port,
-                acceptance._read(args.token_file).decode("ascii").strip(),
-                b"<synthetic-capacity/>",
-                export=True,
-            )
-            capacity.start()
-            try:
-                capacity.thread.join(1)
-                elapsed = time.monotonic() - capacity_started
-                require_active(marker_seen=True, requests_done=any(r.done.is_set() for r in requests))
-                if not capacity.done.is_set() or capacity.error or capacity.record.get("status") != 503 or elapsed >= 1:
-                    raise ProbeError("Third tiny request did not receive capacity503 within one second.")
-                report["third_request_capacity"] = {**capacity.record, "elapsed_seconds": elapsed}
-            finally:
-                capacity.close()
         elif args.case in {"worker-death", "supervisor-death", "parent-death", "controlled-stop"}:
+            for _ in range(390):
+                cycle = time.monotonic()
+                for tracker in trackers:
+                    fetch_observation(api, tracker, token)
+                if all("operation_entering" in t.phases for t in trackers):
+                    break
+                if any(r.done.is_set() for r in requests) or time.monotonic() >= deadline:
+                    raise Inconclusive("Fresh owner entry evidence did not arrive before completion.")
+                time.sleep(max(0, 0.05 - (time.monotonic() - cycle)))
+            require_active_observation(trackers, now=api.qpc(), requests_done=any(r.done.is_set() for r in requests))
+            phase = "bind-live-fault-roles"
+            bind_live_roles(api, trackers, b, held, report["process_metrics"])
+            validate_role_counts(dict(Counter(role for _, _, role in held.values())), count)
+            report["processes"] = [{**identity.public(), "role": role} for _, identity, role in held.values()]
             if context_binding(action) != controller or acceptance._file(Path(b.executable)) != exe:
                 raise ProbeError("Context or executable changed before action.")
-            if set(api.children(b.parent_pid)) != set(held) or not all(api.alive(h) for h, _, _ in held.values()):
+            for tracker in trackers:
+                fetch_observation(api, tracker, token)
+            discovered = api.children(b.parent_pid)
+            discovered_count = len(discovered)
+            if set(discovered) != set(held) or not all(api.alive(h) for h, _, _ in held.values()):
                 raise Inconclusive("Live role inventory changed before action; nothing terminated.")
             if any(api.children(p.pid) for _, p, _ in held.values()):
                 raise ProbeError("Unexpected role descendants prevent a complete process binding.")
-            for handle, p, _ in held.values():
-                record_memory(api, handle, report["process_metrics"][str(p.pid)], "before-action")
-            require_active(marker_seen=len(seen) == count, requests_done=any(r.done.is_set() for r in requests))
+            for handle, identity, _ in held.values():
+                record_memory(api, handle, report["process_metrics"][str(identity.pid)], "before-action")
+            require_active_observation(trackers, now=api.qpc(), requests_done=any(r.done.is_set() for r in requests))
+            report["active_observations"] = active_receipt(trackers)
+            report["preaction_owner_records"] = [copy.deepcopy(t.envelope) for t in trackers]
+            report["fault_scope"] = (
+                "input accepted, entering confirmed, no known completion; not atomic parser activity"
+            )
+            report["ready_qpc_ticks"], report["qpc_frequency"] = api.qpc()
             ready = {
                 **report,
                 "status": "READY",
@@ -1290,47 +1661,74 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             write_new_json(output / "ready.json", ready)
             report["ready_sha256"] = acceptance._file(output / "ready.json")["sha256"]
             if args.case == "controlled-stop":
-                # Controller must issue its bound real service/desktop stop now.
                 controlled_stop(api, output, report, parent_handle, [h for h, _, _ in held.values()])
             else:
+                require_active_observation(
+                    trackers, now=api.qpc(), requests_done=any(r.done.is_set() for r in requests)
+                )
+                if not api.alive(parent_handle) or not all(api.alive(h) for h, _, _ in held.values()):
+                    raise Inconclusive("Bound process ended immediately before action.")
                 target = (
                     parent_handle
                     if args.case == "parent-death"
                     else next(h for h, _, role in held.values() if role == args.case.removesuffix("-death"))
                 )
+                first, frequency = api.qpc()
+                report["action_qpc_ticks"] = first
                 api.terminate(target)
-                wait_ended(api, [h for h, _, _ in held.values()])
+                report["role_exit_after_action_seconds"] = wait_ended_qpc(
+                    api, [h for h, _, _ in held.values()], start=first, frequency=frequency, seconds=5
+                )
                 if args.case == "parent-death":
-                    wait_ended(api, [parent_handle])
+                    report["parent_exit_after_action_seconds"] = wait_ended_qpc(
+                        api, [parent_handle], start=first, frequency=frequency, seconds=10
+                    )
         phase = "complete-requests"
+        completion_deadline = time.monotonic() + 45
         for request in requests:
-            request.thread.join(45)
+            request.thread.join(max(0, completion_deadline - time.monotonic()))
             if not request.done.is_set():
                 raise ProbeError("HTTP test request exceeded its bounded wait.")
-        wait_ended(api, [h for h, _, _ in held.values()])
         if args.case in {"health", "xml25", "held-responses"}:
             if any(r.error is not None or r.record.get("status") != 200 for r in requests):
                 raise ProbeError("Bound normal synthetic request failed.")
-            if xml_export and not all(request.record["byte_identical"] for request in requests):
+            if xml_export and not all(r.record.get("byte_identical") for r in requests):
                 raise ProbeError("Maximum XML bytes changed.")
-            if args.case == "health" and not all(r.record["pdf_markers"] for r in requests):
+            if args.case == "health" and not all(r.record.get("pdf_markers") for r in requests):
                 raise ProbeError("PDF response incomplete.")
+        elif any(r.record.get("status") == 200 for r in requests):
+            raise Inconclusive("Request succeeded before injected termination.")
+        if args.case not in {"parent-death", "controlled-stop"}:
+            collect_owner_records(api, trackers, token, deadline=time.monotonic() + 0.4, released=True)
+            if api.children(b.parent_pid):
+                raise Inconclusive("Owner cleanup contradicts the current direct-child inventory.")
+            if "action_qpc_ticks" in report:
+                for tracker in trackers:
+                    terminal = next((e for e in tracker.record["events"] if e["phase"] == "operation_finished"), None)
+                    if terminal is not None and terminal["finished"] <= report["action_qpc_ticks"] + 1:
+                        raise Inconclusive("A later owner receipt proves completion before action.")
+            report["role_exit_evidence"] = "owner original-handle identities and confirmed cleanup; no stale PID reopen"
         else:
-            if any(r.record.get("status") == 200 for r in requests):
-                raise Inconclusive("Request succeeded before injected termination.")
+            report["role_exit_evidence"] = (
+                "preaction owner identities plus held kernel handles; final owner receipt unavailable after parent loss"
+            )
         report["responses"] = [
             {**r.record, "transport_error": type(r.error).__name__ if r.error else None} for r in requests
         ]
         report["bound_role_exit_confirmed"] = True
+        if args.case in {"health", "xml25", "held-responses"}:
+            report["functional_outcome"] = "PASS"
+        if args.case == "health":
+            report["health_overlap"] = validate_health_overlap(
+                trackers, report["health_intervals"], report["third_request_capacity"]
+            )
         phase = "recovery"
         if args.case not in {"parent-death", "controlled-stop"}:
             if not api.alive(parent_handle):
                 raise ProbeError("Parent unexpectedly exited.")
             api.listener(b.port, b.parent_pid)
-            recovery = Request(
-                b.port, acceptance._read(args.token_file).decode("ascii").strip(), b"<synthetic-recovery/>", export=True
-            )
-            requests.append(recovery)
+            recovery = Request(b.port, token, b"<synthetic-recovery/>", export=True)
+            auxiliary.append(recovery)
             recovery.start()
             recovery.thread.join(20)
             if not recovery.done.is_set() or recovery.error or not recovery.record.get("byte_identical"):
@@ -1352,19 +1750,38 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
     finally:
         if primary_error is not None:
             report["failure"] = failure_details(primary_error)
+            report["passive_responses"] = passive_failure_capture([*requests, *auxiliary], started=probe_started)
             report["failure_snapshot"] = failure_snapshot(
                 api,
                 phase=phase,
                 parent=bound_parent,
                 held=held,
                 requests=requests,
-                seen=seen,
                 started=probe_started,
                 discovered_count=discovered_count,
             )
+        report["observations"] = [
+            {
+                "observation_id": t.observation_id,
+                "poll_count": t.poll_count,
+                "latest": t.envelope,
+                "revisions": t.history,
+            }
+            for t in trackers
+        ]
         # Never repair failed product cleanup by killing unidentified processes.
+        report["held_process_exit_codes"] = []
+        for handle, identity in ([(parent_handle, bound_parent[1])] if bound_parent is not None else []) + [
+            (handle, identity) for handle, identity, _ in held.values()
+        ]:
+            exit_observation: dict[str, Any] = {"pid": identity.pid, "creation_time": identity.created}
+            try:
+                exit_observation.update(status="observed", exit_code=api.exit_code(handle))
+            except BaseException as exc:
+                exit_observation.update(status="unavailable", failure=failure_details(exc))
+            report["held_process_exit_codes"].append(exit_observation)
         close_errors = []
-        for request in requests:
+        for request in [*requests, *auxiliary]:
             try:
                 request.close()
             except Exception as exc:
@@ -1418,11 +1835,27 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             report["status"] = "FAIL"
             report["observer_close_errors"] = close_errors
         report["total_elapsed_seconds"] = time.monotonic() - probe_started
-        report["memory_observation_complete"] = bool(report["process_metrics"]) and all(
-            item.get("memory_observations", [{}])[-1].get("status") == "observed"
-            for item in report["process_metrics"].values()
+        report["role_memory_not_captured"] = [
+            r["pid"]
+            for t in trackers
+            for r in t.record.get("roles", [])
+            if str(r["pid"]) not in report["process_metrics"]
+        ]
+        report["memory_observation_complete"] = (
+            len(report["process_metrics"]) == 1 + 2 * len(trackers)
+            and bool(trackers)
+            and all(
+                item.get("memory_observations", [{}])[-1].get("status") == "observed"
+                for item in report["process_metrics"].values()
+            )
         )
-        write_new_json(output / "result.json", report)
+        try:
+            write_new_json(output / "result.json", report)
+        except BaseException:
+            if primary_error is None:
+                raise
+            # Preserve the original fault; missing evidence prevents any PASS.
+            primary_error.add_note("The bounded result evidence could not be written.")
         if close_errors and primary_error is None:
             raise ProbeError("Bound observer cleanup could not be confirmed.")
 

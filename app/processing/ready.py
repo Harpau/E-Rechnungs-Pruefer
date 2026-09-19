@@ -7,7 +7,7 @@ from typing import Any
 
 from .budgets import ProcessingBudgets
 from .posix import baseline_ceiling_bytes
-from .protocol import ProtocolError
+from .protocol import VERSION, ProtocolError
 
 
 def _profile(value: object, *, memory: int, windows: bool, cpu: int | None = None) -> None:
@@ -46,7 +46,7 @@ def validate_ready(
         or message["type"] != "ready"
         or message["role"] != "supervisor"
         or type(message["protocol"]) is not int
-        or message["protocol"] != 1
+        or message["protocol"] != VERSION
     ):
         raise ProtocolError("Unvollständiger Startnachweis.")
     _profile(message["limits"], memory=budgets.supervisor_memory_bytes, windows=windows)
@@ -63,7 +63,7 @@ def validate_ready(
             or proof["type"] != "ready"
             or proof["role"] != role
             or type(proof["protocol"]) is not int
-            or proof["protocol"] != 1
+            or proof["protocol"] != VERSION
         ):
             raise ProtocolError("Unvollständiger Rollenstartnachweis.")
         _profile(

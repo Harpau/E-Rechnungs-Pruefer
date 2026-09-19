@@ -86,6 +86,33 @@ separaten Gate-/Mergeentscheidung; ein unsigned Server-Runner ersetzt keine sign
 versiegelte Evidence bleibt unverändert. Offene Dependency-/OS-Befunde und das Nullbefund-Gate bleiben von diesen
 Ressourcengrenzen unabhängig; es entstehen weder Ausnahme noch automatischer Merge-/Tag-/Publikationsschritt.
 
+### Nachweis der installierten Windows-Verarbeitung
+
+Die Paketprobe verwendet ownergebundene Beobachtungsdatensätze nach dem
+[Sicherheitsmodell](SECURITY_MODEL.md#begrenzte-beobachtung-für-api-automatisierungen). Sie liest keine fremden
+Eingabe-Pipes und benötigt dafür kein `PROCESS_DUP_HANDLE`. Ein schneller abgeschlossener Worker kann über
+seine gebundene Historie und bestätigtes Cleanup nachgewiesen werden. Eine frühere Eingabebestätigung oder ein
+offener HTTP-Request reicht nicht als Nachweis fortdauernder Verarbeitung.
+
+Der Healthfall erfasst begrenzt vollständige Anfrageintervalle und bewertet sie gegen die nachträglich
+übermittelten tatsächlichen Operationsintervalle beider Aufträge. Mindestens drei ganze Healthintervalle und
+der vollständige zusätzliche 503-Kapazitätsabruf müssen darin liegen. Langsame, fehlerhafte oder abgebrochene
+Randproben dürfen nicht durch Auswahl schnellerer Proben verschwinden. Fehlende Überlappung bleibt
+`INCONCLUSIVE`; die Testdaten werden nicht adaptiv vergrößert und Worker nicht künstlich angehalten.
+
+Die gezielten Abbrüche belegen einen vollständig angenommenen Auftrag mit bestätigtem unmittelbar
+bevorstehendem Operationsaufruf, zuletzt ohne bekannten Abschluss, und anschließend fristgerechtes Rollenende
+sowie Recovery. Sie beweisen keinen tatsächlichen Funktionsbeginn oder CPU-Aktivität exakt beim Kill.
+Bekannte vorherige Fertigstellung, stale Kontext-/Zeitbindung, unvollständige Rollenidentität oder HTTP-200
+verhindern einen Fault-PASS. Parentverlust kann das letzte Ownerereignis vernichten; fehlende Enddaten werden
+nicht als positive Aktivität interpretiert. Rollen-, Antwort- und Cleanupbelege bleiben getrennt.
+
+Vor der Installation muss `scripts/processing_observation_conformance.py` auf Windows seinen exakt gebundenen
+Pflichtfallkatalog vollständig bestehen. Der Guard prüft jede Setup-/Call-/Teardownphase, keine Skips/XFails,
+die echten nativen Identitäts-/Cleanupbelege sowie aktuellen Quellen- und GitHub-Laufbezug. Ein Exitcode 0 allein
+genügt nicht. Alle drei Paket-Kontexte prüfen dieses Receipt erneut vor ihrer ersten Produktmutation.
+Diese Konformität ist eine Vorbedingung, kein Ersatz für die installierte Desktop-/Dienstprüfung.
+
 ### Analyseschema-2-Gate
 
 Analyseschema 2 ist ein sofortiger Breaking Change am bestehenden Endpunkt. Vor einem Release müssen Server,

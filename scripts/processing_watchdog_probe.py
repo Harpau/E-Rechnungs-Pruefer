@@ -186,7 +186,7 @@ def run_case(case: str) -> dict[str, Any]:
         expected = {
             "type": "ready",
             "role": "watchdog",
-            "protocol": 1,
+            "protocol": 2,
             "pid": watcher.pid,
             "supervisor_pid": supervisor.pid,
             "parent_pid": os.getpid(),

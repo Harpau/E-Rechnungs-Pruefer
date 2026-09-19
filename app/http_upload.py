@@ -13,6 +13,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .configuration import Settings, settings_to_snapshot
 from .processing.budgets import ProcessingError, unavailable
+from .processing.observation import BEARER_SCOPE_KEY, OBSERVATION_HEADER, ObservationConflict, valid_observation_id
 from .ui_contract import UI_STATIC_PREFIX
 from .upload_ingress import (
     ReceivedUpload,
@@ -44,6 +45,8 @@ class Lease(Protocol):
 
     def release(self) -> None: ...
 
+    def observe(self, phase: str) -> None: ...
+
 
 class SendBudgets(Protocol):
     @property
@@ -54,7 +57,7 @@ class Manager(Protocol):
     @property
     def budgets(self) -> SendBudgets: ...
 
-    def try_acquire(self) -> Lease | None: ...
+    def try_acquire(self, *, observation_id: str | None = None, operation: str | None = None) -> Lease | None: ...
 
 
 def _path(scope: Scope) -> str:
@@ -67,6 +70,37 @@ def _path(scope: Scope) -> str:
 
 def _error_response(error: UploadError | ProcessingError) -> JSONResponse:
     return JSONResponse({"detail": error.detail, "type": error.error_type}, status_code=error.status)
+
+
+def observation_id_from_scope(scope: Scope, *, required: bool = False) -> str | None:
+    """Validate opt-in after authentication, before invoice reception/admission."""
+    values = [value for name, value in scope.get("headers", []) if name.lower() == OBSERVATION_HEADER]
+    if not values and not required:
+        return None
+    if scope.get(BEARER_SCOPE_KEY) is not True:
+        raise UploadError(
+            403, "observation_auth_error", "Die Verarbeitungsbeobachtung erfordert ein gültiges API-Token."
+        )
+    if len(values) == 1:
+        try:
+            identifier = values[0].decode("ascii")
+        except UnicodeError:
+            identifier = ""
+        if valid_observation_id(identifier):
+            return identifier
+    raise UploadError(
+        400, "observation_request_error", "Die Beobachtungskennung fehlt oder ist nicht eindeutig gültig."
+    )
+
+
+def _observe(lease: Lease, identifier: str | None, phase: str) -> None:
+    if identifier is not None:
+        try:
+            lease.observe(phase)
+        except Exception:
+            # Observation cannot replace the invoice outcome or interrupt cleanup.
+            # The owner's fail-safe publication is responsible for invalidation.
+            pass
 
 
 class SecurityHeadersMiddleware:
@@ -122,12 +156,13 @@ class HeaderValidationMiddleware:
         await self.app(scope, receive, send)
 
 
-async def _send_early(response: Response, scope: Scope, receive: Receive, send: Send) -> None:
+async def _send_early(response: Response, scope: Scope, receive: Receive, send: Send) -> bool:
     # Early rejection deliberately never calls receive (including Expect: 100-continue).
     try:
         await asyncio.wait_for(response(scope, receive, send), timeout=30.0)
     except (OSError, TimeoutError):
-        return
+        return False
+    return True
 
 
 async def _disconnected(receive: Receive) -> None:
@@ -182,8 +217,14 @@ class UploadProcessingMiddleware:
         self.get_settings = get_settings
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if operation_for_scope(scope) is None:
+        operation = operation_for_scope(scope)
+        if operation is None:
             await self.app(scope, receive, send)
+            return
+        try:
+            observation_id = observation_id_from_scope(scope)
+        except UploadError as error:
+            await _send_early(_error_response(error), scope, receive, send)
             return
         try:
             app_settings = self.get_settings()
@@ -203,7 +244,22 @@ class UploadProcessingMiddleware:
         except UploadError as error:
             await _send_early(_error_response(error), scope, receive, send)
             return
-        lease = manager.try_acquire()
+        try:
+            lease = (
+                manager.try_acquire(observation_id=observation_id, operation=operation.operation)
+                if observation_id is not None
+                else manager.try_acquire()
+            )
+        except ObservationConflict:
+            await _send_early(
+                _error_response(
+                    UploadError(409, "observation_conflict", "Die Beobachtungskennung wird bereits verwendet.")
+                ),
+                scope,
+                receive,
+                send,
+            )
+            return
         if lease is None:
             await _send_early(
                 JSONResponse(
@@ -227,17 +283,32 @@ class UploadProcessingMiddleware:
             try:
                 result = await _connected(lease.run(upload, app_settings), disconnect)
             except ProcessingError as error:
+                _observe(lease, observation_id, "response_sending")
                 await _connected(
                     asyncio.wait_for(_error_response(error)(scope, receive, send), send_seconds),
                     disconnect,
                 )
+                _observe(lease, observation_id, "response_send_complete")
                 return
+            _observe(lease, observation_id, "response_sending")
             await _connected(asyncio.wait_for(_send_result(result, send), send_seconds), disconnect)
+            _observe(lease, observation_id, "response_send_complete")
         except UploadError as error:
-            await _send_early(_error_response(error), scope, receive, send)
+            _observe(lease, observation_id, "upload_failed")
+            _observe(lease, observation_id, "response_sending")
+            try:
+                completed = await _send_early(_error_response(error), scope, receive, send)
+            except asyncio.CancelledError:
+                _observe(lease, observation_id, "transport_failed")
+                raise
+            _observe(lease, observation_id, "response_send_complete" if completed else "transport_failed")
         except (ClientDisconnect, OSError, TimeoutError):
             # A started or disconnected response cannot receive another status line.
+            _observe(lease, observation_id, "transport_failed")
             return
+        except asyncio.CancelledError:
+            _observe(lease, observation_id, "transport_failed")
+            raise
         finally:
             if disconnect is not None:
                 disconnect.cancel()

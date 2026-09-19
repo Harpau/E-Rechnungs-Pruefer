@@ -51,7 +51,7 @@ def test_windows_java_launcher_uses_detached_default_after_go_with_explicit_stre
         assert read_control(io.BytesIO(outgoing.getvalue())) == {
             "type": "ready",
             "role": "java",
-            "protocol": 1,
+            "protocol": 2,
             "limits": {"job_memory_bytes": budgets.java_memory_bytes},
         }
         assert actual_command == command

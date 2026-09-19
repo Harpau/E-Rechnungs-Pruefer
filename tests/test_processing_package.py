@@ -76,14 +76,6 @@ def test_full_role_set_and_two_slot_set_are_distinct():
     probe.validate_role_counts({"worker": 2, "supervisor": 2}, 2)
 
 
-def test_active_observation_never_passes_after_request_finished():
-    with pytest.raises(probe.Inconclusive):
-        probe.require_active(marker_seen=True, requests_done=True)
-    with pytest.raises(probe.Inconclusive):
-        probe.require_active(marker_seen=False, requests_done=False)
-    probe.require_active(marker_seen=True, requests_done=False)
-
-
 def test_ready_and_result_binding_cannot_reuse_existing_output(tmp_path):
     target = tmp_path / "ready.json"
     probe.write_new_json(target, {"nonce": "a" * 32})
@@ -147,7 +139,8 @@ def synthetic_run(tmp_path, monkeypatch):
             self.closed = []
             self.ended = set()
             self.extra = False
-            self.peek = True
+            self.observation_hook = lambda: None
+            self.ticks = 1000000
 
         def open(self, pid, parent_pid):
             role = "worker" if pid == 20 else "supervisor"
@@ -186,8 +179,9 @@ def synthetic_run(tmp_path, monkeypatch):
         def close(self, h):
             self.closed.append(h)
 
-        def peek_marker(self, *args):
-            return self.peek
+        def qpc(self):
+            self.ticks += 100
+            return self.ticks, 1000000
 
         def listener(self, *args):
             pass
@@ -217,6 +211,36 @@ def synthetic_run(tmp_path, monkeypatch):
         def close(self):
             self.closed = True
 
+    def observation(api, tracker, token):
+        from tests.test_processing_observation_probe import envelope
+
+        api.observation_hook()
+        value = envelope(observation_id=tracker.observation_id)
+        record = value["record"]
+        record["operation"] = tracker.operation
+        record["job_id"] = tracker.observation_id
+        if args.case == "held-responses":
+            index = int(tracker.observation_id[-1], 16) % 2
+            # Assign stable owner PID pairs without external process inspection.
+            existing = getattr(api, "tracker_ids", [])
+            if tracker.observation_id not in existing:
+                existing.append(tracker.observation_id)
+            api.tracker_ids = existing
+            index = existing.index(tracker.observation_id)
+            value = envelope(complete=True, observation_id=tracker.observation_id)
+            record = value["record"]
+            record["operation"] = tracker.operation
+            record["job_id"] = tracker.observation_id
+            for role in record["roles"]:
+                role["pid"] += 2 * index
+        stamp, frequency = api.qpc()
+        value["snapshot"] = {"kind": "qpc", "ticks": stamp, "frequency": frequency}
+        record["clock"] = {"kind": "qpc", "frequency": frequency}
+        tracker.poll_count += 1
+        tracker.update(value, before=(stamp - 1, frequency), after=(stamp + 1, frequency))
+        return True
+
+    monkeypatch.setattr(probe, "fetch_observation", observation)
     monkeypatch.setattr(probe, "Request", Request)
     return args, api, requests
 
@@ -247,7 +271,7 @@ def test_request_completion_race_never_terminates_parent(synthetic_run):
         requests[0].done.set()
         return True
 
-    api.peek_marker = observed
+    api.observation_hook = observed
     with pytest.raises(probe.Inconclusive):
         probe.run(args, api)
     assert api.kills == []
@@ -281,12 +305,42 @@ def test_keyboard_interrupt_preserves_failure_and_closes_only_owned_observers(sy
     def interrupted(*a):
         raise KeyboardInterrupt
 
-    api.peek_marker = interrupted
+    api.observation_hook = interrupted
     with pytest.raises(KeyboardInterrupt):
         probe.run(args, api)
-    assert not api.kills and set(api.closed) == {10, 20}
+    assert not api.kills and set(api.closed) == {10}
     assert all(r.closed for r in requests)
     assert '"status":"FAIL"' in (args.output_directory / "result.json").read_text()
+
+
+def test_passive_failure_capture_preserves_primary_and_does_not_start_or_abort_requests(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    joined = []
+    done = threading.Event()
+    request = SimpleNamespace(done=done, error=None, record={}, thread=None)
+
+    def join(seconds):
+        assert 0 <= seconds <= 2
+        joined.append(seconds)
+        request.record = {"status": 200, "bytes": 123}
+        done.set()
+
+    request.thread = SimpleNamespace(ident=123, join=join)
+    result = probe.passive_failure_capture([request], started=probe.time.monotonic())
+    assert len(joined) == 1 and result[0]["status"] == 200 and result[0]["done"]
+
+
+def test_stop_receipt_binds_owner_snapshot_not_just_recent_ready():
+    report, receipt = stop_receipt()
+    receipt["active_observations"] = [{**report["active_observations"][0], "job_id": "0" * 32}]
+    with pytest.raises(probe.ProbeError):
+        probe.validate_stop_receipt(receipt, report, (300, 1000))
+    report, receipt = stop_receipt()
+    receipt["qpc_ticks"] = 1100
+    with pytest.raises(probe.ProbeError):
+        probe.validate_stop_receipt(receipt, report, (1150, 1000))
 
 
 def test_unexpected_role_descendant_blocks_parentkill(synthetic_run):
@@ -313,70 +367,54 @@ def test_observer_close_failure_cannot_leave_pass_receipt(synthetic_run):
     assert '"status":"FAIL"' in (args.output_directory / "result.json").read_text()
 
 
-@pytest.mark.parametrize(
-    "third_status,race,expected", [(503, False, "PASS"), (200, False, "FAIL"), (503, True, "INCONCLUSIVE")]
-)
-def test_third_request_capacity_proof_requires_two_still_active_jobs(
-    synthetic_run, monkeypatch, third_status, race, expected
-):
+def test_fast_health_jobs_preserve_functional_evidence_without_stale_pid_open(synthetic_run, monkeypatch):
+    import json
     import threading
     from types import SimpleNamespace
 
-    args, api, _ = synthetic_run
+    from tests.test_processing_observation_probe import envelope
+
+    args, api, requests = synthetic_run
     args.case = "health"
-    original_open = api.open
-
-    def opened(pid, parent):
-        handle, identity = original_open(pid, parent)
-        if pid == 22:
-            identity = replace(
-                identity, argv=(str(args.executable), "--einvoice-processing", "worker", "10", "40", "41")
-            )
-        return handle, identity
-
-    api.open = opened
-
-    def children(pid):
-        if pid != 10:
-            return []
-        api.scans += 1
-        return [] if api.scans == 1 else [20, 21, 22, 23]
-
-    api.children = children
-    requests = []
+    api.children = lambda parent: []
+    trackers = []
 
     class Request:
-        def __init__(self, *a, **kw):
-            self.index = len(requests)
-            requests.append(self)
+        def __init__(self, *_a, **_kw):
             self.done = threading.Event()
             self.error = None
-            self.record = {}
-            self.thread = SimpleNamespace(join=self.join)
+            self.record = {"status": 200, "pdf_markers": True}
+            self.thread = SimpleNamespace(join=lambda *_: None, ident=None)
+            requests.append(self)
 
         def start(self):
-            pass
+            self.done.set()
 
         def close(self):
             pass
 
-        def join(self, *a):
-            if self.index == 2:
-                self.record = {"status": third_status}
-                if race:
-                    requests[0].done.set()
-            else:
-                self.record = {"status": 200, "pdf_markers": True, "byte_identical": True}
-                api.ended.update((20, 21, 22, 23))
-            self.done.set()
+    def fetch(api, tracker, token):
+        if tracker not in trackers:
+            trackers.append(tracker)
+        index = trackers.index(tracker)
+        value = envelope(complete=True, observation_id=tracker.observation_id)
+        value["record"]["job_id"] = tracker.observation_id
+        for role in value["record"]["roles"]:
+            role["pid"] += index * 2
+        stamp, frequency = api.qpc()
+        value["snapshot"] = {"kind": "qpc", "ticks": stamp, "frequency": frequency}
+        value["record"]["clock"] = {"kind": "qpc", "frequency": frequency}
+        tracker.update(value, before=(stamp - 1, frequency), after=(stamp + 1, frequency))
+        return True
 
     monkeypatch.setattr(probe, "Request", Request)
-    if expected == "PASS":
-        assert probe.run(args, api)["third_request_capacity"]["status"] == 503
-    else:
-        with pytest.raises(probe.Inconclusive if race else probe.ProbeError):
-            probe.run(args, api)
-        assert not api.kills
+    monkeypatch.setattr(probe, "fetch_observation", fetch)
+    with pytest.raises(probe.Inconclusive):
+        probe.run(args, api)
+    report = json.loads((args.output_directory / "result.json").read_bytes())
+    assert report["functional_outcome"] == "PASS"
+    assert report["status"] == "INCONCLUSIVE"
+    assert len(requests) == 2 and not api.kills and api.closed == [10]
 
 
 def test_kernel_parent_binding_rejects_stale_snapshot():
@@ -405,6 +443,16 @@ def stop_receipt():
         "package": {"parent_pid": 10, "parent_created": 100},
         "controller": {"context_id": "synthetic"},
         "ready_sha256": "b" * 64,
+        "active_observations": [
+            {
+                "instance_id": "d" * 32,
+                "observation_id": "e" * 32,
+                "job_id": "f" * 32,
+                "snapshot_ticks": 99,
+                "frequency": 1000,
+                "revision": 7,
+            }
+        ],
         "ready_qpc_ticks": 100,
         "qpc_frequency": 1000,
     }
@@ -415,6 +463,7 @@ def stop_receipt():
         "package": report["package"],
         "controller": report["controller"],
         "ready_sha256": report["ready_sha256"],
+        "active_observations": report["active_observations"],
         "qpc_ticks": 200,
         "qpc_frequency": 1000,
     }
@@ -885,7 +934,7 @@ def test_complete_held_case_keeps_parent_binding_and_never_passes_missing_memory
 
     def children(pid):
         api.scans += 1
-        return [20, 21, 22, 23] if api.scans == 2 else []
+        return []
 
     api.children = children
     api.alive = lambda handle: handle == 10
@@ -937,8 +986,8 @@ def test_complete_held_case_keeps_parent_binding_and_never_passes_missing_memory
             self.close()
 
     class Held(Client):
-        def __init__(self, *args):
-            super().__init__(*args)
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
             self.header_ready = threading.Event()
             self.release_reading = threading.Event()
             self.header_received_at = 0.0
@@ -973,7 +1022,7 @@ def test_complete_held_case_keeps_parent_binding_and_never_passes_missing_memory
             "before-close",
         ]
     assert memory_handles.count(10) == 3 and api.kills == []
-    assert set(api.closed) == {10, 20, 21, 22, 23} and all(client.closed for client in clients)
+    assert set(api.closed) == {10} and all(client.closed for client in clients)
 
 
 @pytest.mark.parametrize("first_exists", [True, False])
@@ -1031,57 +1080,6 @@ def test_powershell_uses_same_resolved_interpreter_for_guard_and_helper():
     assert "(Get-Command python -CommandType Application).Source" not in source
 
 
-def test_four_bound_roles_one_marker_preserves_permission_error_and_cleanup(synthetic_run):
-    import json
-
-    args, api, requests = synthetic_run
-    args.case = "health"
-    original_open = api.open
-
-    def opened(pid, parent):
-        handle, identity = original_open(pid, parent)
-        if pid == 22:
-            identity = replace(
-                identity, argv=(str(args.executable), "--einvoice-processing", "worker", "10", "40", "41")
-            )
-        return handle, identity
-
-    def children(pid):
-        api.scans += 1
-        return [] if api.scans == 1 else [21, 23, 20, 22]
-
-    failure = PermissionError(13, "SECRET TOKEN AND HANDLE MUST NOT BE EMITTED")
-    failure.winerror = 5
-
-    def observed(handle, *_args):
-        if handle == 22:
-            raise failure
-        return True
-
-    def closed(handle):
-        api.closed.append(handle)
-        if handle == 20:
-            raise OSError(6, "PRIVATE CLEANUP DETAILS")
-
-    api.open, api.children, api.peek_marker, api.close = opened, children, observed, closed
-    with pytest.raises(PermissionError) as raised:
-        probe.run(args, api)
-    assert raised.value is failure
-    report = json.loads((args.output_directory / "result.json").read_bytes())
-    assert report["failure"]["winerror"] == 5 and report["failure"]["errno"] == 13
-    snap = report["failure_snapshot"]
-    assert snap["phase"] == "observe-input"
-    assert snap["marker_seen_count"] == 1 and snap["bound_role_counts"] == {"supervisor": 2, "worker": 2}
-    assert len(snap["bound_processes"]) == 5 and snap["requests_done"] == [False, False]
-    assert all(p["state"] == "alive" for p in snap["bound_processes"])
-    assert report["observer_cleanup"][0]["error_class"] == "OSError"
-    assert sorted(api.closed) == [10, 20, 21, 22, 23] and not api.kills
-    assert all(r.closed for r in requests)
-    assert "processes" not in report and "loaded_health_seconds" not in report
-    raw = json.dumps(report)
-    assert "SECRET" not in raw and "PRIVATE CLEANUP" not in raw and '"argv"' not in raw
-
-
 @pytest.fixture()
 def native_error_api(monkeypatch):
     from types import SimpleNamespace
@@ -1097,43 +1095,6 @@ def native_error_api(monkeypatch):
     api = object.__new__(probe.WindowsAPI)
     api.k = SimpleNamespace(GetCurrentProcess=lambda: 999)
     return api, state
-
-
-def test_duplicate_handle_failure_retains_exact_api_code_without_cleanup_or_raw_handles(native_error_api):
-    api, state = native_error_api
-    api.k.DuplicateHandle = lambda *_args: 0
-    api.k.CloseHandle = lambda handle: state.closed.append(handle) or 1
-    with pytest.raises(PermissionError) as raised:
-        api.peek_marker(876543, 654321, b"PRIVATE-MARKER")
-    assert probe.failure_details(raised.value) == {
-        "error_class": "PermissionError",
-        "api": "DuplicateHandle",
-        "domain": "win32",
-        "errno": 13,
-        "winerror": 5,
-    }
-    assert state.closed == []
-
-
-def test_peek_primary_error_survives_close_error_and_closes_duplicate_once(native_error_api):
-    api, state = native_error_api
-
-    def duplicate(_source, _input, _target, output, *_rest):
-        output._obj.value = 555
-        return 1
-
-    def close(handle):
-        state.closed.append(handle)
-        state.error = 6
-        return 0
-
-    api.k.DuplicateHandle, api.k.PeekNamedPipe, api.k.CloseHandle = duplicate, lambda *_: 0, close
-    with pytest.raises(probe.ProbeError) as raised:
-        api.peek_marker(123, 456, b"PRIVATE")
-    assert probe.failure_details(raised.value)["api"] == "PeekNamedPipe"
-    assert probe.failure_details(raised.value)["winerror"] == 5
-    assert api.cleanup_diagnostics[0]["winerror"] == 6
-    assert state.closed == [555]
 
 
 def test_ntstatus_survives_without_last_error_translation(native_error_api):
@@ -1154,7 +1115,7 @@ def test_failure_snapshot_is_bounded_and_survives_wait_failure(synthetic_run):
 
     args, api, _ = synthetic_run
     failure = PermissionError(13, "PRIMARY PRIVATE")
-    api.peek_marker = lambda *_: (_ for _ in ()).throw(failure)
+    api.observation_hook = lambda *_: (_ for _ in ()).throw(failure)
     api.alive = lambda *_: (_ for _ in ()).throw(OSError(9, "SECONDARY PRIVATE"))
     with pytest.raises(PermissionError) as raised:
         probe.run(args, api)
@@ -1163,13 +1124,29 @@ def test_failure_snapshot_is_bounded_and_survives_wait_failure(synthetic_run):
     snapshot = report["failure_snapshot"]
     assert all(p["state"] == "unavailable" for p in snapshot["bound_processes"])
     assert len(json.dumps(snapshot)) < 16384
-    assert sorted(api.closed) == [10, 20]
+    assert sorted(api.closed) == [10]
 
 
 def test_socket_error_metadata_is_numeric_and_does_not_expose_messages():
     error = PermissionError(13, "TOKEN FILE SOCKET ADDRESS")
     error.winerror = 10013
     assert probe.failure_details(error) == {"error_class": "PermissionError", "errno": 13, "winerror": 10013}
+
+
+def test_passive_exit_code_uses_only_already_held_ended_process(native_error_api):
+    api, _ = native_error_api
+    calls = []
+    api.k.WaitForSingleObject = lambda handle, timeout: 0
+
+    def exit_code(handle, output):
+        calls.append(handle)
+        output._obj.value = 71
+        return 1
+
+    api.k.GetExitCodeProcess = exit_code
+    assert api.exit_code(123) == 71 and calls == [123]
+    api.k.WaitForSingleObject = lambda handle, timeout: 258
+    assert api.exit_code(123) is None and calls == [123]
 
 
 def test_open_identity_failure_preserves_primary_code_and_attempts_handle_close_once(native_error_api):
@@ -1191,22 +1168,6 @@ def test_open_identity_failure_preserves_primary_code_and_attempts_handle_close_
     assert api.cleanup_diagnostics[0]["winerror"] == 6
 
 
-@pytest.mark.parametrize("code", [109, 232, 233, None])
-def test_pipe_end_or_consumed_marker_is_still_not_a_positive_observation(native_error_api, code):
-    api, state = native_error_api
-
-    def duplicate(_source, _input, _target, output, *_rest):
-        output._obj.value = 555
-        return 1
-
-    state.error = code
-    api.k.DuplicateHandle = duplicate
-    api.k.PeekNamedPipe = lambda *_: int(code is None)  # Success with an empty buffer, or existing pipe-end codes.
-    api.k.CloseHandle = lambda handle: state.closed.append(handle) or 1
-    assert not api.peek_marker(123, 456, b"PRIVATE")
-    assert state.closed == [555]
-
-
 def test_snapshot_queries_only_five_already_bound_handles_and_caps_requests():
     import threading
     import time
@@ -1222,15 +1183,12 @@ def test_snapshot_queries_only_five_already_bound_handles_and_caps_requests():
         parent=(10, process(pid=10)),
         held=held,
         requests=requests,
-        seen={20},
         started=time.monotonic(),
         discovered_count=10,
     )
     assert calls == [10, 20, 21, 22, 23]
     assert result["processes_truncated"] and result["requests_truncated"]
     assert len(result["requests_done"]) == 3 and len(result["request_failures"]) == 3
-    assert result["bound_processes"][1]["input_marker_observed"]
-    assert not result["bound_processes"][2]["input_marker_observed"]
 
 
 @pytest.mark.parametrize("granted", [0x101441, 0x101401, 0])
@@ -1252,7 +1210,7 @@ def test_d3_access_reports_actual_grants_without_substituting_requested_mask(nat
     result = api.process_access(123)
     assert calls == [(123, 0, 56)]
     assert result["status"] == "observed"
-    assert result["requested_access"] == 0x101441
+    assert result["requested_access"] == 0x101401
     assert result["granted_access"] == granted
     assert result["dup_handle_granted"] is bool(granted & 0x40)
     assert "123" not in str(result)
@@ -1287,149 +1245,6 @@ def test_d3_access_exception_is_numeric_and_does_not_escape(native_error_api):
     assert "PRIVATE" not in str(result)
 
 
-@pytest.mark.parametrize("last_status", [0, 0xC0000022, 0xC000010A])
-def test_d3_last_status_precedes_end_clock_and_exception_and_is_only_correlated(
-    native_error_api, monkeypatch, last_status
-):
-    api, state = native_error_api
-    order = []
-    observation = probe.new_input_observation(process())
-
-    def clock():
-        order.append("clock")
-        return float(len(order))
-
-    def duplicate(*_):
-        order.append("duplicate")
-        state.error = 5
-        return 0
-
-    def status():
-        order.append("last_ntstatus")
-        return last_status
-
-    old_error = probe._native_ctypes.WinError
-    monkeypatch.setattr(probe.time, "monotonic", clock)
-    probe._native_ctypes.get_last_error = lambda: order.append("winerror") or state.error
-    probe._native_ctypes.WinError = lambda value: order.append("exception") or old_error(value)
-    api._last_ntstatus = status
-    api.k.DuplicateHandle = duplicate
-    with pytest.raises(PermissionError) as raised:
-        api.peek_marker(123, 456, b"PRIVATE", observation)
-    assert order == ["clock", "duplicate", "winerror", "last_ntstatus", "clock", "exception"]
-    assert probe.failure_details(raised.value)["winerror"] == 5
-    last = observation["last_native_failure"]["correlated_last_ntstatus"]
-    assert last == {"status": "observed", "value": last_status, "origin_guaranteed": False}
-    assert observation["duplicate"]["failures"] == 1
-    assert observation["peek"]["attempts"] == 0
-
-
-@pytest.mark.parametrize("failure_mode", ["missing", "raises"])
-def test_d3_unavailable_last_status_never_replaces_primary_error(native_error_api, failure_mode):
-    api, state = native_error_api
-    observation = probe.new_input_observation(process())
-    if failure_mode == "raises":
-        api._last_ntstatus = lambda: (_ for _ in ()).throw(OSError(6, "PRIVATE"))
-    api.k.DuplicateHandle = lambda *_: 0
-    with pytest.raises(PermissionError) as raised:
-        api.peek_marker(123, 456, b"PRIVATE", observation)
-    assert probe.failure_details(raised.value)["winerror"] == 5
-    assert observation["last_native_failure"]["correlated_last_ntstatus"]["status"] == "unavailable"
-    assert state.closed == [] and "PRIVATE" not in str(observation)
-
-
-def test_d3_counters_measure_existing_calls_only_and_remain_fixed_size(native_error_api, monkeypatch):
-    api, state = native_error_api
-    calls = []
-    times = iter([1.0, 1.25, 2.0, 2.75, 3.0, 3.125, 4.0, 4.25])
-    monkeypatch.setattr(probe.time, "monotonic", lambda: next(times))
-
-    def duplicate(_source, _input, _target, output, *_rest):
-        calls.append("duplicate")
-        output._obj.value = 555
-        return 1
-
-    def peek(_handle, raw, _size, read, _available, _left):
-        calls.append("peek")
-        raw.value = b"marker"
-        read._obj.value = 6
-        return 1
-
-    api.k.DuplicateHandle, api.k.PeekNamedPipe = duplicate, peek
-    api.k.CloseHandle = lambda handle: state.closed.append(handle) or 1
-    observation = probe.new_input_observation(process())
-    assert api.peek_marker(123, 456, b"missing", observation) is False
-    assert api.peek_marker(123, 456, b"marker", observation) is True
-    assert calls == ["duplicate", "peek", "duplicate", "peek"]
-    assert state.closed == [555, 555]
-    assert observation["duplicate"] == {
-        "attempts": 2,
-        "successes": 2,
-        "failures": 0,
-        "last_seconds": 0.125,
-        "max_seconds": 0.25,
-        "counter_saturated": False,
-    }
-    assert observation["peek"]["last_seconds"] == 0.25 and observation["peek"]["max_seconds"] == 0.75
-    assert observation["marker_seen"] is True
-    assert observation["source"] == {"pid": 20, "created": 200, "role": "worker", "channel": "input"}
-    assert "123" not in str(observation) and "456" not in str(observation)
-
-
-def test_d3_peek_failure_capture_precedes_clock_and_cleanup(native_error_api, monkeypatch):
-    api, state = native_error_api
-    order = []
-
-    def duplicate(_source, _input, _target, output, *_rest):
-        output._obj.value = 555
-        return 1
-
-    api.k.DuplicateHandle = duplicate
-    api.k.PeekNamedPipe = lambda *_: order.append("peek") or 0
-    api._last_ntstatus = lambda: order.append("last_ntstatus") or 0xC000010A
-    api.k.CloseHandle = lambda handle: order.append("close") or state.closed.append(handle) or 0
-    monkeypatch.setattr(probe.time, "monotonic", lambda: order.append("clock") or float(len(order)))
-    observation = probe.new_input_observation(process())
-    with pytest.raises(probe.ProbeError) as raised:
-        api.peek_marker(123, 456, b"marker", observation)
-    assert order == ["clock", "clock", "clock", "peek", "last_ntstatus", "clock", "close"]
-    assert probe.failure_details(raised.value)["api"] == "PeekNamedPipe"
-    assert observation["peek"]["failures"] == 1 and len(api.cleanup_diagnostics) == 1
-
-
-def test_d3_failed_source_access_is_bound_and_diagnostic_failure_preserves_error(synthetic_run):
-    import json
-
-    args, api, _ = synthetic_run
-    calls = []
-    primary = PermissionError(13, "PRIVATE")
-    primary.winerror = 5
-
-    def access(handle):
-        calls.append(handle)
-        if calls.count(handle) == 2:
-            raise OSError(6, "PRIVATE DIAGNOSTICS")
-        return {
-            "status": "observed",
-            "requested_access": 0x101441,
-            "granted_access": 0x101401,
-            "dup_handle_granted": False,
-        }
-
-    api.process_access = access
-    api.peek_marker = lambda *_: (_ for _ in ()).throw(primary)
-    with pytest.raises(PermissionError) as raised:
-        probe.run(args, api)
-    assert raised.value is primary and calls == [10, 20, 20]
-    report = json.loads((args.output_directory / "result.json").read_bytes())
-    role = report["process_metrics"]["20"]
-    assert role["input_observation"]["source"]["pid"] == 20
-    assert role["access_observations"][0]["dup_handle_granted"] is False
-    assert role["access_observations"][1]["status"] == "unavailable"
-    assert role["access_observations"][1]["phase"] == "input-observation-failed"
-    assert sorted(api.closed) == [10, 20] and not api.kills and "PRIVATE" not in str(report)
-
-
 def test_d3_invalid_identity_never_queries_process_access(synthetic_run):
     args, api, _ = synthetic_run
     queried = []
@@ -1454,47 +1269,12 @@ def test_d3_access_observations_never_query_more_than_twice():
     assert len(record["access_observations"]) == 2 and record["access_observations_truncated"]
 
 
-def test_d3_counters_saturate_without_growing_or_retrying(native_error_api):
-    api, _ = native_error_api
-    calls = []
-    api.k.DuplicateHandle = lambda *_: calls.append("duplicate") or 0
-    observation = probe.new_input_observation(process())
-    observation["duplicate"]["attempts"] = probe.OBSERVATION_COUNTER_MAX
-    observation["duplicate"]["failures"] = probe.OBSERVATION_COUNTER_MAX
-    with pytest.raises(PermissionError):
-        api.peek_marker(123, 456, b"marker", observation)
-    assert calls == ["duplicate"]
-    assert observation["duplicate"]["attempts"] == probe.OBSERVATION_COUNTER_MAX
-    assert observation["duplicate"]["failures"] == probe.OBSERVATION_COUNTER_MAX
-    assert observation["duplicate"]["counter_saturated"]
-
-
-def test_d3_bad_duration_diagnostic_does_not_replace_native_failure(native_error_api, monkeypatch):
-    api, _ = native_error_api
-    calls = []
-
-    def clock():
-        calls.append("clock")
-        if len(calls) == 2:
-            raise OSError(6, "PRIVATE CLOCK FAILURE")
-        return 1.0
-
-    monkeypatch.setattr(probe.time, "monotonic", clock)
-    api.k.DuplicateHandle = lambda *_: 0
-    observation = probe.new_input_observation(process())
-    with pytest.raises(PermissionError) as raised:
-        api.peek_marker(123, 456, b"marker", observation)
-    assert probe.failure_details(raised.value)["winerror"] == 5
-    assert observation["duplicate"]["timing_unavailable"]
-    assert observation["duplicate"]["last_seconds"] is None
-
-
 def test_d3_changed_object_structure_is_unavailable_without_native_query(native_error_api, monkeypatch):
     api, _ = native_error_api
     monkeypatch.setattr(probe.ctypes, "sizeof", lambda _: 48)
     assert api.process_access(123) == {
         "status": "unavailable",
         "api": "NtQueryObject.ObjectBasicInformation",
-        "requested_access": 0x101441,
+        "requested_access": 0x101401,
         "structure_size": 48,
     }

@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from enum import IntEnum
 from typing import BinaryIO
 
-VERSION = 1
+VERSION = 2
 CONTROL_LIMIT = 16 * 1024
 DATA_LIMIT = 64 * 1024
 _PREFIX = struct.Struct("!BI")

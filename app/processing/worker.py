@@ -6,13 +6,15 @@ import sys
 from typing import Any, BinaryIO
 
 from .budgets import ProcessingBudgets
-from .protocol import ProtocolError, read_control, read_payload, write_control, write_payload
+from .observation import clock_stamp, finished_message, validate_binding
+from .protocol import VERSION, ProtocolError, read_control, read_payload, write_control, write_payload
 
 
 def run_worker(incoming: BinaryIO, outgoing: BinaryIO, setup: dict[str, Any]) -> None:
     from ..configuration import settings_from_snapshot
 
     budgets = ProcessingBudgets(**setup["budgets"])
+    observation = validate_binding(setup.get("observation"))
     if sys.platform != "win32":
         from .posix import apply_limits
 
@@ -33,7 +35,7 @@ def run_worker(incoming: BinaryIO, outgoing: BinaryIO, setup: dict[str, Any]) ->
         # The creation-time worker Job is already active. Lower its commit limit
         # after imports through the parent before opening the input gate.
         limits = {"job_memory_bytes": budgets.python_start_memory_bytes}
-    write_control(outgoing, {"type": "ready", "role": "worker", "protocol": 1, "limits": limits})
+    write_control(outgoing, {"type": "ready", "role": "worker", "protocol": VERSION, "limits": limits})
     request = read_control(incoming)
     if set(request) != {"type", "size"} or request["type"] != "input":
         raise ProtocolError("Rechnungseingabe erwartet.")
@@ -115,17 +117,26 @@ def run_worker(incoming: BinaryIO, outgoing: BinaryIO, setup: dict[str, Any]) ->
             import signal
 
             signal.setitimer(signal.ITIMER_REAL, 0)
-        result = execute_operation(
-            setup["operation"],
-            data,
-            setup["filename"],
-            setup["media_type"],
-            app_settings=settings,
-            official=setup["official"],
-            scope=setup["scope"],
-            official_validator=official_validation,
-            official_state=state,
-        )
+        if observation is not None:
+            write_control(outgoing, {"type": "operation_entering", "job_id": observation["job_id"]})
+        # The terminal interval excludes any blocking write of the entering frame.
+        started = clock_stamp() if observation is not None else None
+        try:
+            result = execute_operation(
+                setup["operation"],
+                data,
+                setup["filename"],
+                setup["media_type"],
+                app_settings=settings,
+                official=setup["official"],
+                scope=setup["scope"],
+                official_validator=official_validation,
+                official_state=state,
+            )
+        finally:
+            finished = clock_stamp() if observation is not None else None
+            if observation is not None:
+                write_control(outgoing, finished_message(observation, started, finished))
         write_control(outgoing, {"type": "result", "result": result.metadata()})
         write_payload(outgoing, result.body)
     except (MemoryError, ProcessingLimitError) as exc:

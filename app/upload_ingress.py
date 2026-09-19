@@ -23,6 +23,8 @@ from python_multipart.exceptions import FormParserError, MultipartParseError
 from starlette.requests import ClientDisconnect
 from starlette.types import Receive, Scope
 
+from .processing.observation import OBSERVATION_HEADER
+
 Operation = Literal["analyze", "export_xml", "report_html", "report_pdf"]
 ReportScope = Literal["readable", "complete"]
 _TOKEN = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
@@ -39,6 +41,7 @@ _SINGLETON_HEADERS = frozenset(
         b"origin",
         b"x-einvoice-ui-revision",
         b"expect",
+        OBSERVATION_HEADER,
     }
 )
 # Parser warnings can contain untrusted header fragments. Keep them out of logs

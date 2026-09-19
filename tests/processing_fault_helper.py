@@ -52,7 +52,7 @@ def main(arguments: list[str]) -> int:
                     {
                         "type": "ready",
                         "role": "java",
-                        "protocol": 1,
+                        "protocol": 2,
                         "limits": {"job_memory_bytes": setup["budgets"]["java_memory_bytes"]},
                     },
                 )

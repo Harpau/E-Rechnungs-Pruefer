@@ -13,8 +13,10 @@ from typing import Any, BinaryIO
 from ..configuration import settings_from_snapshot
 from .budgets import ProcessingBudgets
 from .native import child_environment, inherited_file
+from .observation import validate_binding, validate_entering, validate_finished
 from .protocol import (
     DATA_LIMIT,
+    VERSION,
     FrameKind,
     ProtocolError,
     payload_length,
@@ -59,7 +61,7 @@ def run_java_launcher(
     else:
         limits = {"job_memory_bytes": budgets.java_memory_bytes}
     with inherited_file(stdout_handle, "wb") as stdout, inherited_file(stderr_handle, "wb") as stderr:
-        write_control(outgoing, {"type": "ready", "role": "java", "protocol": 1, "limits": limits})
+        write_control(outgoing, {"type": "ready", "role": "java", "protocol": VERSION, "limits": limits})
         if read_control(incoming) != {"type": "go"}:
             raise ProtocolError("KoSIT-Startfreigabe fehlt.")
         if sys.platform == "win32":
@@ -91,6 +93,7 @@ def run_supervisor(incoming: BinaryIO, outgoing: BinaryIO, setup: dict[str, Any]
     from .kosit_runtime import BoundedConsoleCapture, KositRuntimeError, read_execution, write_invoice
 
     budgets = ProcessingBudgets(**setup["budgets"])
+    observation = validate_binding(setup.get("observation"))
     settings = settings_from_snapshot(setup["settings"])
     if len(handles) != (6 if setup["java_enabled"] else 2):
         raise ProtocolError("Das feste Rollenkanalinventar passt nicht zur Konfiguration.")
@@ -133,7 +136,7 @@ def run_supervisor(incoming: BinaryIO, outgoing: BinaryIO, setup: dict[str, Any]
                 {
                     "type": "ready",
                     "role": "supervisor",
-                    "protocol": 1,
+                    "protocol": VERSION,
                     "limits": own_limits,
                     "worker": worker_ready,
                     "java": java_ready,
@@ -150,6 +153,10 @@ def run_supervisor(incoming: BinaryIO, outgoing: BinaryIO, setup: dict[str, Any]
                 raise ProtocolError("Rechnungseingang wurde nicht bestätigt.")
             write_control(outgoing, {"type": "input_received"})
             startup = False
+            if observation is not None:
+                entering = read_control(worker_in)
+                validate_entering(entering, observation)
+                write_control(outgoing, entering)
             response = read_control(worker_in)
             if response.get("type") == "kosit":
                 phase = "java_input"
@@ -201,6 +208,10 @@ def run_supervisor(incoming: BinaryIO, outgoing: BinaryIO, setup: dict[str, Any]
                             write_payload(worker_out, candidate)
                 except (OSError, KositRuntimeError):
                     write_control(worker_out, {"type": "java_failure"})
+                response = read_control(worker_in)
+            if observation is not None:
+                validate_finished(response, observation)
+                write_control(outgoing, response)
                 response = read_control(worker_in)
             phase = "result"
             if response.get("type") == "result":

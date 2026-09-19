@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      expected_commit:
+        description: "Optional: erwarteter vollständiger Commit für einen gebundenen Dispatch"
+        type: string
+        required: false
+        default: ""
       prepare_dependencies:
         description: "Nur native Wartungs-Locks erzeugen; keine Produktinstallation"
         type: boolean
@@ -42,6 +47,18 @@ jobs:
             if [ "$mode" = true ]; then selected=$((selected + 1)); fi
           done
           test "$selected" -le 1
+      - name: Verify expected dispatch commit
+        id: expected_commit
+        shell: python
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          ACTUAL_COMMIT: ${{ github.sha }}
+        run: |
+          import os
+          import re
+          expected = os.environ.get("EXPECTED_COMMIT", "")
+          if expected and (not re.fullmatch(r"[0-9a-f]{40}", expected) or expected != os.environ["ACTUAL_COMMIT"]):
+              raise SystemExit("Erwarteter Dispatch-Commit stimmt nicht mit dem aktuellen GitHub-Lauf überein.")
   quality:
     if: inputs.prepare_dependencies != true && inputs.container_only != true && inputs.windows_diagnostic_only != true
     name: Quality gate
@@ -224,6 +241,8 @@ jobs:
           tests/test_processing_shutdown.py tests/test_cli.py
           tests/test_processing_watchdog.py tests/test_processing_probe.py
           tests/test_processing_limits.py tests/test_processing_entrypoints.py
+          tests/test_processing_observation.py tests/test_processing_observation_api.py
+          tests/test_processing_observation_probe.py tests/test_processing_observation_conformance.py
       - name: Complete native macOS processing catalog
         run: >-
           python scripts/processing_smoke.py
@@ -330,6 +349,8 @@ jobs:
     if: inputs.prepare_dependencies != true && inputs.container_only != true && inputs.windows_diagnostic_only != true
     name: Windows package and smoke test
     runs-on: windows-2022
+    env:
+      EINVOICE_CI_EXPECTED_COMMIT: ${{ inputs.expected_commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -360,6 +381,15 @@ jobs:
           python -m pip install --no-deps --no-build-isolation -e . &&
           python scripts/dependency_lock.py verify --lock packaging/windows/requirements-release.txt --installed &&
           python -m pip check
+      - name: Native observation conformance before package mutations
+        id: observation_conformance
+        timeout-minutes: 7
+        shell: pwsh
+        run: |
+          python scripts/processing_observation_conformance.py run --output .cache/dependency-evidence/observation-conformance
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/processing_observation_conformance.py verify --output .cache/dependency-evidence/observation-conformance
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: API, PDF, KoSIT, settings and CLI integration tests
         run: >-
           python -m pytest --junitxml=.cache/dependency-evidence/integration-tests.xml
@@ -383,6 +413,8 @@ jobs:
           tests/test_processing_limits.py tests/test_processing_kosit_runtime.py tests/test_processing_probe.py
           tests/test_processing_supervisor.py tests/test_processing_kosit_probe.py
           tests/test_processing_package.py
+          tests/test_processing_observation.py tests/test_processing_observation_api.py
+          tests/test_processing_observation_probe.py tests/test_processing_observation_conformance.py
       - name: Complete native Windows source processing catalog
         shell: pwsh
         run: |
@@ -445,19 +477,25 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action desktop --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" --artifact scripts/test_processing_package.py --artifact scripts/test_processing_package.ps1 --artifact scripts/processing_smoke.py --artifact "build/windows/bundle/E-Rechnungs-Pruefer/E-Rechnungs-Pruefer.exe" --script scripts/test_windows_package.ps1 --evidence .cache/acceptance-logs/desktop.log -- pwsh -NoProfile -File scripts/test_windows_package.ps1 -ConfirmIsolatedEnvironment -Setup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe"
+          python scripts/processing_observation_conformance.py verify --output .cache/dependency-evidence/observation-conformance
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action desktop --artifact .cache/dependency-evidence/observation-conformance/result.json --artifact scripts/processing_observation_conformance.py --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" --artifact scripts/test_processing_package.py --artifact scripts/test_processing_package.ps1 --artifact scripts/processing_smoke.py --artifact "build/windows/bundle/E-Rechnungs-Pruefer/E-Rechnungs-Pruefer.exe" --script scripts/test_windows_package.ps1 --evidence .cache/acceptance-logs/desktop.log -- pwsh -NoProfile -File scripts/test_windows_package.ps1 -ConfirmIsolatedEnvironment -Setup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test mutual exclusion of desktop and service modes
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action mode-exclusion --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" --script scripts/test_windows_mode_exclusion.ps1 --evidence .cache/acceptance-logs/mode-exclusion.log -- pwsh -NoProfile -File scripts/test_windows_mode_exclusion.ps1 -ConfirmIsolatedEnvironment -DesktopSetup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" -ServiceSetup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe"
+          python scripts/processing_observation_conformance.py verify --output .cache/dependency-evidence/observation-conformance
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action mode-exclusion --artifact .cache/dependency-evidence/observation-conformance/result.json --artifact scripts/processing_observation_conformance.py --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" --artifact "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" --script scripts/test_windows_mode_exclusion.ps1 --evidence .cache/acceptance-logs/mode-exclusion.log -- pwsh -NoProfile -File scripts/test_windows_mode_exclusion.ps1 -ConfirmIsolatedEnvironment -DesktopSetup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Setup.exe" -ServiceSetup "dist/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test installed Windows service package
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action service-recovery --artifact "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" --artifact scripts/test_processing_package.py --artifact scripts/test_processing_package.ps1 --artifact scripts/processing_smoke.py --artifact "build/windows/bundle/E-Rechnungs-Pruefer-Dienst/E-Rechnungs-Pruefer-Dienst.exe" --script scripts/test_windows_service_package.ps1 --evidence .cache/acceptance-logs/service-recovery.log -- pwsh -NoProfile -File scripts/test_windows_service_package.ps1 -ConfirmIsolatedEnvironment -Setup "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
+          python scripts/processing_observation_conformance.py verify --output .cache/dependency-evidence/observation-conformance
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/acceptance_context.py run-ci --root $env:EINVOICE_ACCEPTANCE_ROOT --controller $env:EINVOICE_ACCEPTANCE_CONTROLLER --action service-recovery --artifact .cache/dependency-evidence/observation-conformance/result.json --artifact scripts/processing_observation_conformance.py --artifact "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" --artifact scripts/test_processing_package.py --artifact scripts/test_processing_package.ps1 --artifact scripts/processing_smoke.py --artifact "build/windows/bundle/E-Rechnungs-Pruefer-Dienst/E-Rechnungs-Pruefer-Dienst.exe" --script scripts/test_windows_service_package.ps1 --evidence .cache/acceptance-logs/service-recovery.log -- pwsh -NoProfile -File scripts/test_windows_service_package.ps1 -ConfirmIsolatedEnvironment -Setup "build/windows/test-installer/E-Rechnungs-Pruefer-$version-Windows-x64-Dienst-Setup.exe" -AllowElevatedRecoveryTestContext -CommitHardKillRecovery Immediate
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify package evidence and unchanged dependency inventory
         shell: pwsh

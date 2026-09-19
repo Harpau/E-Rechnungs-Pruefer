@@ -22,13 +22,19 @@ from .desktop_security import (
     consume_api_token_environment,
     get_service_browser_sessions,
 )
-from .http_upload import HeaderValidationMiddleware, SecurityHeadersMiddleware, UploadProcessingMiddleware
+from .http_upload import (
+    HeaderValidationMiddleware,
+    SecurityHeadersMiddleware,
+    UploadProcessingMiddleware,
+    observation_id_from_scope,
+)
 from .processing.budgets import unavailable
 from .processing.manager import manager
+from .processing.observation import OBSERVATION_HEADER, OBSERVATION_PATH
 from .report_templates import report_environment
 from .settings import settings
 from .ui_contract import UI_REVISION, UI_STATIC_PREFIX
-from .upload_ingress import UploadLimits, upload_openapi
+from .upload_ingress import UploadError, UploadLimits, upload_openapi
 from .validators.kosit import KositValidator
 
 APP_DIR = Path(__file__).resolve().parent
@@ -126,6 +132,16 @@ templates.env.filters.update(report_environment().filters)
 _ANALYSIS_RETRY_AFTER_SECONDS = min(max(settings.kosit_timeout_seconds + 5, 5), 600)
 
 
+def _observation_parameter(*, required: bool) -> dict[str, Any]:
+    return {
+        "name": OBSERVATION_HEADER.decode("ascii"),
+        "in": "header",
+        "required": required,
+        "description": "Begrenzte RAM-Beobachtung; ausschließlich mit gültigem API-Bearer-Token verfügbar.",
+        "schema": {"type": "string", "pattern": "^[0-9a-f]{32}$", "minLength": 32, "maxLength": 32},
+    }
+
+
 def _upload_documentation(path: str) -> dict[str, Any]:
     metadata = upload_openapi(path, UploadLimits(max_upload_bytes=settings.max_upload_bytes))
     # Match FastAPI's generated string keys so its response headers are merged,
@@ -134,10 +150,13 @@ def _upload_documentation(path: str) -> dict[str, Any]:
     # These failures are produced by the isolated process controller, not FastAPI.
     metadata["responses"].update(
         {
+            "403": {"description": "Für die angeforderte Beobachtung fehlt ein gültiges API-Bearer-Token."},
+            "409": {"description": "Die Beobachtungskennung wird bereits verwendet."},
             "500": {"description": "Workerabbruch oder ungültiges Verarbeitungsprotokoll."},
             "504": {"description": "Die zulässige Verarbeitungsfrist wurde überschritten."},
         }
     )
+    metadata["parameters"] = [_observation_parameter(required=False)]
     return metadata
 
 
@@ -178,6 +197,57 @@ async def health() -> dict[str, Any]:
             "components": KOSIT_COMPONENT_VERSIONS,
         },
     }
+
+
+@app.get(
+    OBSERVATION_PATH,
+    summary="Begrenzte, ausdrücklich angeforderte Verarbeitungsbeobachtung",
+    description="Erfordert ein gültiges API-Bearer-Token und genau eine Beobachtungskennung; keine Abfrageparameter.",
+    openapi_extra={"parameters": [_observation_parameter(required=True)]},
+    responses={
+        400: {"description": "Ungültige Abfrage."},
+        403: {"description": "API-Bearer-Token erforderlich."},
+        404: {"description": "Kein aufbewahrter Nachweis."},
+        503: {"description": "Beobachtung nicht verfügbar."},
+    },
+)
+async def processing_observation(request: Request) -> Response:
+    try:
+        identifier = observation_id_from_scope(request.scope, required=True)
+        if (
+            request.scope.get("query_string")
+            or "transfer-encoding" in request.headers
+            or request.headers.get("content-length", "0") != "0"
+        ):
+            raise UploadError(
+                400, "observation_request_error", "Die Beobachtungsabfrage erlaubt keine Zusatzparameter."
+            )
+    except UploadError as error:
+        return JSONResponse(
+            {"type": error.error_type, "detail": error.detail},
+            status_code=error.status,
+            headers={"Cache-Control": "no-store"},
+        )
+    assert identifier is not None
+    try:
+        record = manager.observations.snapshot(identifier)
+        if record is None:
+            return JSONResponse(
+                {"type": "observation_not_found", "detail": "Für diese Kennung ist kein Nachweis verfügbar."},
+                status_code=404,
+                headers={"Cache-Control": "no-store"},
+            )
+        response = JSONResponse(record, headers={"Cache-Control": "no-store"})
+        if len(response.body) <= 16 * 1024:
+            return response
+    except Exception:
+        # Never expose diagnostics, exception text or an unbounded fallback body.
+        pass
+    return JSONResponse(
+        {"type": "observation_unavailable", "detail": "Die Verarbeitungsbeobachtung ist derzeit nicht verfügbar."},
+        status_code=503,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/examples/{example_name}")

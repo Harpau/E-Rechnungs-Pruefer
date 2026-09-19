@@ -236,7 +236,7 @@ try:
     assert select.select([ready_read], [], [], 2.0)[0], 'missing READY'
     with os.fdopen(ready_read, 'rb', buffering=0) as stream:
         ready = read_control(stream)
-    assert ready == dict(type='ready', role='watchdog', protocol=1, pid=watcher.pid,
+    assert ready == dict(type='ready', role='watchdog', protocol=2, pid=watcher.pid,
                          supervisor_pid=leader.pid, parent_pid=os.getpid())
     if mode == 'eof':
         os.close(writer)

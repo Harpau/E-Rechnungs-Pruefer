@@ -17,7 +17,17 @@ from ..configuration import Settings, settings_to_snapshot
 from ..upload_ingress import ReceivedUpload
 from .budgets import ProcessingBudgets, ProcessingError, timed_out, unavailable, worker_failed
 from .native import Child, PreparedRole, ProcessTree, spawn_role
-from .protocol import DATA_LIMIT, FrameKind, ProtocolError, read_control, read_frame, write_control, write_payload
+from .observation import ObservationConflict, ObservationLedger, validate_entering, validate_finished
+from .protocol import (
+    DATA_LIMIT,
+    VERSION,
+    FrameKind,
+    ProtocolError,
+    read_control,
+    read_frame,
+    write_control,
+    write_payload,
+)
 from .ready import validate_ready
 from .result import validate_result_metadata
 
@@ -77,7 +87,61 @@ class Lease:
         self._retained_context: Any = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.task: asyncio.Task[Any] | None = None
+        self.observation_id: str | None = None
+        self.observation_binding: dict[str, Any] | None = None
         self._bind_request()
+
+    def observe(self, phase: str, *, interval: dict[str, Any] | None = None) -> None:
+        if self.observation_id is None:
+            return
+        try:
+            self.owner.observations.note(self.observation_id, phase, interval=interval)
+        except Exception:
+            self._observation_unavailable()
+
+    def _observation_unavailable(self) -> None:
+        if self.observation_id is not None:
+            try:
+                self.owner.observations.invalidate(self.observation_id)
+            except Exception:
+                pass
+
+    def _observed_roles(self) -> dict[str, Child]:
+        roles = dict(self.tree.roles)
+        if self.tree.supervisor is not None:
+            roles["supervisor"] = self.tree.supervisor
+        if self.tree.watchdog is not None:
+            roles["watchdog"] = self.tree.watchdog
+        return roles
+
+    def _bind_observed_roles(self) -> None:
+        if self.observation_id is None:
+            return
+        try:
+            roles = [
+                {
+                    "role": name,
+                    "pid": child.pid,
+                    "parent_pid": os.getpid(),
+                    "creation_time": child.process.creation_time() if sys.platform == "win32" else None,
+                    "exit_code": None,
+                }
+                for name, child in self._observed_roles().items()
+            ]
+            self.owner.observations.bind_roles(self.observation_id, roles)
+        except Exception:
+            self._observation_unavailable()
+
+    def _observe_cleanup_confirmed(self) -> None:
+        if self.observation_id is not None:
+            try:
+                self.owner.observations.ended_roles(
+                    self.observation_id,
+                    {child.pid: child.process.returncode for child in self._observed_roles().values()},
+                )
+            except Exception:
+                self._observation_unavailable()
+        self.observe("cleanup_confirmed")
 
     def _bind_request(self) -> None:
         if self.loop is not None and self.task is not None:
@@ -109,6 +173,7 @@ class Lease:
             try:
                 value = self._execute(upload, app_settings, deadline=started + duration)
             except BaseException as exc:
+                self.observe("processing_error")
                 self.running = False
                 promise.set_exception(exc)
             else:
@@ -253,7 +318,7 @@ class Lease:
                 if ready != {
                     "type": "ready",
                     "role": "watchdog",
-                    "protocol": 1,
+                    "protocol": VERSION,
                     "pid": watcher.pid,
                     "supervisor_pid": supervisor.pid,
                     "parent_pid": os.getpid(),
@@ -287,6 +352,7 @@ class Lease:
                 "java_enabled": java_enabled,
                 "temporary_directory": str(temporary) if temporary is not None else None,
                 "role_pids": [worker.pid, *([java.pid] if java is not None else [])],
+                "observation": self.observation_binding,
             }
             write_control(supervisor.outgoing, setup)
             ready = read_control(supervisor.incoming)
@@ -311,12 +377,21 @@ class Lease:
             if worker.job is not None:
                 self.ready_manifest["worker_runtime_limits"] = {"job_memory_bytes": budgets.python_memory_bytes}
             self.ready.set()
+            self._bind_observed_roles()
+            self.observe("ready")
             write_control(supervisor.outgoing, {"type": "input", "size": upload.size})
             write_payload(supervisor.outgoing, upload.payload)
             if read_control(supervisor.incoming) != {"type": "input_received"}:
                 raise ProtocolError("Rechnungseingang wurde nicht bestätigt.")
             upload.close()
             self.python_deadline = time.monotonic() + budgets.python_seconds
+            self.observe("input_received")
+            if self.observation_binding is not None:
+                entering = read_control(supervisor.incoming)
+                if entering.get("type") == "error":
+                    raise _processing_error(entering)
+                validate_entering(entering, self.observation_binding)
+                self.observe("operation_entering")
             response = read_control(supervisor.incoming)
             if response == {"type": "java_wait"}:
                 if java is None:
@@ -344,6 +419,10 @@ class Lease:
                 )
                 self.python_deadline = time.monotonic() + remaining_python
                 response = read_control(supervisor.incoming)
+            if self.observation_binding is not None and response.get("type") != "error":
+                validate_finished(response, self.observation_binding)
+                self.observe("operation_finished", interval=response)
+                response = read_control(supervisor.incoming)
             if response.get("type") == "error":
                 raise _processing_error(response)
             if set(response) != {"type", "result"} or response["type"] != "result":
@@ -366,6 +445,7 @@ class Lease:
             if not self.tree.healthy():
                 raise worker_failed()
             self.python_deadline = None
+            self.observe("result_received")
             return BufferedResult(chunks, result["body_size"], result["media_type"], result["headers"])
         except ProcessingError:
             raise
@@ -378,6 +458,7 @@ class Lease:
                 except Exception:
                     descriptor_failure = True
             close_console_descriptors()
+            self.observe("cleanup_started")
             try:
                 self._cleanup(context)
             finally:
@@ -385,6 +466,7 @@ class Lease:
                     self.poisoned = True
             if descriptor_failure:
                 raise unavailable()
+            self._observe_cleanup_confirmed()
 
     def _wait_for_java(self, java: Child, worker: Child, timeout: float) -> int:
         deadline = time.monotonic() + timeout
@@ -456,9 +538,12 @@ class Lease:
             )
             if self.running or self.poisoned or (owns_native_resources and not self.tree.cleaned):
                 self.poisoned = True
-                return
-            self.released = True
-            self.owner.leases.discard(self)
+                phase = "poisoned"
+            else:
+                self.released = True
+                self.owner.leases.discard(self)
+                phase = "lease_released"
+        self.observe(phase)
 
 
 class ProcessingManager:
@@ -467,19 +552,31 @@ class ProcessingManager:
         self.lock = threading.Lock()
         self.leases: set[Lease] = set()
         self.accepting = True
+        self.observations = ObservationLedger()
 
     @property
     def active_count(self) -> int:
         with self.lock:
             return len(self.leases)
 
-    def try_acquire(self) -> Lease | None:
+    def try_acquire(self, *, observation_id: str | None = None, operation: str | None = None) -> Lease | None:
         with self.lock:
             if not self.accepting or len(self.leases) >= self.budgets.max_jobs:
                 return None
             lease = Lease(self)
             self.leases.add(lease)
-            return lease
+        if observation_id is not None:
+            try:
+                binding = self.observations.register(observation_id, operation or "")
+            except ObservationConflict:
+                lease.release()
+                raise
+            except Exception:
+                # Optional metadata cannot obstruct normal admission/cleanup.
+                binding = None
+            lease.observation_id = observation_id
+            lease.observation_binding = binding
+        return lease
 
     def startup(self) -> None:
         with self.lock:

@@ -21,6 +21,12 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   damit unveränderte Java-Prüfberichte nicht fälschlich als nachträglich verändert zurückgewiesen werden.
 - Für diese neue Prozessarchitektur sind native Plattform-, Frozen-/Installations- und Shutdownabnahmen erforderlich.
   Diese Änderungen ersetzen keine Sicherheitsupdates und ändern das bestehende Dependency-/Container-Freigabegate nicht.
+- Authentifizierte Automatisierungen können einzelne Aufträge mit `X-Einvoice-Observation-Id` zur begrenzten
+  RAM-Beobachtung markieren und ihren Zustand über `GET /api/processing-observation` abrufen. Die Funktion
+  speichert ausschließlich Prozess-/Zeitmetadaten und erfordert ausdrücklich das API-Bearer-Token.
+- Die Windows-Paketprüfung verwendet diese gebundenen Lebenszyklusnachweise statt fremder Eingabe-Pipe-Handles.
+  Ein vollständiger nativer Pflichtfallkatalog muss vor jeder Paketinstallation bestanden sein. Historische
+  Aktivität, zeitliche Überlappung und gezielte Unterbrechung erhalten getrennte Nachweiskriterien.
 
 ## 2.0.3 – 2026-09-16
 

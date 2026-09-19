@@ -1,6 +1,6 @@
 # Stand der Upload- und Workerabsicherung
 
-Stand: 18. September 2026. Die Schutzänderungen für frühe Uploadbegrenzung und begrenzte
+Stand: 19. September 2026. Die Schutzänderungen für frühe Uploadbegrenzung und begrenzte
 Rechnungsverarbeitung sind implementiert. **Die technische Gesamtabnahme ist `INCONCLUSIVE`; der PR bleibt
 Entwurf und ist nicht zur Veröffentlichung freigegeben.** Die vollständigen Nachweise für den installierten
 Windows-Desktop und -Dienst fehlen. Zusätzlich bleibt das OS-Sicherheitsgate gesperrt.
@@ -244,3 +244,21 @@ Die Python- und KoSIT-Java-Audits sind ohne Befund. Das Nullbefund-Gate bleibt g
 C1 ist mit 1/1 verbraucht; ursprüngliche Desktopversuche 2/2 und D1–D3 jeweils 1/1 bleiben unverändert.
 Ein weiterer nativer Lauf, pauschaler Retry, Rechteerhöhung oder Fehlerunterdrückung ist nicht freigegeben.
 Die technische Gesamtabnahme bleibt `INCONCLUSIVE`; Merge, Tag und Veröffentlichung sind nicht erfolgt.
+
+## Freigegebene Reparatur der Paketbeobachtung
+
+Am 19. September wurde nach drei unabhängigen Planreviews genau ein zusätzlicher vollständiger CI-Lauf
+mit wesentlich überarbeitetem Beobachter freigegeben. Alle oben genannten Altbudgets bleiben verbraucht.
+Die neue Freigabe enthält keine automatischen Wiederholungen, lokalen VM-Aktionen, Signatur-/Clientabnahme
+oder Veröffentlichung.
+
+Die Umsetzung ersetzt fremde Eingabe-Pipe-Zugriffe durch begrenzte, ausdrücklich Bearer-authentifizierte
+Ownernachweise. Eingabeannahme, vorbereiteter Operationsaufruf, tatsächlich abgeschlossenes Operationsintervall,
+Prozessbereinigung und Antwortversand werden getrennt. Vollständige Zeitüberlappung ist für den Lastnachweis
+erforderlich; gezielte Abbrüche behaupten weder einen gesicherten Funktionsbeginn noch CPU-Aktivität beim Kill.
+Der genaue Vertrag steht im [Releasegate](RELEASE.md#nachweis-der-installierten-windows-verarbeitung).
+
+Ein neuer nativer Pflichtfallkatalog muss vor jeder Paketinstallation vollständig bestanden sein. Anschließend
+werden frische Desktop-, Shipping-Dienst- und separate Recovery-Artefakte gebaut und anhand ihrer jeweiligen
+Kontexte bewertet. Vorbereitung und lokale Tests sind noch kein nativer Windows-Paketnachweis. Der zusätzliche
+Lauf ist hier noch nicht als begonnen oder bestanden dokumentiert; die historische C1-Ursache bleibt unbewiesen.

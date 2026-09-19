@@ -230,6 +230,35 @@ Nicht-ASCII-Eingaben werden kontrolliert abgewiesen. Prozesse desselben kompromi
 weiterhin außerhalb der Schutzgrenze. Desktop-Installer und -Uninstaller verwenden zur kontrollierten Beendigung
 nur das benannte lokale Desktop-Shutdown-Ereignis.
 
+#### Begrenzte Beobachtung für API-Automatisierungen
+
+Ein Upload mit genau einem Header `X-Einvoice-Observation-Id` aus 32 kleingeschriebenen Hex-Zeichen aktiviert
+einen begrenzten Metadatensatz für diesen Auftrag. Aufnahme und `GET /api/processing-observation` mit derselben
+Kennung verlangen ein tatsächlich geprüftes API-Bearer-Token; Browsercookie, Bootstraptoken oder ein Sourcebetrieb
+ohne konfigurierten API-Key reichen nicht. Ohne Header wird kein Beobachtungsdatensatz aufbewahrt. Der öffentliche
+Healthcheck bleibt unverändert. Kollisionen mit einer noch aufbewahrten Kennung enden vor Eingabeannahme mit
+`409 observation_conflict`; normale Kapazitätsgrenzen bleiben unverändert.
+
+Der Parent bindet eigene Instanz-/Jobkennungen sowie native Prozessidentitäten. Das Ledger enthält keine
+Rechnungspuffer, Rechnungs-/Ergebnishashes, Dateinamen, Pfade, Argumentlisten, Token, Handlewerte oder freien
+Fehlermeldungen. Es wird ausschließlich im RAM geführt: maximal zwei belegte und 16 terminale Datensätze,
+höchstens 16 Ereignisse und 8 KiB serialisierte Daten pro Auftrag. Terminale Datensätze sind höchstens
+120 Sekunden abrufbar; abgelaufene Einträge werden beim nächsten Abruf oder Anlegen aus dem RAM-Ledger entfernt.
+Ein volles Archiv verdrängt sichtbar den ältesten terminalen Datensatz. Aktive oder gesperrte
+Leases werden nicht zeitgesteuert verdrängt. Fehlende oder unbrauchbare Beobachtung beweist keinen Erfolg.
+
+Die Lese-API liefert genau einen angefragten Datensatz, maximal 16 KiB und `Cache-Control: no-store`. Sie erlaubt
+keine Listen, Abfrageparameter, frei wählbaren Prozessziele, Wartezeiten oder Steuerbefehle. Sie verändert weder
+Dienstberechtigungen noch Ressourcenlimits. Beobachtungsfehler dürfen Produktfristen, Rechnungsergebnis und
+Cleanup nicht verändern. Der private IPC-Vertrag bleibt streng und begrenzt; beschädigte Kontrollnachrichten
+werden weiterhin fail-closed behandelt.
+
+Die Zustände unterscheiden Eingabeannahme, unmittelbar bevorstehenden Operationsaufruf, dessen anschließend
+übermittelte Start-/Endzeiten, natives Cleanup, ASGI-Versand und Leasefreigabe. Offene HTTP-Antworten oder ein
+vergangenes Eingabe-ACK beweisen keine aktive Rechnungsverarbeitung. Das vollständige Operationsintervall umfasst
+auch interne Wartezeiten und beweist keine kontinuierliche CPU-Auslastung. Bei hartem Abbruch kann der terminale
+Zeitsatz fehlen; daraus wird weder ein tatsächlicher Funktionsbeginn noch Rechenaktivität im Killmoment abgeleitet.
+
 #### Dienstmodus und Maschinenzustand
 
 Ein vom Backend-Mutex getrennter, globaler Setup-/Uninstall-Mutex serialisiert alle erhöhten Installations-,

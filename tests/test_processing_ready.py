@@ -74,13 +74,13 @@ def _ready(*, windows=False, java=True):
     return {
         "type": "ready",
         "role": "supervisor",
-        "protocol": 1,
+        "protocol": 2,
         "limits": _profile(BUDGETS.supervisor_memory_bytes, windows),
-        "worker": {"type": "ready", "role": "worker", "protocol": 1, "limits": _profile(worker_memory, windows)},
+        "worker": {"type": "ready", "role": "worker", "protocol": 2, "limits": _profile(worker_memory, windows)},
         "java": {
             "type": "ready",
             "role": "java",
-            "protocol": 1,
+            "protocol": 2,
             "limits": _profile(BUDGETS.java_memory_bytes, windows, 60),
         }
         if java
@@ -109,7 +109,7 @@ def test_exact_ready_roundtrip_accepts_only_requested_profiles(windows, java):
     [
         (("protocol",), True),
         (("protocol",), 1.0),
-        (("protocol",), 2),
+        (("protocol",), 1),
         (("role",), "worker"),
         (("type",), "result"),
         (("worker", "protocol"), True),

@@ -48,6 +48,10 @@ _INFINITE = 0xFFFFFFFF
 _ERROR_INSUFFICIENT_BUFFER = 122
 
 
+class _FileTime(ctypes.Structure):
+    _fields_ = [("low", _DWORD), ("high", _DWORD)]
+
+
 class _IOCounters(ctypes.Structure):
     _fields_ = [
         (name, ctypes.c_uint64)
@@ -221,6 +225,7 @@ class _Win32:
             "TerminateProcess": ([_HANDLE, ctypes.c_uint], _BOOL),
             "WaitForSingleObject": ([_HANDLE, _DWORD], _DWORD),
             "GetExitCodeProcess": ([_HANDLE, ctypes.POINTER(_DWORD)], _BOOL),
+            "GetProcessTimes": ([_HANDLE, *([ctypes.POINTER(_FileTime)] * 4)], _BOOL),
             "IsProcessInJob": ([_HANDLE, _HANDLE, ctypes.POINTER(_BOOL)], _BOOL),
             "ResumeThread": ([_HANDLE], _DWORD),
             "CreateFileW": ([_LPCWSTR, _DWORD, _DWORD, _LPVOID, _DWORD, _DWORD, _HANDLE], _HANDLE),
@@ -334,6 +339,16 @@ class _Win32:
         self._check(self.dll.GetExitCodeProcess(handle, ctypes.byref(result)), "GetExitCodeProcess")
         return int(result.value)
 
+    def creation_time(self, handle: int) -> int:
+        created, exited, kernel, user = (_FileTime() for _ in range(4))
+        self._check(
+            self.dll.GetProcessTimes(
+                handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
+            ),
+            "GetProcessTimes",
+        )
+        return (int(created.high) << 32) | int(created.low)
+
     def duplicate_process_handle(self, handle: int) -> int:
         duplicate = _HANDLE()
         self._check(
@@ -443,6 +458,11 @@ class NativeProcess:
         if not self._handle:
             raise ValueError("Windows-Prozesshandle ist geschlossen.")
         return self._handle
+
+    def creation_time(self) -> int:
+        # Read the original owned process object, never reopen an unbound PID.
+        with self._lock:
+            return self._api.creation_time(self._open_handle())
 
     def poll(self) -> int | None:
         with self._lock:
