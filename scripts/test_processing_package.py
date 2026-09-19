@@ -379,6 +379,34 @@ def validate_distinct_jobs(trackers: list[ObservationTracker]) -> None:
         raise Inconclusive("Independent request/job/role identities are not distinct and complete.")
 
 
+def require_successful_transport(trackers: list[ObservationTracker]) -> None:
+    """Require owner ASGI completion separately from external HTTP receipts."""
+    validate_distinct_jobs(trackers)
+    for tracker in trackers:
+        require_owner_cleanup(tracker)
+        phases = [event["phase"] for event in tracker.record["events"]]
+        if "transport_failed" in phases:
+            raise ProbeError("Owner transport failure contradicts the complete normal HTTP response.")
+        required = ("response_sending", "response_send_complete", "lease_released")
+        if any(phases.count(phase) != 1 for phase in required):
+            raise Inconclusive("Complete owner-confirmed response send evidence is missing.")
+        positions = [phases.index(phase) for phase in required]
+        if positions != sorted(positions):
+            raise Inconclusive("Owner response send and lease release evidence is out of order.")
+
+
+def observation_receipts(trackers: list[ObservationTracker]) -> list[dict[str, Any]]:
+    return [
+        {
+            "observation_id": tracker.observation_id,
+            "poll_count": tracker.poll_count,
+            "latest": copy.deepcopy(tracker.envelope),
+            "revisions": copy.deepcopy(tracker.history),
+        }
+        for tracker in trackers
+    ]
+
+
 def require_active_observation(
     trackers: list[ObservationTracker], *, now: tuple[int, int], requests_done: bool
 ) -> None:
@@ -1689,6 +1717,9 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             request.thread.join(max(0, completion_deadline - time.monotonic()))
             if not request.done.is_set():
                 raise ProbeError("HTTP test request exceeded its bounded wait.")
+        report["responses"] = [
+            {**r.record, "transport_error": type(r.error).__name__ if r.error else None} for r in requests
+        ]
         if args.case in {"health", "xml25", "held-responses"}:
             if any(r.error is not None or r.record.get("status") != 200 for r in requests):
                 raise ProbeError("Bound normal synthetic request failed.")
@@ -1696,6 +1727,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                 raise ProbeError("Maximum XML bytes changed.")
             if args.case == "health" and not all(r.record.get("pdf_markers") for r in requests):
                 raise ProbeError("PDF response incomplete.")
+            report["functional_outcome"] = "PASS"
         elif any(r.record.get("status") == 200 for r in requests):
             raise Inconclusive("Request succeeded before injected termination.")
         if args.case not in {"parent-death", "controlled-stop"}:
@@ -1712,12 +1744,11 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
             report["role_exit_evidence"] = (
                 "preaction owner identities plus held kernel handles; final owner receipt unavailable after parent loss"
             )
-        report["responses"] = [
-            {**r.record, "transport_error": type(r.error).__name__ if r.error else None} for r in requests
-        ]
         report["bound_role_exit_confirmed"] = True
         if args.case in {"health", "xml25", "held-responses"}:
-            report["functional_outcome"] = "PASS"
+            report["observations"] = observation_receipts(trackers)
+            phase = "verify-response-send"
+            require_successful_transport(trackers)
         if args.case == "health":
             report["health_overlap"] = validate_health_overlap(
                 trackers, report["health_intervals"], report["third_request_capacity"]
@@ -1760,15 +1791,7 @@ def run(args: argparse.Namespace, api: WindowsAPI) -> dict[str, Any]:
                 started=probe_started,
                 discovered_count=discovered_count,
             )
-        report["observations"] = [
-            {
-                "observation_id": t.observation_id,
-                "poll_count": t.poll_count,
-                "latest": t.envelope,
-                "revisions": t.history,
-            }
-            for t in trackers
-        ]
+        report["observations"] = observation_receipts(trackers)
         # Never repair failed product cleanup by killing unidentified processes.
         report["held_process_exit_codes"] = []
         for handle, identity in ([(parent_handle, bound_parent[1])] if bound_parent is not None else []) + [

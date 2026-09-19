@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -66,6 +67,103 @@ def test_fast_completed_owner_record_needs_no_foreign_process_open() -> None:
     assert result.record["roles"][0]["exit_code"] == 0
     assert not probe.PROCESS_ACCESS & 0x40
     assert not hasattr(probe.WindowsAPI, "peek_marker")
+
+
+def normal_owner_value(observation_id: str, operation: str, *, index: int = 0, change: str = "none") -> dict[str, Any]:
+    """Synthetic normal response evidence; never historical release receipts."""
+    value = envelope(complete=True, observation_id=observation_id)
+    record = value["record"]
+    record["operation"] = operation
+    record["job_id"] = observation_id
+    for role in record["roles"]:
+        role["pid"] += index * 2
+    phases = [event["phase"] for event in record["events"]]
+    if change == "r1-failed":
+        phases[phases.index("response_send_complete")] = "transport_failed"
+    elif change == "missing-complete":
+        phases.remove("response_send_complete")
+    elif change == "missing-sending":
+        phases.remove("response_sending")
+    elif change == "missing-release":
+        phases.remove("lease_released")
+    elif change == "wrong-order":
+        phases[-3:-1] = reversed(phases[-3:-1])
+    elif change == "duplicate-complete":
+        phases.insert(-1, "response_send_complete")
+    elif change == "contradictory":
+        phases.insert(-1, "transport_failed")
+    elif change == "wrong-parent":
+        record["parent"]["creation_time"] += 1
+    elif change == "wrong-observation":
+        record["observation_id"] = "f" * 32
+    elif change == "unconfirmed-cleanup":
+        record["roles"][0]["exit_code"] = None
+    elif change == "missing-cleanup":
+        phases.remove("cleanup_confirmed")
+    record["events"] = [
+        {
+            "sequence": index + 1,
+            "phase": phase,
+            "at": (index + 1) * 100,
+            **({"started": 401, "finished": 499} if phase == "operation_finished" else {}),
+        }
+        for index, phase in enumerate(phases)
+    ]
+    record["revision"] = len(phases) + 3
+    return value
+
+
+@pytest.mark.parametrize("mode", ["desktop", "service"])
+@pytest.mark.parametrize("case", ["health", "xml25", "held-responses"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "none",
+        "r1-failed",
+        "missing-complete",
+        "missing-sending",
+        "missing-release",
+        "wrong-order",
+        "duplicate-complete",
+        "contradictory",
+        "wrong-parent",
+        "wrong-observation",
+        "unconfirmed-cleanup",
+        "missing-cleanup",
+    ],
+)
+def test_normal_response_requires_positive_bound_send_completion(mode: str, case: str, change: str) -> None:
+    package = replace(binding(), mode=mode, service_sid=None if mode == "desktop" else binding().service_sid)
+    operation = "report_pdf" if case == "health" else "export_xml"
+    count = 1 if case == "xml25" else 2
+
+    def validate() -> None:
+        trackers = []
+        for index in range(count):
+            identifier = str(index + 1) * 32
+            result = probe.ObservationTracker(package, identifier, operation)
+            value = normal_owner_value(identifier, operation, index=index, change=change if index == 0 else "none")
+            result.update(value, before=(1199, 1000), after=(1201, 1000))
+            trackers.append(result)
+        probe.require_successful_transport(trackers)
+
+    if change == "none":
+        validate()
+    elif change in {"r1-failed", "contradictory"}:
+        with pytest.raises(probe.ProbeError) as captured:
+            validate()
+        assert not isinstance(captured.value, probe.Inconclusive)
+    else:
+        with pytest.raises(probe.Inconclusive):
+            validate()
+
+
+def test_successful_send_records_must_have_distinct_job_and_role_bindings() -> None:
+    result = tracker(complete=True)
+    with pytest.raises(probe.Inconclusive):
+        probe.require_successful_transport([result, result])
+    with pytest.raises(probe.Inconclusive):
+        probe.require_successful_transport([])
 
 
 @pytest.mark.parametrize(

@@ -27,6 +27,12 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 - Die Windows-Paketprüfung verwendet diese gebundenen Lebenszyklusnachweise statt fremder Eingabe-Pipe-Handles.
   Ein vollständiger nativer Pflichtfallkatalog muss vor jeder Paketinstallation bestanden sein. Historische
   Aktivität, zeitliche Überlappung und gezielte Unterbrechung erhalten getrennte Nachweiskriterien.
+- Die Versanddiagnose erkennt den erfolgreichen ASGI-Abschluss auch dann, wenn Uvicorn gleichzeitig einen
+  regulären Disconnect meldet. Vorzeitige Abbrüche, Sendfehler, Timeout und Cancellation bleiben Fehler;
+  Antwortversand und laufende Verarbeitung haben getrennte Abbruchregeln. Auch Fehlerantworten erhalten
+  den passenden Versandnachweis, und Cancellation gibt den Auftragsplatz erst nach dem erforderlichen Cleanup frei.
+- Normale Windows-Paketfälle benötigen zusätzlich zum externen Empfang einen positiven Versandabschluss des
+  Owners. Widersprüche stoppen die Prüfung vor dem Recovery-Auftrag und erhalten die bisherigen Nachweise.
 
 ## 2.0.3 – 2026-09-16
 

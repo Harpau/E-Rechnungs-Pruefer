@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Protocol, TypeVar
 
 from starlette.requests import ClientDisconnect
@@ -159,7 +160,7 @@ class HeaderValidationMiddleware:
 async def _send_early(response: Response, scope: Scope, receive: Receive, send: Send) -> bool:
     # Early rejection deliberately never calls receive (including Expect: 100-continue).
     try:
-        await asyncio.wait_for(response(scope, receive, send), timeout=30.0)
+        await _send_connected(lambda: response(scope, receive, send), None, 30.0)
     except (OSError, TimeoutError):
         return False
     return True
@@ -192,6 +193,52 @@ async def _connected(awaitable: Awaitable[T], disconnect: asyncio.Task[None]) ->
             task.cancel()
         # Cancellation of run must finish its bounded native cleanup before release.
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def _cancel_send(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    finished = asyncio.gather(task, return_exceptions=True)
+    cancellation: asyncio.CancelledError | None = None
+    while not finished.done():
+        try:
+            # A repeated caller cancellation must not cancel the sender's cleanup.
+            await asyncio.shield(finished)
+        except asyncio.CancelledError as error:
+            cancellation = error
+    if cancellation is not None:
+        raise cancellation
+
+
+async def _send_connected(
+    sender: Callable[[], Awaitable[None]], disconnect: asyncio.Task[None] | None, seconds: float
+) -> None:
+    async def send_if_connected() -> None:
+        # Check inside the task too: disconnect may finish before its first turn.
+        if disconnect is not None and disconnect.done():
+            raise ClientDisconnect
+        await sender()
+
+    task = asyncio.create_task(send_if_connected())
+    try:
+        # Observe the actual send, not a wait_for wrapper that can lag behind it.
+        # This is one deadline for the entire response, including all its chunks.
+        async with asyncio.timeout(seconds):
+            await asyncio.wait(
+                (task,) if disconnect is None else (task, disconnect), return_when=asyncio.FIRST_COMPLETED
+            )
+            if task.done():
+                # Uvicorn also wakes receive() with disconnect on normal completion.
+                # result() distinguishes successful completion from error/cancel.
+                task.result()
+            else:
+                raise ClientDisconnect
+    finally:
+        if not task.done():
+            await _cancel_send(task)
+        elif not task.cancelled():
+            # Consume errors even if the caller was cancelled at send completion.
+            # No extra scheduling point between successful send and observation.
+            task.exception()
 
 
 async def _send_result(result: BufferedResult, send: Send) -> None:
@@ -283,22 +330,28 @@ class UploadProcessingMiddleware:
             try:
                 result = await _connected(lease.run(upload, app_settings), disconnect)
             except ProcessingError as error:
-                _observe(lease, observation_id, "response_sending")
-                await _connected(
-                    asyncio.wait_for(_error_response(error)(scope, receive, send), send_seconds),
-                    disconnect,
-                )
-                _observe(lease, observation_id, "response_send_complete")
-                return
+                response = _error_response(error)
+                sender: Callable[[], Awaitable[None]] = partial(response, scope, receive, send)
+            else:
+                sender = partial(_send_result, result, send)
             _observe(lease, observation_id, "response_sending")
-            await _connected(asyncio.wait_for(_send_result(result, send), send_seconds), disconnect)
+            try:
+                await _send_connected(sender, disconnect, send_seconds)
+            except (ClientDisconnect, OSError, TimeoutError):
+                raise  # The outer transport handler records these once.
+            except Exception:
+                _observe(lease, observation_id, "transport_failed")
+                raise
             _observe(lease, observation_id, "response_send_complete")
         except UploadError as error:
+            if upload is not None:
+                # A sender's unexpected UploadError is not an ingress rejection.
+                raise
             _observe(lease, observation_id, "upload_failed")
             _observe(lease, observation_id, "response_sending")
             try:
                 completed = await _send_early(_error_response(error), scope, receive, send)
-            except asyncio.CancelledError:
+            except (Exception, asyncio.CancelledError):
                 _observe(lease, observation_id, "transport_failed")
                 raise
             _observe(lease, observation_id, "response_send_complete" if completed else "transport_failed")
@@ -310,9 +363,12 @@ class UploadProcessingMiddleware:
             _observe(lease, observation_id, "transport_failed")
             raise
         finally:
-            if disconnect is not None:
-                disconnect.cancel()
-                await asyncio.gather(disconnect, return_exceptions=True)
-            if upload is not None:
-                upload.close()
-            lease.release()
+            try:
+                if disconnect is not None:
+                    disconnect.cancel()
+                    await asyncio.gather(disconnect, return_exceptions=True)
+            finally:
+                # Cancellation after the success observation still owns this lease.
+                if upload is not None:
+                    upload.close()
+                lease.release()

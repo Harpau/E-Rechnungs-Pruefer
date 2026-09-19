@@ -1,13 +1,43 @@
 # Stand der Upload- und Workerabsicherung
 
 Stand: 19. September 2026. Die Schutzänderungen für frühe Uploadbegrenzung und begrenzte
-Rechnungsverarbeitung sind implementiert. **Die Abnahme der Beobachterreparatur endet mit `FAIL_PRODUCT`:
-Erfolgreich ausgelieferte Antworten werden intern fälschlich als Transportfehler erfasst.** Die externen
-Desktop-/Dienst-Funktionsprüfungen haben vollständig bestanden; die uneingeschränkte Kandidatenabnahme bleibt
-gesperrt. Der PR bleibt Entwurf. Zusätzlich bleibt das OS-Sicherheitsgate rot.
+Rechnungsverarbeitung sind implementiert. **Die R1-Abnahme des bisherigen Kandidaten endet mit `FAIL_PRODUCT`:
+Erfolgreich ausgelieferte Antworten wurden intern fälschlich als Transportfehler erfasst.** Die externen
+Desktop-/Dienst-Funktionsprüfungen von R1 haben vollständig bestanden. Die nachfolgende lokale Korrektur benötigt
+eine eigene Abnahme des neuen Kandidaten; die uneingeschränkte Freigabe bleibt gesperrt. Der PR bleibt Entwurf.
+Zusätzlich bleibt das OS-Sicherheitsgate rot.
 
 Maßgeblich sind der lokale Controllerplan und die versiegelten Originalnachweise nach
 [`ACCEPTANCE.md`](ACCEPTANCE.md). Dieses Dokument beschreibt den belegten Stand und ersetzt diese Evidence nicht.
+
+## Lokale Korrektur der Versanddiagnose nach R1
+
+Die Versandphase beobachtet das tatsächliche Send-Task mit einer Gesamtsendefrist. Ein erfolgreich
+abgeschlossenes Send gewinnt gegenüber dem Disconnect, den Uvicorn beim normalen Antwortende selbst meldet.
+Exceptions, Deadline und Cancellation dürfen keinen positiven Abschluss vortäuschen. Ein bereits bekannter
+Disconnect verhindert den Beginn eines neuen Versands. Während laufender Verarbeitung bleibt dagegen der
+Disconnect-Vorrang erhalten; die erforderliche native Bereinigung muss vor Lease-Freigabe abgeschlossen sein.
+
+Erfolgs- und Fehlerantworten verwenden dieselbe Versandsteuerung. Frühe Ablehnungen lesen weiterhin keinen
+Requestbody. Unerwartete Exceptions aus dem Sender werden nach der Fehlerdiagnose weitergereicht und erzeugen
+keine Ersatzstatuszeile. Wiederholte Cancellation unterbricht die Bereinigung des Send-Tasks nicht; auch
+Cancellation nach Veröffentlichung des Versandabschlusses schließt den Upload und gibt das Lease frei.
+Die Authentifizierung und Begrenzungen der opt-in Beobachtung bleiben unverändert.
+
+Für normale Paketfälle (`health`, `xml25`, `held-responses`) sind nun zusätzlich zu den externen
+HTTP-/XML-/PDF-Nachweisen vollständige, gebundene Ownerrecords mit der geordneten Folge
+`response_sending → response_send_complete → lease_released` und bestätigtem Cleanup erforderlich.
+`transport_failed` widerspricht einem vollständigen normalen Empfang und sperrt das vollständige PASS;
+fehlende oder ungültige Evidence bleibt nicht entscheidbar. Der externe Funktionserfolg wird separat erhalten.
+Der Prüfer sichert Empfangsreceipts und Ownerrecords und bewertet sie vor dem Recovery-Auftrag. Bei einem
+Widerspruch folgt kein weiterer Produktrequest. Gezielt abgebrochene Fälle behalten ihre eigenen Kriterien.
+
+Synthetische Regressionen bilden normalen Uvicorn-Abschluss mit den tatsächlichen h11-/httptools-Protokollklassen
+im RAM sowie Sendfehler, Disconnect, Timeout, Cancellation und Cleanup ab. Die Prüferregressionen führen
+die widersprüchliche R1-Ereignisfolge mit erfundenen Daten durch den tatsächlichen Fallabschluss. Diese lokalen
+Tests sind keine erneute Windows-Paketabnahme: `response_send_complete` belegt den ASGI-Abschluss, keinen
+Clientempfang. Der neue Kandidat benötigt weiterhin eigene Artefaktbindungen und eine gesonderte Freigabe
+für einen weiteren nativen Lauf. Die versiegelten R1-Nachweise und deren `FAIL_PRODUCT` bleiben unverändert.
 
 ## Implementierte Schutzwirkung
 
