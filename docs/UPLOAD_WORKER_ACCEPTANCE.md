@@ -1,9 +1,10 @@
 # Stand der Upload- und Workerabsicherung
 
 Stand: 19. September 2026. Die Schutzänderungen für frühe Uploadbegrenzung und begrenzte
-Rechnungsverarbeitung sind implementiert. **Die technische Gesamtabnahme ist `INCONCLUSIVE`; der PR bleibt
-Entwurf und ist nicht zur Veröffentlichung freigegeben.** Die vollständigen Nachweise für den installierten
-Windows-Desktop und -Dienst fehlen. Zusätzlich bleibt das OS-Sicherheitsgate gesperrt.
+Rechnungsverarbeitung sind implementiert. **Die Abnahme der Beobachterreparatur endet mit `FAIL_PRODUCT`:
+Erfolgreich ausgelieferte Antworten werden intern fälschlich als Transportfehler erfasst.** Die externen
+Desktop-/Dienst-Funktionsprüfungen haben vollständig bestanden; die uneingeschränkte Kandidatenabnahme bleibt
+gesperrt. Der PR bleibt Entwurf. Zusätzlich bleibt das OS-Sicherheitsgate rot.
 
 Maßgeblich sind der lokale Controllerplan und die versiegelten Originalnachweise nach
 [`ACCEPTANCE.md`](ACCEPTANCE.md). Dieses Dokument beschreibt den belegten Stand und ersetzt diese Evidence nicht.
@@ -260,5 +261,62 @@ Der genaue Vertrag steht im [Releasegate](RELEASE.md#nachweis-der-installierten-
 
 Ein neuer nativer Pflichtfallkatalog muss vor jeder Paketinstallation vollständig bestanden sein. Anschließend
 werden frische Desktop-, Shipping-Dienst- und separate Recovery-Artefakte gebaut und anhand ihrer jeweiligen
-Kontexte bewertet. Vorbereitung und lokale Tests sind noch kein nativer Windows-Paketnachweis. Der zusätzliche
-Lauf ist hier noch nicht als begonnen oder bestanden dokumentiert; die historische C1-Ursache bleibt unbewiesen.
+Kontexte bewertet. Der folgende R1-Lauf wurde ausgeführt; die historische C1-Ursache bleibt unbewiesen.
+
+
+## R1: Funktionsnachweise bestanden, Versanddiagnose fehlerhaft
+
+[R1, Lauf 35430774332, Versuch 1](https://github.com/Harpau/E-Rechnungs-Pruefer/actions/runs/35430774332)
+prüfte ausschließlich Produktcommit `e732befcfc06c526562a8bbeeff776a866a8cdf1`. Der Windows-Job und alle drei
+Installationswrapper meldeten Erfolg. Erst die unabhängige Prüfung der Originale nach Ende des Laufs zeigte
+den unten beschriebenen Produktbefund. Die originalen PASS-Receipts werden nicht umgeschrieben.
+
+| R1-Prüfung | Belegtes Ergebnis |
+|---|---|
+| Lokales Gate vor Dispatch | 2.861 Tests bestanden, 14 Skips, 86,26 % App-Coverage; Versionen, Ruff, Format, Mypy und Actionlint bestanden. Ein vorheriger Lauf scheiterte ausschließlich an verweigerten lokalen Test-Sockets in der Ausführungsumgebung. |
+| GitHub Quality/Python | Qualitätsgate und Python 3.11–3.14 bestanden. |
+| Source/Wheel | 80 Appdateien bytegleich; acht Aufträge im separat installierten Wheel, 16 Rollen beendet, keine belegten Plätze. |
+| macOS ARM | 555 Tests bestanden, ein Windows-spezifischer Skip; native Verarbeitung und Lebenszyklus bestanden. Keine CPython-Backport-Abnahme der macOS-Laufzeit daraus abgeleitet. |
+| Linux amd64/arm64 | Funktionale Verarbeitung, Abbruchfälle, HTTP und KoSIT bestanden; beide OS-Audits gescheitert, kein Imageexport/-upload. |
+| Windows vor Installation | Acht obligatorische Beobachtungsfälle vollständig bestanden, davon vier mit echten nativen Owner-/Cleanupnachweisen; 246 Quellbindungen geprüft. Weitere Integrationstests: 1.803 bestanden, 16 Skips; native Verarbeitung und echte KoSIT-Prüfungen bestanden. |
+| Installierter Desktop und Dienst | Je sieben externe Verarbeitungsfälle bestanden: gehaltene Antworten, Health unter Last, 25-MiB-XML, Worker-/Supervisor-/Parentverlust und kontrollierter Stop. Neustart und Folgeaufträge nachgewiesen. |
+| Modusausschluss / Dienst-Recovery | Drei korrekt konsumierte, terminale PASS-Kindkontexte. Dienst unter LocalService `S-1-5-19`; Immediate Recovery und reguläre Deinstallation einschließlich Restprüfungen durch gebundene Wrapperlogs belegt. |
+| Originalartefakte | Neun Archive mit insgesamt 522.811.050 Bytes erhalten; Installer-/EXE-/Kontextbindungen unabhängig geprüft. Drei EXEs mit je 37 CPython-Sicherheitsfällen, Desktop/Dienst mit je 23 App-Quellbindungen. |
+
+Desktop und Dienst besitzen jeweils 22 vollständige Healthintervalle innerhalb beider tatsächlich gemessenen
+Bearbeitungsintervalle; alle überlappenden Proben unterschritten eine Sekunde. Die zusätzliche Anfrage erhielt
+innerhalb derselben Überlappung `503 analysis_capacity_error`. Je zwei gehaltene 25-MiB-XML-Antworten wurden
+bytegleich empfangen; die anschließenden frischen Aufträge bestanden. Bei gezielten Abbrüchen gilt weiterhin
+nur der freigegebene Vertrag aus angenommener Eingabe, bestätigtem bevorstehendem Aufruf, frischem Stand ohne
+bekannten Abschluss und nachgewiesenem Rollenende – keine atomare CPU-Aktivitätsaussage im Eingriffsmoment.
+
+Die Dienst-/Recovery-Prüfung verwendete den gesonderten Testinstaller; dieser ist nicht der reguläre
+Dienstinstaller. Die installierte Dienst-EXE ist dagegen bytegleich zur regulären Auslieferung. Separate
+Inno-Einzellogs sind im Paketnachweisarchiv nicht enthalten; deren byteweise Nachprüfung wird nicht behauptet.
+
+### Bestätigter Produktbefund
+
+In allen sechs normalen Desktop-/Dienstfällen enthalten zehn Ownerrecords die Folge
+`response_sending → transport_failed → lease_released`, obwohl der externe Client die vollständigen
+HTTP-200-Antworten und die erwarteten XML-Bytes beziehungsweise PDF-Marker bestätigt.
+
+`_connected()` priorisiert ein abgeschlossenes Disconnect-Task auch bei gleichzeitig erfolgreich beendetem
+Send-Task. Uvicorn 0.53.0 kann nach regulärem Antwortabschluss selbst `http.disconnect` liefern. Das neue
+Beobachtungsmapping erfasst diesen Ausgang deshalb undifferenziert als Transportfehler. Eine deterministische
+reine RAM-Reproduktion bestätigt die fehlerhafte Priorisierung. Die Tests prüfen externe Antwort und terminalen
+Ownerzustand getrennt und erkannten diese falsche Diagnosephase nicht.
+
+Zwei unabhängige Prüfer klassifizieren dies als `FAIL_PRODUCT`, Priorität P2, begrenzt auf die neue
+Versanddiagnose. Kein Rechnungsdatenverlust, Sicherheitsbypass oder fehlgeschlagener Prozesscleanup ist dadurch
+belegt. Die externen Funktionsnachweise bleiben gültig; die vollständige Beobachterreparatur erhält kein PASS.
+Die regulären Rollenexitcodes 1 sind hingegen Folge des vorgesehenen nativen Cleanup und kein Absturzbeweis.
+
+Die Korrektur benötigt einen neuen Kandidaten und zusätzliche Regressionen für normalen Sendabschluss,
+gleichzeitig fertige Tasks und echte Abbrüche. Nach Entdeckung wurden keine weiteren Produktaktionen oder
+CI-Läufe ausgeführt. Der R1-Stamm ist mit Originalarchiven, Klassifikation, unabhängigen Reviews und konkreter
+Befundübergabe versiegelt; sämtliche früheren Evidence-Stämme bleiben unverändert.
+
+Das OS-Gate meldet unverändert gegenüber C1 je Architektur 49 Kennungen in 69 Paketzeilen, darunter acht
+HIGH-Kennungen in neun Zeilen. Python- und KoSIT-Audits sind ohne Befund; dies ist keine neue
+Ausnutzbarkeitsbewertung. R1 ist mit 1/1 verbraucht. Signatur-, Client-, Reboot- und manuelle GUI-Abnahme bleiben
+separat; Merge, Tag und Veröffentlichung sind nicht erfolgt.
