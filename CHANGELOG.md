@@ -4,6 +4,22 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 2.0.3 – 2026-10-18
+
+### Sicherheitswartung der Abhängigkeiten
+
+- pypdf, das eingebettete Rechnungs-XML aus PDF-Dateien liest, ist im Windows-Paket von 6.15.0 auf 6.21.1
+  aktualisiert. Quell- und Containerinstallationen verlangen mindestens pypdf 6.19, die erste Version ohne die
+  gemeldeten Befunde PYSEC-2026-3910, -3911, -3913 und -4153 bis -4160.
+- Die gelockte Windows-Build- und Testumgebung verwendet HTTPX2 und HTTPCore2 2.13.1 statt 2.9.1
+  (PYSEC-2026-3844 bis -3849) sowie pip 26.2.1 statt 26.1.2 (PYSEC-2026-3721). Die Anwendung selbst importiert
+  diese Pakete nicht.
+- Wohlgeformte Hybrid-PDFs werden unverändert verarbeitet. Durch die neue pypdf-Version werden beschädigte
+  Anhang- oder Seitenbäume teilweise toleranter gelesen, und Anhangsstreams mit mehr als 16 Filtern werden als
+  nicht auslesbar abgewiesen. Eine Sicht-PDF ohne eingebettete XML gilt weiterhin nicht als E-Rechnung.
+- Der wöchentliche Dependency-Audit des gelockten Windows-Pakets ist damit wieder ohne Befund. Eigene Prüflogik,
+  Darstellung, Analyseschema und Bedienung bleiben gegenüber 2.0.2 unverändert.
+
 ## 2.0.2 – 2026-08-17
 
 ### Windows-Oberfläche und KoSIT-Ausführung
