@@ -28,6 +28,7 @@ EXCLUDED_PARTS = {
     ".venv",
     ".vscode",
     ".cache",
+    ".claude",
     "__pycache__",
     "build",
     "dist",
