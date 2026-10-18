@@ -74,6 +74,8 @@ def test_release_filter_excludes_local_and_sensitive_files():
     assert module.should_include(Path("vendor/kosit/validator.jar")) is False
     assert module.should_include(Path("runtime/java/bin/java.exe")) is False
     assert module.should_include(Path(".cache/windows-components/java.zip")) is False
+    assert module.should_include(Path(".claude/worktrees/example-session/README.md")) is False
+    assert module.should_include(Path(".claude/settings.local.json")) is False
     assert module.should_include(Path("e_rechnung_pruefer.egg-info/PKG-INFO")) is False
     assert module.should_include(Path("app/main.py")) is True
 

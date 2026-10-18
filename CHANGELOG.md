@@ -4,6 +4,12 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Release-Paketierung
+
+- `scripts/build_release.py` schließt den lokalen Ordner `.claude/` (Claude-Code-Session-Worktrees und lokale
+  Einstellungen) aus dem Repository-ZIP aus. Lokale Builds aus einem Checkout mit Session-Worktrees haben diese
+  bisher mitverpackt; CI-Builds waren nicht betroffen.
+
 ## 2.0.3 – 2026-10-18
 
 ### Sicherheitswartung der Abhängigkeiten
