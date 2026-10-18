@@ -8,6 +8,22 @@ updates:
     open-pull-requests-limit: 5
     labels: [dependencies, python]
 
+  # Windows release lock: security updates only, grouped into one PR. Dependabot
+  # replaces a bumped hash with the hashes of every PyPI file (all wheels and the
+  # sdist) and does not re-resolve the lock, so reduce each line to the
+  # win_amd64/cp313 wheel hash and check transitive pins before merging.
+  - package-ecosystem: pip
+    directory: "/packaging/windows"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 0
+    labels: [dependencies, python]
+    groups:
+      windows-release-lock:
+        applies-to: security-updates
+        patterns: ["*"]
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
