@@ -85,12 +85,12 @@ class ProfileResolution:
         }
 
 
-_BUNDLED_RULES = "CEN-EN16931-validation-1.3.15 / XRechnung-3.0.2"
+_BUNDLED_RULES = "CEN-EN16931-validation-1.3.16 / XRechnung-3.0.2"
 
 _SUPPORTED_BUNDLED = ProfileCapabilities(
     internal_semantics=InternalSemanticCapability.SUPPORTED,
     official_validation=OfficialValidationCapability.BUNDLED,
-    document_type_policy="cen-en16931-1.3.15",
+    document_type_policy="cen-en16931-1.3.16",
     official_rules_version=_BUNDLED_RULES,
 )
 _SUPPORTED_NOT_BUNDLED = ProfileCapabilities(

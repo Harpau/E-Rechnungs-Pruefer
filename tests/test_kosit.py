@@ -385,7 +385,7 @@ def _settings(tmp_path: Path, jar: Path) -> Settings:
 
 
 def test_library_jar_without_main_class_is_not_configured(tmp_path):
-    jar = tmp_path / "validator-1.6.2.jar"
+    jar = tmp_path / "validator-1.6.3.jar"
     _write_jar(jar, None)
     state = KositValidator(_settings(tmp_path, jar)).configuration_state()
     assert state["configured"] is False
@@ -393,7 +393,7 @@ def test_library_jar_without_main_class_is_not_configured(tmp_path):
 
 
 def test_manifest_start_error_is_not_reported_as_invoice_rejection(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.2-standalone.jar"
+    jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
     validator = KositValidator(_settings(tmp_path, jar))
 
@@ -402,7 +402,7 @@ def test_manifest_start_error_is_not_reported_as_invoice_rejection(tmp_path, mon
             args=args[0],
             returncode=1,
             stdout=b"",
-            stderr=b"kein Hauptmanifestattribut, in validator-1.6.2.jar",
+            stderr=b"kein Hauptmanifestattribut, in validator-1.6.3.jar",
         )
 
     monkeypatch.setattr("app.validators.kosit._run_kosit_process", fake_run)
@@ -417,7 +417,7 @@ def test_manifest_start_error_is_not_reported_as_invoice_rejection(tmp_path, mon
 
 
 def test_real_kosit_reject_report_is_reported_as_rejection(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.2-standalone.jar"
+    jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
     validator = KositValidator(_settings(tmp_path, jar))
     report = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -440,7 +440,7 @@ def test_real_kosit_reject_report_is_reported_as_rejection(tmp_path, monkeypatch
 
 
 def test_kosit_accept_report_is_reported_as_accepted(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.2-standalone.jar"
+    jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
     validator = KositValidator(_settings(tmp_path, jar))
     report = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -500,7 +500,7 @@ def test_report_parser_ignores_embedded_xhtml_and_preserves_varl_source_coordina
 
 
 def test_windows_kosit_process_is_started_without_console(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.2-standalone.jar"
+    jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
     validator = KositValidator(_settings(tmp_path, jar))
     observed: dict[str, int] = {}
@@ -528,17 +528,17 @@ def test_installer_uses_locked_components_and_selects_only_standalone_jar(tmp_pa
     spec.loader.exec_module(module)
 
     locked = module.load_lock(module.DEFAULT_LOCK_FILE)
-    assert locked["components"]["validator"]["version"] == "KoSIT Validator 1.6.2"
-    assert locked["components"]["xrechnung"]["version"].endswith("2026-01-31")
+    assert locked["components"]["validator"]["version"] == "KoSIT Validator 1.6.3"
+    assert locked["components"]["xrechnung"]["version"].endswith("2026-08-31")
     assert locked["standards"] == {
         "xrechnung": "3.0.2",
-        "xrechnung_configuration": "2026-01-31",
-        "cen_en16931": "1.3.15",
-        "xrechnung_schematron": "2.5.0",
+        "xrechnung_configuration": "2026-08-31",
+        "cen_en16931": "1.3.16",
+        "xrechnung_schematron": "2.6.0",
     }
 
-    normal = tmp_path / "validator-1.6.2.jar"
-    standalone = tmp_path / "validator-1.6.2-standalone.jar"
+    normal = tmp_path / "validator-1.6.3.jar"
+    standalone = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(normal, None)
     _write_jar(standalone, "de.kosit.validationtool.cmd.CommandLineApplication")
     assert module.find_validator_jar(tmp_path) == standalone
@@ -569,9 +569,9 @@ def test_installer_rejects_unknown_lock_schema_and_invalid_digest(tmp_path):
                 "components": {"validator": component, "xrechnung": component},
                 "standards": {
                     "xrechnung": "3.0.2",
-                    "xrechnung_configuration": "2026-01-31",
-                    "cen_en16931": "1.3.15",
-                    "xrechnung_schematron": "2.5.0",
+                    "xrechnung_configuration": "2026-08-31",
+                    "cen_en16931": "1.3.16",
+                    "xrechnung_schematron": "2.6.0",
                 },
             }
         ),
@@ -595,12 +595,12 @@ def test_public_kosit_component_versions_match_the_locked_bundle() -> None:
 
 
 def test_serialized_report_file_avoids_print_format_error(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.2-standalone.jar"
+    jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
     validator = KositValidator(_settings(tmp_path, jar))
     report = b"""<?xml version="1.0" encoding="UTF-8"?>
 <rep:report xmlns:rep="http://www.xoev.de/de/validator/varl/1" valid="true">
-  <rep:engine><rep:name>KoSIT Validator 1.6.2</rep:name></rep:engine>
+  <rep:engine><rep:name>KoSIT Validator 1.6.3</rep:name></rep:engine>
   <rep:scenarioMatched/>
   <rep:assessment><rep:accept/></rep:assessment>
 </rep:report>"""
@@ -615,7 +615,7 @@ def test_serialized_report_file_avoids_print_format_error(tmp_path, monkeypatch)
         return subprocess.CompletedProcess(
             args=args[0],
             returncode=0,
-            stdout=b"KoSIT Validator 1.6.2\nProcessing completed",
+            stdout=b"KoSIT Validator 1.6.3\nProcessing completed",
             stderr=b"",
         )
 
@@ -634,7 +634,7 @@ def test_valid_serialized_report_remains_authoritative_after_console_overflow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    jar = tmp_path / "validator-1.6.2-standalone.jar"
+    jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
     validator = KositValidator(_settings(tmp_path, jar))
     report = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -680,7 +680,7 @@ def test_serialized_report_reader_rejects_oversized_file_before_xml_parse(
 
 
 def test_format_error_wrapped_report_on_stderr_is_recovered(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.2-standalone.jar"
+    jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
     validator = KositValidator(_settings(tmp_path, jar))
     report = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -704,7 +704,7 @@ def test_format_error_wrapped_report_on_stderr_is_recovered(tmp_path, monkeypatc
 
 
 def test_xml_assessment_is_authoritative_when_exit_code_differs(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.2-standalone.jar"
+    jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
     validator = KositValidator(_settings(tmp_path, jar))
     report = b"""<?xml version="1.0" encoding="UTF-8"?>

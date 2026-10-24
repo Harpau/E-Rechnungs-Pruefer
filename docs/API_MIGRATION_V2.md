@@ -71,7 +71,7 @@ Wiederkehrende Datentypen sind jetzt strukturiert:
 | `document.type_label` | `document.type.code.label` | nur bei bekanntem Code gesetzt |
 | `document.kind` | `document.type.family` | geschlossene Dokumentfamilie statt freiem Anzeigetext |
 | kein expliziter Typstatus | `document.type.status` | `known`, `unknown` oder `missing` |
-| kein Registrybezug | `document.type.registry_version` | derzeit `CEN-EN16931-validation-1.3.15` |
+| kein Registrybezug | `document.type.registry_version` | derzeit `CEN-EN16931-validation-1.3.16` |
 | kein UBL-Abgleich | `document.type.ubl_root` und `.root_compatibility` | Root und Typcode werden getrennt ausgewiesen |
 | `document.currency` | `document.document_currency.value` | strukturierter ISO-4217-Code |
 | `document.currency_label` | `document.document_currency.label` | Anzeige getrennt vom Rohcode |

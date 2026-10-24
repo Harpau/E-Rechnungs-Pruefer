@@ -36,7 +36,7 @@ def test_health_endpoint():
     assert set(payload) == {"status", "version", "analysis_schema_version", "kosit"}
     assert set(payload["kosit"]) == {"configured", "components"}
     assert isinstance(payload["kosit"]["configured"], bool)
-    assert payload["kosit"]["components"]["cen_en16931"] == "1.3.15"
+    assert payload["kosit"]["components"]["cen_en16931"] == "1.3.16"
 
 
 def test_health_endpoint_does_not_expose_kosit_configuration_details(monkeypatch):

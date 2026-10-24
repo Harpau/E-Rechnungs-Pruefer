@@ -27,12 +27,12 @@ def test_repository_component_lock_is_valid() -> None:
     locked = components._load_lock(PROJECT_ROOT / "packaging/windows/components.lock.json")
     kosit_lock = json.loads((PROJECT_ROOT / "packaging/kosit/components.lock.json").read_text(encoding="utf-8"))
 
-    assert locked["validator"]["version"] == "KoSIT Validator 1.6.2"
-    assert locked["xrechnung"]["version"].endswith("2026-01-31")
+    assert locked["validator"]["version"] == "KoSIT Validator 1.6.3"
+    assert locked["xrechnung"]["version"].endswith("2026-08-31")
     assert locked["java"]["filename"].endswith("windows_hotspot_21.0.11_10.zip")
     assert locked["validator"] == kosit_lock["components"]["validator"]
     assert locked["xrechnung"] == kosit_lock["components"]["xrechnung"]
-    assert kosit_lock["standards"]["cen_en16931"] == "1.3.15"
+    assert kosit_lock["standards"]["cen_en16931"] == "1.3.16"
 
 
 def test_load_lock_rejects_unknown_schema_and_invalid_digest(tmp_path: Path) -> None:

@@ -178,11 +178,11 @@ Für KoSIT und XRechnung ist
 
 | Komponente | Festgelegter Stand | SHA-256 |
 |---|---|---|
-| KoSIT Validator | `validator-1.6.2-standalone.jar` / 1.6.2 | `244978514ad48f67c7573acfffc8f4fd73d81feda6f276710033f9913579857e` |
-| XRechnung-Konfiguration | `xrechnung-3.0.2-validator-configuration-2026-01-31.zip` | `6a5a5911a421b25fbc423f62f93f894df7b236f5d73ca4f84bb222a945082704` |
+| KoSIT Validator | `validator-1.6.3-standalone.jar` / 1.6.3 | `799e64befca97d4080e03608c80b85dd5a5ecc5f4ae4f35d1116ec2855b9a7c9` |
+| XRechnung-Konfiguration | `xrechnung-3.0.2-validator-configuration-2026-08-31.zip` | `2530cd107c414511c5d0462ec10f886910395abfca820db82e83d70bf01221a8` |
 
-Die darin ausgewiesenen Standards sind XRechnung 3.0.2, Konfigurationsstand 2026-01-31,
-CEN-EN-16931-Regeln 1.3.15 und XRechnung-Schematron 2.5.0. Dateiname, URL, Version und Hash müssen gemeinsam
+Die darin ausgewiesenen Standards sind XRechnung 3.0.2, Konfigurationsstand 2026-08-31,
+CEN-EN-16931-Regeln 1.3.16 und XRechnung-Schematron 2.6.0. Dateiname, URL, Version und Hash müssen gemeinsam
 aktualisiert werden; `app/component_versions.py`, Health-Antwort, Tests und Dokumenttyp-Registry müssen denselben
 Stand nennen. Ein Hash- oder Versionsunterschied ist ein Releasefehler.
 

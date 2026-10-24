@@ -10,6 +10,28 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   Einstellungen) aus dem Repository-ZIP aus. Lokale Builds aus einem Checkout mit Session-Worktrees haben diese
   bisher mitverpackt; CI-Builds waren nicht betroffen.
 
+### Offizielle Prüfkomponenten (KoSIT)
+
+- Die Sperrdateien `packaging/kosit/components.lock.json` und `packaging/windows/components.lock.json` binden
+  KoSIT Validator 1.6.3 statt 1.6.2 und die XRechnung-Validator-Konfiguration 2026-08-31 statt 2026-01-31,
+  weiterhin für XRechnung 3.0.2. Enthalten sind die CEN-EN-16931-Regeln 1.3.16 statt 1.3.15 und das
+  XRechnung-Schematron 2.6.0 statt 2.5.0. Installer, Windows-Build, `/api/health`, Dokumenttyp-Registry und
+  Dokumentation nennen denselben Stand; Szenarionamen und Archivaufbau der Konfiguration sind unverändert.
+  Validator 1.6.3 behebt GHSA-hg2c-p2m3-q29m im von der Anwendung nicht verwendeten Modus `STRICT_LOCAL`.
+- Die Dokumenttyp-Registry heißt jetzt `CEN-EN16931-validation-1.3.16`. Mit CEN 1.3.16 wechseln die
+  UNTDID-1001-Codes `502` (Selbst ausgestellte Factoring-Gutschrift) und `503` (Vorauszahlungsgutschrift) bei UBL
+  von der `Invoice`- in die `CreditNote`-Liste. Eine UBL-`CreditNote` mit diesen Codes gilt in der internen
+  Vorprüfung nun als kompatibel; eine UBL-`Invoice` mit `502` oder `503` erhält den Befund `BR-CL-01`
+  „Rechnungsartcode passt nicht zum UBL-Wurzelelement“. Die UBL-`Invoice`-Liste umfasst damit 50 und die
+  UBL-`CreditNote`-Liste 13 Codes; der Gesamtumfang von 62 Codes und die CII-Liste bleiben unverändert.
+- Regeländerungen der Upstream-Artefakte, die bei einer offiziellen KoSIT-Prüfung sichtbar werden können und
+  keine Anwendungsheuristiken sind: XRechnung-Schematron 2.6.0 hebt `BR-TMP-2` (BT-124 „External document
+  location“ muss eine absolute URL mit gültigem Schema sein) von `warning` auf `fatal` und führt `BR-TMP-4`,
+  `BR-TMP-5` und `BR-TMP-7` (CII) sowie `BR-TMP-6` (UBL, Datumsformat JJJJ-MM-TT) als Warnungen ein. Die
+  Konfiguration 2026-08-31 setzt `CII-SR-465` und `CII-SR-466` auf `error` sowie `CII-SR-475` und `CII-SR-476`
+  auf `information`. Die Anwendung wertet weiterhin ausschließlich `<rep:accept/>` beziehungsweise
+  `<rep:reject/>` des VARL-Berichts aus.
+
 ## 2.0.3 – 2026-10-18
 
 ### Sicherheitswartung der Abhängigkeiten

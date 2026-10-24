@@ -64,6 +64,22 @@ def test_ubl_document_type_must_be_compatible_with_the_actual_root() -> None:
     assert finding["actual"] == "381"
 
 
+@pytest.mark.parametrize("type_code", ["502", "503"])
+def test_cen_1316_accepts_502_and_503_only_on_ubl_credit_note(type_code: str) -> None:
+    """Regression for the CEN 1.3.16 code-list change: 502/503 moved from UBL Invoice to CreditNote."""
+    credit_note = _analysis(type_code, syntax="UBL", root_element="CreditNote")
+    assert "BR-CL-01" not in _finding_ids(credit_note)
+
+    invoice_findings = validate_builtin(_analysis(type_code, syntax="UBL", root_element="Invoice"))["findings"]
+    finding = next(item for item in invoice_findings if item["id"] == "BR-CL-01")
+
+    assert finding["rule_class"] == "core_precheck"
+    assert finding["reference"] == "BR-CL-01"
+    assert finding["actual"] == type_code
+    assert "UBL Invoice" in finding["message"]
+    assert "CEN EN 16931 1.3.16" in finding["message"]
+
+
 @pytest.mark.parametrize("type_code", sorted(XRECHNUNG_TYPE_CODES))
 def test_xrechnung_recommended_document_types_pass_br_de_17_precheck(type_code: str) -> None:
     assert "XRECHNUNG-BR-DE-17" not in _finding_ids(_analysis(type_code, profile_id=XRECHNUNG_PROFILE))

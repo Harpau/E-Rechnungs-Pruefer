@@ -51,7 +51,7 @@ am jeweiligen Dokumenthinweis erhalten.
 
 ## Dokumenttyp-Registry
 
-Die Registry `CEN-EN16931-validation-1.3.15` enthält exakt diese 62 UNTDID-1001-Codes:
+Die Registry `CEN-EN16931-validation-1.3.16` enthält exakt diese 62 UNTDID-1001-Codes:
 
 ```text
 71 80 81 82 83 84 102 130 202 203 204 211 218 219 261 262 295 296 308
@@ -72,7 +72,9 @@ Die Registry `CEN-EN16931-validation-1.3.15` enthält exakt diese 62 UNTDID-1001
 zusätzlich `document.type.ubl_root` (`invoice` oder `credit-note`) und `root_compatibility` ausgewiesen. Ein
 bekannter Code am falschen UBL-Root ist `incompatible` und erzeugt `BR-CL-01`; unbekannte oder fehlende Codes
 bleiben `undetermined`. Für CII ist der Root-Abgleich `not-applicable`. Versionsspezifisch sind die Codes `502`
-und `503` in CEN 1.3.15 dem UBL-Root `Invoice` zugeordnet; Code `81` ist für beide UBL-Roots zugelassen.
+und `503` seit CEN 1.3.16 dem UBL-Root `CreditNote` zugeordnet (bis CEN 1.3.15: `Invoice`); Code `81` ist für
+beide UBL-Roots zugelassen. Damit umfasst die UBL-`Invoice`-Liste 50 und die UBL-`CreditNote`-Liste 13 Codes;
+die CII-Liste enthält unverändert alle 62 Codes.
 
 ## Profil- und Rollensemantik
 
@@ -203,8 +205,8 @@ Widersprechen sich Bericht und Rückgabecode, bleibt die XML-Entscheidung maßge
 technischer Verarbeitungsbefund ausgewiesen. Java-, JAR-, Konfigurations- und Timeoutfehler sind niemals eine
 KoSIT-Ablehnung.
 
-`packaging/kosit/components.lock.json` pinnt KoSIT Validator 1.6.2, XRechnung 3.0.2,
-Validator-Konfiguration 2026-01-31, CEN EN 16931 1.3.15 und XRechnung-Schematron 2.5.0 samt Artefakt-Hashes.
+`packaging/kosit/components.lock.json` pinnt KoSIT Validator 1.6.3, XRechnung 3.0.2,
+Validator-Konfiguration 2026-08-31, CEN EN 16931 1.3.16 und XRechnung-Schematron 2.6.0 samt Artefakt-Hashes.
 
 ## Bekannte Grenzen
 

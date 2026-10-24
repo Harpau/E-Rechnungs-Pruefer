@@ -96,10 +96,10 @@ def test_health_exposes_public_component_versions_without_local_paths() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["analysis_schema_version"] == 2
-    assert payload["kosit"]["components"]["validator"] == "1.6.2"
+    assert payload["kosit"]["components"]["validator"] == "1.6.3"
     assert payload["kosit"]["components"]["xrechnung"] == "3.0.2"
-    assert payload["kosit"]["components"]["xrechnung_configuration"] == "2026-01-31"
-    assert payload["kosit"]["components"]["cen_en16931"] == "1.3.15"
+    assert payload["kosit"]["components"]["xrechnung_configuration"] == "2026-08-31"
+    assert payload["kosit"]["components"]["cen_en16931"] == "1.3.16"
     serialized = response.text
     assert "/Users/" not in serialized
     assert "\\Users\\" not in serialized
