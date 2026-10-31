@@ -4,6 +4,8 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 2.0.4 – 2026-10-31
+
 ### Release-Paketierung
 
 - `scripts/build_release.py` schließt den lokalen Ordner `.claude/` (Claude-Code-Session-Worktrees und lokale

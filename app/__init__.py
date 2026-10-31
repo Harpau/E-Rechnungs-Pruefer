@@ -1,3 +1,3 @@
 """E-Rechnungs-Viewer und -Prüfer."""
 
-__version__ = "2.0.3"
+__version__ = "2.0.4"
