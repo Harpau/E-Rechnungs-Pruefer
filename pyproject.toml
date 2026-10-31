@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "e-rechnung-pruefer"
-version = "2.0.3"
+version = "2.0.4"
 description = "Lokaler Viewer und Prüfer für CII-, XRechnung-, ZUGFeRD-, Factur-X- und UBL-E-Rechnungen"
 readme = "README.md"
 requires-python = ">=3.11"

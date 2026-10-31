@@ -279,8 +279,8 @@ Befund kann durch dokumentierte Einzelentscheidung als nicht blockierend eingest
 Best-Effort-Kompatibilität entsteht keine vollständige Supportzusage.
 
 Unter Windows 11 verbleiben zwei fokussierte Upgrades von der unmittelbar vorher veröffentlichten Patchversion
-derselben Release-Linie. Für 2.0.3 sind das die unveränderten, veröffentlichten und signierten
-2.0.2-Produktinstaller als Baseline auf zwei getrennten Snapshots:
+derselben Release-Linie. Für 2.0.4 sind das die unveränderten, veröffentlichten und signierten
+2.0.3-Produktinstaller als Baseline auf zwei getrennten Snapshots:
 
 1. Beim Desktop-Upgrade bleibt ein Alt-Tab mit warmem Cache geöffnet. Es muss kontrolliert mit
    `403 desktop_session_error` oder `409 ui_version_mismatch` samt Wiederöffnungshinweis enden. Ein neues
@@ -295,7 +295,7 @@ Folgende Prüfungen sind **nur bei den jeweils genannten Auslösern** verpflicht
 nur die ausdrücklich mit „neue Minor-Version“ markierten Punkte aus:
 
 - Upgrade von der ältesten noch unterstützten Ausgangsversion bei Änderungen an Migration,
-  Altzustandserkennung oder unterstützten Upgradepfaden sowie für eine neue Minor-Version; für 2.0.3 wäre die
+  Altzustandserkennung oder unterstützten Upgradepfaden sowie für eine neue Minor-Version; für 2.0.4 wäre die
   historische Ausgangsversion 1.5.0, der Lauf wird aber nicht ausgelöst;
 - tatsächlicher Windows-Neustart und Dienststart vor Anmeldung bei Änderungen an SCM-, Dienststart- oder
   Dienstinstallerlogik sowie für eine neue Minor-Version;
