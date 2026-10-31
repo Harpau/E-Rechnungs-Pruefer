@@ -29,7 +29,8 @@ def test_repository_component_lock_is_valid() -> None:
 
     assert locked["validator"]["version"] == "KoSIT Validator 1.6.3"
     assert locked["xrechnung"]["version"].endswith("2026-08-31")
-    assert locked["java"]["filename"].endswith("windows_hotspot_21.0.11_10.zip")
+    assert locked["java"]["version"] == "Eclipse Temurin JRE 21.0.13+9"
+    assert locked["java"]["filename"].endswith("windows_hotspot_21.0.13_9.zip")
     assert locked["validator"] == kosit_lock["components"]["validator"]
     assert locked["xrechnung"] == kosit_lock["components"]["xrechnung"]
     assert kosit_lock["standards"]["cen_en16931"] == "1.3.16"

@@ -2,10 +2,10 @@
   "schema_version": 1,
   "components": {
     "java": {
-      "version": "Eclipse Temurin JRE 21.0.11+10",
-      "filename": "OpenJDK21U-jre_x64_windows_hotspot_21.0.11_10.zip",
-      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.11%2B10/OpenJDK21U-jre_x64_windows_hotspot_21.0.11_10.zip",
-      "sha256": "be26677aaa20b39a62edcaab4c8857a8b76673b0f45abc0b6143b142b62717e4"
+      "version": "Eclipse Temurin JRE 21.0.13+9",
+      "filename": "OpenJDK21U-jre_x64_windows_hotspot_21.0.13_9.zip",
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_x64_windows_hotspot_21.0.13_9.zip",
+      "sha256": "2332c0b4cff6bed722da3567c91d5e47568bcba863fa4945d0a8d6fc76158628"
     },
     "validator": {
       "version": "KoSIT Validator 1.6.3",

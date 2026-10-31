@@ -32,6 +32,26 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   auf `information`. Die Anwendung wertet weiterhin ausschließlich `<rep:accept/>` beziehungsweise
   `<rep:reject/>` des VARL-Berichts aus.
 
+### Sicherheitswartung der Java-Laufzeit (Windows-Paket)
+
+- Die im Windows-Paket gebündelte Java-Laufzeit ist in `packaging/windows/components.lock.json` von Eclipse Temurin
+  JRE 21.0.11+10 auf 21.0.13+9 angehoben (`OpenJDK21U-jre_x64_windows_hotspot_21.0.13_9.zip`; SHA-256 lokal
+  nachgerechnet und mit der veröffentlichten Prüfsumme abgeglichen). 21.0.13 schließt die OpenJDK-Advisories vom
+  2026-07-21 (elf OpenJDK-CVEs, höchster CVSS 7.5, betroffen bis 21.0.11) und vom 2026-10-20 (höchster CVSS 7.0 für
+  OpenJDK, darunter drei Befunde in `xml/jaxp`; betroffen bis 21.0.12.1). Die Zwischenversionen 21.0.12 und 21.0.12.1
+  wurden bewusst übersprungen.
+- Zum Oracle Security Alert CVE-2026-91403 vom 2026-10-21 (kompromittierte eMudhra-Zwischenzertifikate): Temurin
+  21.0.13+9 baut seinen Truststore aus Mozillas Zertifikatsdaten NSS 3.131.1 und enthält die Wurzeln, die diese
+  Zwischenzertifikate signiert haben („AAA Certificate Services“, „emSign ECC Root CA - G3“), nicht mehr; verblieben
+  ist nur „emSign Root CA - G1“. Ketten über die kompromittierten Zwischenzertifikate validieren damit nicht.
+  Nicht enthalten sind die zusätzliche explizite Sperrliste aus OpenJDK 21.0.13.0.2 (16 Einträge in
+  `blocked.certs`) und die Entfernung der übrigen emSign-Wurzeln aus OpenJDK 21.0.13.0.3; Adoptium hat dafür keinen
+  gesonderten Build angekündigt. Für dieses Paket besteht ohnehin kein Angriffspfad, weil die Laufzeit ausschließlich
+  den lokalen KoSIT-Prozess ohne Netzwerk- oder TLS-Verbindungen bedient. Die Einträge werden mit dem nächsten
+  regulären Temurin-Update geprüft.
+- Der wöchentliche pip-audit-Workflow deckt die Java-Laufzeit nicht ab; der Pin wird manuell gepflegt. Eigene
+  Prüflogik, Darstellung, Analyseschema und Bedienung sind von diesem Wechsel nicht betroffen.
+
 ## 2.0.3 – 2026-10-18
 
 ### Sicherheitswartung der Abhängigkeiten
