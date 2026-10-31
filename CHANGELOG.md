@@ -52,6 +52,43 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 - Der wöchentliche pip-audit-Workflow deckt die Java-Laufzeit nicht ab; der Pin wird manuell gepflegt. Eigene
   Prüflogik, Darstellung, Analyseschema und Bedienung sind von diesem Wechsel nicht betroffen.
 
+### Sicherheitswartung der Abhängigkeiten (Windows-Paket)
+
+- pypdf, das eingebettete Rechnungs-XML aus hochgeladenen PDF-Dateien liest und damit nicht vertrauenswürdige
+  Eingaben verarbeitet, ist im Windows-Paket von 6.21.1 auf 6.21.4 aktualisiert. Die Versionen 6.21.2 bis 6.21.4
+  schließen zehn Befunde, bei denen fehlerhafte oder verschlüsselte PDFs lange Laufzeiten, Endlosschleifen oder
+  hohen Speicherverbrauch auslösen konnten: CVE-2026-115572, -115580 und -115585 (behoben in 6.21.2),
+  CVE-2026-119206 bis -119209 (6.21.3) sowie CVE-2026-119203 bis -119205 (6.21.4). Quell- und
+  Containerinstallationen verlangen jetzt mindestens pypdf 6.21.4 statt 6.19; der Schutztest prüft Untergrenze,
+  Lock-Version und Wheel-Digest.
+- Die Regressionstests mit synthetischen Hybrid-PDFs laufen unter pypdf 6.21.4 unverändert durch. pypdf begrenzt
+  zusätzlich die Größe klassischer Xref-Tabellen und die Anzahl der Einträge in Querverweis-Streams und erkennt
+  Schleifen beim Kopieren von Wörterbuchobjekten; derart konstruierte PDFs enden kontrolliert mit dem bestehenden
+  Eingabefehler, dass die PDF-Datei oder ihre eingebetteten Dateien nicht gelesen werden konnten. Eine Sicht-PDF
+  ohne eingebettete XML gilt weiterhin nicht als E-Rechnung.
+- certifi ist von 2026.7.22 auf 2026.10.23 angehoben (PYSEC-2026-4320 / GHSA-6q48-6c7w-9gw2, behoben ab
+  2026.10.18). Wie bei der Java-Laufzeit geht es um den eMudhra-Vorfall: Das Zertifikatsbündel enthält die Wurzeln
+  „emSign ECC Root CA - G3“, „emSign ECC Root CA - C3“ und „emSign Root CA - C1“ nicht mehr (lokal zwischen beiden
+  Wheels verglichen, 118 statt 121 Einträge); verblieben ist „emSign Root CA - G1“. Im Windows-Paket benötigen nur
+  httpx und httpcore der gelockten Test- und Buildumgebung certifi. Die Anwendung baut bei der Rechnungsprüfung
+  keine TLS-Verbindungen auf; Installer- und Buildskripte laden Komponenten über `urllib` der Standardbibliothek
+  und prüfen sie gegen die SHA-256-Werte der Sperrdateien.
+- Pillow ist in `requirements-release.txt` und `requirements-build.txt` von 12.3.0 auf 13.0.0 angehoben (39 Befunde:
+  PYSEC-2026-4326 bis -4343, CVE-2026-96638, -96640 und -96778, siebzehn CVEs aus den Bereichen CVE-2026-112390 bis
+  -112406 und -112891 bis -112900 sowie GHSA-78g4-xqwv-q3g8). Im Paket zeichnet Pillow nur das Tray-Symbol des
+  Desktop-Starters (`Image.new`, `ImageDraw`) und ist Pflichtabhängigkeit von reportlab; hochgeladene Dateien
+  werden nicht mit Pillow dekodiert, und der PDF-Bericht bettet keine Rasterbilder ein. Pillow 13 entfernt lange
+  angekündigte Schnittstellen und die Unterstützung für Python 3.10; der Desktop-Starter verwendet keine der
+  entfernten Schnittstellen, und das Paket baut auf CPython 3.13 auf.
+- setuptools ist von 83.0.0 auf 84.2.1 angehoben (GHSA-xmj3-9gf7-h52w, Schweregrad niedrig: Pfadausbruch unter
+  Windows über `namespace_packages.txt` bei der veralteten Egg-Installation eines Wheels; behoben ab 84.1.0).
+  setuptools ist nur als Pflichtabhängigkeit von PyInstaller in der Build- und Testumgebung enthalten; die
+  Anwendung importiert es nicht.
+- Die transitiven Pins des Locks erfüllen die Abhängigkeitsangaben der neuen Versionen unverändert; weitere
+  Einträge waren nicht anzupassen. Der wöchentliche Dependency-Audit des gelockten Windows-Pakets, seit dem Lauf
+  vom 2026-10-27 mit 52 Befunden in diesen vier Paketen rot, ist damit wieder ohne Befund. Eigene Prüflogik,
+  Darstellung, Analyseschema und Bedienung sind von diesem Wechsel nicht betroffen.
+
 ## 2.0.3 – 2026-10-18
 
 ### Sicherheitswartung der Abhängigkeiten
