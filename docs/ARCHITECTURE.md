@@ -117,7 +117,7 @@ Adapter. Das konkrete Feldmapping ist in [`API_MIGRATION_V2.md`](API_MIGRATION_V
 ### Dokumenttyp, Profil und Rollen
 
 `app/document_types.py` enthält eine unveränderliche Registry der 62 von den gebündelten
-CEN-EN-16931-Validierungsartefakten 1.3.15 verwendeten UNTDID-1001-Codes. Die Auflösung unterscheidet
+CEN-EN-16931-Validierungsartefakten 1.3.16 verwendeten UNTDID-1001-Codes. Die Auflösung unterscheidet
 `known`, `unknown` und `missing`; ein unbekannter Rohcode bleibt erhalten. Für UBL wird zusätzlich geprüft, ob
 der Code mit `Invoice` beziehungsweise `CreditNote` kompatibel ist. Die Version und das Ergebnis werden unter
 `document.type` veröffentlicht.
