@@ -145,12 +145,17 @@ function Invoke-ServiceInstaller {
         [string]$Path,
         [string]$LogPath,
         [string]$Tasks = "systemstart",
+        [switch]$OmitTasksParameter,
         [string[]]$ExtraArguments = @()
     )
-    $Arguments = @(
-        "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-        "/TASKS=`"$Tasks`"", "/LOG=`"$LogPath`""
-    ) + $ExtraArguments
+    # -OmitTasksParameter reproduces an unattended update that passes neither
+    # /TASKS nor /MERGETASKS, so the installer alone decides the start type.
+    $Arguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+    if (-not $OmitTasksParameter) {
+        $Arguments += "/TASKS=`"$Tasks`""
+    }
+    $Arguments += "/LOG=`"$LogPath`""
+    $Arguments += $ExtraArguments
     if ($AllowElevatedRecoveryTestContext) {
         $Arguments += "/ALLOWELEVATEDTESTCONTEXT=1"
     }
@@ -165,6 +170,45 @@ function Invoke-ServiceInstaller {
             "Der angeforderte Inno-Setup-Log wurde nicht erzeugt: $LogPath"
         }
         throw "Der Dienst-Installer schlug mit Exitcode $($Process.ExitCode) fehl.`n$LogTail"
+    }
+}
+
+function Assert-ServiceStartType {
+    param(
+        [string]$Scenario,
+        [string]$ExpectedStartMode,
+        [int]$ExpectedDelayedAutoStart
+    )
+    $Service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+    if ($null -eq $Service) { throw "${Scenario}: Der Dienst $ServiceName fehlt." }
+    if ($Service.StartMode -ne $ExpectedStartMode) {
+        throw "${Scenario}: Starttyp ist $($Service.StartMode) statt $ExpectedStartMode."
+    }
+    $Delayed = Get-ItemProperty -LiteralPath $ServiceRegistryPath -Name "DelayedAutoStart" -ErrorAction SilentlyContinue
+    $DelayedValue = if ($Delayed) { [int]$Delayed.DelayedAutoStart } else { 0 }
+    if ($DelayedValue -ne $ExpectedDelayedAutoStart) {
+        throw "${Scenario}: DelayedAutoStart ist $DelayedValue statt $ExpectedDelayedAutoStart."
+    }
+}
+
+function Assert-InnoTaskMemory {
+    param([string]$ExpectedSelected, [string]$ExpectedDeselected)
+    # Inno Setup records the final task selection of every run. The installer
+    # must not derive the service start type from this memory; the assertions
+    # document that it contradicts the SCM state in the regression cases.
+    $Selected = [string](Get-ItemPropertyValue -LiteralPath $UninstallKey -Name "Inno Setup: Selected Tasks")
+    $Deselected = [string](Get-ItemPropertyValue -LiteralPath $UninstallKey -Name "Inno Setup: Deselected Tasks")
+    if ($Selected -ne $ExpectedSelected -or $Deselected -ne $ExpectedDeselected) {
+        throw ("Unerwartete Inno-Aufgabenerinnerung: Selected='$Selected', Deselected='$Deselected' " +
+            "(erwartet Selected='$ExpectedSelected', Deselected='$ExpectedDeselected').")
+    }
+}
+
+function Assert-InstallerLogContains {
+    param([string]$LogPath, [string]$Expected, [string]$Scenario)
+    $LogText = Get-Content -LiteralPath $LogPath -Raw
+    if (-not $LogText.Contains($Expected)) {
+        throw "${Scenario}: Das Installerprotokoll enthält nicht den erwarteten Eintrag '$Expected'."
     }
 }
 
@@ -871,6 +915,9 @@ $PortConflictLog = Join-Path $TestRoot "port-conflict.log"
 $UpdateLog = Join-Path $TestRoot "update.log"
 $StoppedUpdateLog = Join-Path $TestRoot "stopped-update.log"
 $AutomaticUpdateLog = Join-Path $TestRoot "automatic-update.log"
+$UpdateWithoutTasksLog = Join-Path $TestRoot "update-without-tasks.log"
+$DelayedAutoPreservedLog = Join-Path $TestRoot "update-without-tasks-delayed-auto.log"
+$ManualPreservedLog = Join-Path $TestRoot "update-without-tasks-manual.log"
 $UninstallLog = Join-Path $TestRoot "uninstall-preserve.log"
 $ReinstallLog = Join-Path $TestRoot "reinstall.log"
 $PurgeLog = Join-Path $TestRoot "uninstall-purge.log"
@@ -1229,6 +1276,21 @@ foreach ($TransactionDirectory in @("service.new", "service.rollback", "service.
         throw "Update ließ das Transaktionsverzeichnis $TransactionDirectory zurück."
     }
 }
+# F-002 regression: a silent update of the running service without /TASKS must
+# keep "Automatic (Delayed Start)". Until 2.0.4 the checkedonce task flag turned
+# every such update into a manual start type.
+Assert-InnoTaskMemory -ExpectedSelected "systemstart" -ExpectedDeselected ""
+Assert-ServiceStartType -Scenario "Vor dem stillen Update ohne /TASKS" `
+    -ExpectedStartMode "Auto" -ExpectedDelayedAutoStart 1
+Invoke-ServiceInstaller -Path $Setup -LogPath $UpdateWithoutTasksLog -OmitTasksParameter
+Wait-ServiceState -Name $ServiceName -State "Running"
+if ((Get-Content $TokenFile -Raw).Trim() -ne $TokenBeforeUpdate) { throw "Stilles Update ohne /TASKS änderte das Token." }
+Assert-TokenReaderAcl -Path $TokenFile -ReaderSid $ReaderSid
+Assert-ServiceStartType -Scenario "Stilles Update des laufenden Dienstes ohne /TASKS" `
+    -ExpectedStartMode "Auto" -ExpectedDelayedAutoStart 1
+Assert-InstallerLogContains -LogPath $UpdateWithoutTasksLog -Scenario "Stilles Update des laufenden Dienstes ohne /TASKS" `
+    -Expected "aus dem vorhandenen Starttyp vorbelegt: Auto ->"
+Assert-InnoTaskMemory -ExpectedSelected "systemstart" -ExpectedDeselected ""
 if ($CommitHardKillRecovery -ne "None") {
     $CommitRecoverySentinel = Join-Path $InstallDir "service\commit-recovery-sentinel.txt"
     Set-Content -LiteralPath $CommitRecoverySentinel `
@@ -1356,6 +1418,37 @@ if (Test-Path -LiteralPath $ServiceRegistryPath) {
         throw "Manueller Dienst behielt unerwartet DelayedAutoStart."
     }
 }
+# F-002 regression, SCM state versus Inno task memory: the administrator re-enables
+# the delayed automatic start outside the installer (documented 2.0.4 workaround)
+# while Inno Setup still remembers the task as deselected. A silent update without
+# /TASKS must follow the SCM state.
+Assert-InnoTaskMemory -ExpectedSelected "" -ExpectedDeselected "systemstart"
+& sc.exe config $ServiceName start= delayed-auto
+if ($LASTEXITCODE -ne 0) { throw "Verzögerter Autostart konnte für den F-002-Testfall nicht gesetzt werden." }
+Assert-ServiceStartType -Scenario "Vor dem stillen Update mit SCM-Autostart" `
+    -ExpectedStartMode "Auto" -ExpectedDelayedAutoStart 1
+Invoke-ServiceInstaller -Path $Setup -LogPath $DelayedAutoPreservedLog -OmitTasksParameter
+Wait-ServiceState -Name $ServiceName -State "Stopped"
+Assert-ServiceStartType -Scenario "Stilles Update ohne /TASKS bei SCM-Autostart" `
+    -ExpectedStartMode "Auto" -ExpectedDelayedAutoStart 1
+Assert-InstallerLogContains -LogPath $DelayedAutoPreservedLog -Scenario "Stilles Update ohne /TASKS bei SCM-Autostart" `
+    -Expected "aus dem vorhandenen Starttyp vorbelegt: Auto ->"
+Assert-InnoTaskMemory -ExpectedSelected "systemstart" -ExpectedDeselected ""
+# Mirror case: the administrator deliberately switches to a manual start outside
+# the installer while Inno Setup remembers the task as selected. The deliberate
+# decision must survive a silent update without /TASKS.
+& sc.exe config $ServiceName start= demand
+if ($LASTEXITCODE -ne 0) { throw "Manueller Starttyp konnte für den F-002-Testfall nicht gesetzt werden." }
+Set-ItemProperty -LiteralPath $ServiceRegistryPath -Name "DelayedAutoStart" -Type DWord -Value 0
+Assert-ServiceStartType -Scenario "Vor dem stillen Update mit SCM-Manuell" `
+    -ExpectedStartMode "Manual" -ExpectedDelayedAutoStart 0
+Invoke-ServiceInstaller -Path $Setup -LogPath $ManualPreservedLog -OmitTasksParameter
+Wait-ServiceState -Name $ServiceName -State "Stopped"
+Assert-ServiceStartType -Scenario "Stilles Update ohne /TASKS bei SCM-Manuell" `
+    -ExpectedStartMode "Manual" -ExpectedDelayedAutoStart 0
+Assert-InstallerLogContains -LogPath $ManualPreservedLog -Scenario "Stilles Update ohne /TASKS bei SCM-Manuell" `
+    -Expected "aus dem vorhandenen Starttyp vorbelegt: Manual ->"
+Assert-InnoTaskMemory -ExpectedSelected "" -ExpectedDeselected "systemstart"
 Invoke-ServiceInstaller -Path $Setup -LogPath $AutomaticUpdateLog
 Wait-ServiceState -Name $ServiceName -State "Stopped"
 $AutomaticService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
