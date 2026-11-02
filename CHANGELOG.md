@@ -4,6 +4,8 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 2.0.5 – 2026-11-02
+
 ### Windows-Dienst-Installer
 
 - Behebt den in der 2.0.4-Abnahme dokumentierten Befund F-002: Ein stilles Update des Windows-Dienstes ohne

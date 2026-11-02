@@ -1,4 +1,4 @@
-E-RECHNUNGS-VIEWER & PRUEFER 2.0.4
+E-RECHNUNGS-VIEWER & PRUEFER 2.0.5
 ====================================
 
 WAS DIE ANWENDUNG MACHT
@@ -36,6 +36,9 @@ Ein GitHub Release kann zwei alternative, signierte Installer enthalten:
 
 - E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe
   Administrativer Systemdienst, der vor der Benutzeranmeldung starten kann.
+  Ein Update erhaelt seit 2.0.5 den vorhandenen Starttyp des Dienstes; der
+  fuer 2.0.4 dokumentierte Workaround (/MERGETASKS="systemstart" oder
+  sc.exe config ... start= delayed-auto) ist nicht mehr erforderlich.
 
 Beide Betriebsarten enthalten Python, Java und die festgeschriebenen
 KoSIT-/XRechnung-Komponenten. Sie duerfen nicht gleichzeitig installiert oder
