@@ -167,7 +167,7 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
         r"DefaultDirName={autopf64}\E-Rechnungs-Pruefer-Dienst",
         "PrivilegesRequired=admin",
         'Name: "systemstart"',
-        "Flags: checkedonce",
+        "UsePreviousTasks=no",
         'obj= "NT AUTHORITY\\LocalService"',
         'sidtype "' + "' + ServiceName + '" + '" unrestricted',
         "start= delayed-auto",
@@ -395,6 +395,70 @@ def test_service_installer_is_machine_wide_and_fail_closed() -> None:
     ]
     assert "if not RollbackPreparedInstall then" not in initial_port_conflict
     assert "vor dem Ersetzen von Dienstbinärdateien" in initial_port_conflict
+
+
+def test_service_installer_derives_start_task_from_existing_service_on_update() -> None:
+    installer = _read("packaging/windows/service_installer.iss")
+
+    assert "UsePreviousTasks=no" in installer
+    tasks_section = installer[installer.index("[Tasks]") : installer.index("[Files]")]
+    assert (
+        'Name: "systemstart"; Description: "Beim Systemstart starten (verzögert)"; GroupDescription: "Dienststart:"'
+        in tasks_section
+    )
+    assert "Flags:" not in tasks_section
+    assert "checkedonce" not in installer
+    assert "StartTaskPreselectionDone: Boolean;" in installer
+
+    command_line = installer[
+        installer.index("function CommandLineDefinesTaskSelection") : installer.index(
+            "procedure PreselectStartTaskFromExistingService"
+        )
+    ]
+    for expected in (
+        "ParamCount",
+        "ParamStr(I)",
+        "'/TASKS='",
+        "'/MERGETASKS='",
+        "'/LOADINF='",
+        "IniKeyExists('Setup', 'Tasks', InfFile)",
+    ):
+        assert expected in command_line
+
+    preselect = installer[
+        installer.index("procedure PreselectStartTaskFromExistingService") : installer.index("procedure CurPageChanged")
+    ]
+    assert preselect.index("if StartTaskPreselectionDone then") < preselect.index("StartTaskPreselectionDone := True;")
+    assert preselect.index("StartTaskPreselectionDone := True;") < preselect.index(
+        "if CommandLineDefinesTaskSelection then"
+    )
+    assert preselect.index("if CommandLineDefinesTaskSelection then") < preselect.index(
+        "QueryResult := QueryService(ServiceObject)"
+    )
+    assert preselect.index("QueryResult := QueryService(ServiceObject)") < preselect.index(
+        "ServiceBelongsToThisInstallation(ServiceObject)"
+    )
+    assert preselect.index("ServiceBelongsToThisInstallation(ServiceObject)") < preselect.index(
+        "ServiceStartModeIsSupported(StartMode)"
+    )
+    assert preselect.index("ServiceStartModeIsSupported(StartMode)") < preselect.index(
+        "WizardSelectTasks('systemstart')"
+    )
+    assert preselect.index("WizardSelectTasks('systemstart')") < preselect.index("WizardSelectTasks('!systemstart')")
+    assert "CompareText(StartMode, 'Auto') = 0" in preselect
+    assert "except" in preselect
+    assert "ExecChecked" not in preselect
+    assert "if not Sc(" not in preselect
+
+    page_changed = installer[installer.index("procedure CurPageChanged") : installer.index("function ExecChecked(")]
+    assert "if CurPageID = wpSelectTasks then" in page_changed
+    assert "PreselectStartTaskFromExistingService;" in page_changed
+
+    configure = installer[
+        installer.index("procedure ConfigureInstalledService") : installer.index("procedure CurStepChanged")
+    ]
+    assert configure.count("WizardIsTaskSelected('systemstart')") == 1
+    assert "OriginalStartMode" not in configure
 
 
 def test_service_configuration_failures_abort_through_the_transactional_install_path() -> None:
@@ -632,7 +696,14 @@ def test_service_installer_activates_the_visible_wizard_once_after_show() -> Non
 
     assert "{ Cancellation before PrepareToInstall has not initialized {app}" not in installer
     assert "InitialWizardPageActivated" not in installer
-    assert "procedure CurPageChanged" not in installer
+    page_changed = installer[installer.index("procedure CurPageChanged") : installer.index("function ExecChecked(")]
+    for forbidden_in_page_hook in (
+        "ActivateInitialWizard",
+        "SetForegroundWindow",
+        "WizardForm.Handle",
+        "SetTimer(",
+    ):
+        assert forbidden_in_page_hook not in page_changed
     assert "InitialWizardFallbackCleanupMilliseconds = 10000;" in installer
     assert "function ShowWindow(Window: HWND; ShowCommand: Integer): BOOL;" in installer
     assert "function SetForegroundWindow(Window: HWND): BOOL;" in installer
@@ -1078,6 +1149,16 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
         "service.rollback",
         "service.obsolete",
         'Invoke-ServiceInstaller -Path $Setup -LogPath $StoppedUpdateLog -Tasks ""',
+        "-OmitTasksParameter",
+        "Assert-ServiceStartType",
+        "Assert-InnoTaskMemory",
+        "Assert-InstallerLogContains",
+        '"Inno Setup: Selected Tasks"',
+        '"Inno Setup: Deselected Tasks"',
+        "start= delayed-auto",
+        "$UpdateWithoutTasksLog",
+        "$DelayedAutoPreservedLog",
+        "$ManualPreservedLog",
         "PortBlocker",
         "programdata-junction-target",
         "ItemType Junction",
@@ -1126,6 +1207,54 @@ def test_service_package_test_covers_scm_acl_update_and_uninstall_contract() -> 
     assert first_repair < script.index('Arguments @("--verify-state")', first_repair)
     preserve_repair = script.rindex("Add-ExplorerAdministratorDirectoryAce -Path $DataDir")
     assert preserve_repair < script.index("Invoke-ServiceUninstaller", preserve_repair)
+
+
+def test_service_package_test_covers_silent_updates_without_tasks_parameter() -> None:
+    script = _read("scripts/test_windows_service_package.ps1")
+
+    installer_helper = script[
+        script.index("function Invoke-ServiceInstaller") : script.index("function Assert-ServiceStartType")
+    ]
+    assert "[switch]$OmitTasksParameter" in installer_helper
+    assert installer_helper.index("if (-not $OmitTasksParameter)") < installer_helper.index('"/TASKS=`"$Tasks`""')
+    assert script.count("-OmitTasksParameter\n") == 3
+
+    running_with_tasks = script.index("Invoke-ServiceInstaller -Path $Setup -LogPath $UpdateLog")
+    running_without_tasks = script.index(
+        "Invoke-ServiceInstaller -Path $Setup -LogPath $UpdateWithoutTasksLog -OmitTasksParameter"
+    )
+    assert running_with_tasks < running_without_tasks
+    assert running_without_tasks < script.index('if ($CommitHardKillRecovery -ne "None")', running_without_tasks)
+    assert (
+        'Assert-InnoTaskMemory -ExpectedSelected "systemstart" -ExpectedDeselected ""'
+        in script[running_with_tasks:running_without_tasks]
+    )
+    assert '-Scenario "Stilles Update des laufenden Dienstes ohne /TASKS"' in script
+
+    stopped_manual = script.index('Invoke-ServiceInstaller -Path $Setup -LogPath $StoppedUpdateLog -Tasks ""')
+    delayed_preserved = script.index(
+        "Invoke-ServiceInstaller -Path $Setup -LogPath $DelayedAutoPreservedLog -OmitTasksParameter"
+    )
+    manual_preserved = script.index(
+        "Invoke-ServiceInstaller -Path $Setup -LogPath $ManualPreservedLog -OmitTasksParameter"
+    )
+    automatic = script.index("Invoke-ServiceInstaller -Path $Setup -LogPath $AutomaticUpdateLog")
+    assert stopped_manual < delayed_preserved < manual_preserved < automatic
+
+    before_delayed = script[stopped_manual:delayed_preserved]
+    assert 'Assert-InnoTaskMemory -ExpectedSelected "" -ExpectedDeselected "systemstart"' in before_delayed
+    assert "& sc.exe config $ServiceName start= delayed-auto" in before_delayed
+    between = script[delayed_preserved:manual_preserved]
+    assert '-ExpectedStartMode "Auto" -ExpectedDelayedAutoStart 1' in between
+    assert 'Assert-InnoTaskMemory -ExpectedSelected "systemstart" -ExpectedDeselected ""' in between
+    assert "& sc.exe config $ServiceName start= demand" in between
+    after_manual = script[manual_preserved:automatic]
+    assert '-ExpectedStartMode "Manual" -ExpectedDelayedAutoStart 0' in after_manual
+    assert 'Assert-InnoTaskMemory -ExpectedSelected "" -ExpectedDeselected "systemstart"' in after_manual
+
+    assert "aus dem vorhandenen Starttyp vorbelegt: Auto ->" in script
+    assert "aus dem vorhandenen Starttyp vorbelegt: Manual ->" in script
+    assert script.count("Assert-InstallerLogContains -LogPath") == 3
 
 
 def test_service_package_test_uses_only_the_schema_two_analysis_contract() -> None:

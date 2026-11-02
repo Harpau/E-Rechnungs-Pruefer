@@ -32,6 +32,7 @@ DefaultDirName={autopf64}\E-Rechnungs-Pruefer-Dienst
 DefaultGroupName=E-Rechnungs-Prüfer
 DisableProgramGroupPage=yes
 DisableDirPage=yes
+UsePreviousTasks=no
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
@@ -51,7 +52,7 @@ InfoAfterFile={#ProjectRoot}\THIRD_PARTY.md
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 
 [Tasks]
-Name: "systemstart"; Description: "Beim Systemstart starten (verzögert)"; GroupDescription: "Dienststart:"; Flags: checkedonce
+Name: "systemstart"; Description: "Beim Systemstart starten (verzögert)"; GroupDescription: "Dienststart:"
 
 [Files]
 Source: "{#OpenClientFile}"; Flags: dontcopy noencryption
@@ -105,6 +106,7 @@ var
   ServiceTransactionPrepared: Boolean;
   TransactionCommitStarted: Boolean;
   OriginalStartMode: String;
+  StartTaskPreselectionDone: Boolean;
   ServiceMetadataCaptured: Boolean;
   PurgeMachineData: Boolean;
   UninstallStateValidated: Boolean;
@@ -387,6 +389,89 @@ begin
     Waited := Waited + ServicePollMilliseconds;
   end;
   Result := QueryService(ServiceObject) = ServiceAbsent;
+end;
+
+function CommandLineDefinesTaskSelection: Boolean;
+var
+  I: Integer;
+  Param: String;
+  UpperParam: String;
+  InfFile: String;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+  begin
+    Param := ParamStr(I);
+    UpperParam := Uppercase(Param);
+    if (Pos('/TASKS=', UpperParam) = 1) or (Pos('/MERGETASKS=', UpperParam) = 1) then
+    begin
+      Result := True;
+      Exit;
+    end;
+    if Pos('/LOADINF=', UpperParam) = 1 then
+    begin
+      InfFile := Copy(Param, Length('/LOADINF=') + 1, Length(Param));
+      if IniKeyExists('Setup', 'Tasks', InfFile) then
+      begin
+        Result := True;
+        Exit;
+      end;
+    end;
+  end;
+end;
+
+procedure PreselectStartTaskFromExistingService;
+var
+  ServiceObject: Variant;
+  QueryResult: Integer;
+  StartMode: String;
+begin
+  { Inno Setup creates the task check boxes only when the tasks page is
+    entered. Derive the default exactly once from the SCM start type of the
+    existing service instead of the task selection a previous Setup run
+    remembered in the registry. An explicit command-line selection keeps
+    priority; the read-only query never mutates product state. }
+  if StartTaskPreselectionDone then
+    Exit;
+  StartTaskPreselectionDone := True;
+  if CommandLineDefinesTaskSelection then
+  begin
+    Log('Dienststart-Aufgabe: Die Kommandozeile bestimmt die Auswahl ausdrücklich.');
+    Exit;
+  end;
+  try
+    QueryResult := QueryService(ServiceObject);
+    if QueryResult = ServiceQueryError then
+      Log('Dienststart-Aufgabe: Der SCM-Zustand ist nicht lesbar; die Vorgabe bleibt unverändert.')
+    else if QueryResult = ServiceAbsent then
+      Log('Dienststart-Aufgabe: Kein vorhandener Dienst; die Vorgabe für die Neuinstallation bleibt gewählt.')
+    else if not ServiceBelongsToThisInstallation(ServiceObject) then
+      Log('Dienststart-Aufgabe: Ein fremder gleichnamiger Dienst wird nicht als Vorgabe übernommen.')
+    else
+    begin
+      StartMode := String(ServiceObject.StartMode);
+      if not ServiceStartModeIsSupported(StartMode) then
+        Log('Dienststart-Aufgabe: Unbekannter Starttyp "' + StartMode + '"; die Vorgabe bleibt unverändert.')
+      else if CompareText(StartMode, 'Auto') = 0 then
+      begin
+        WizardSelectTasks('systemstart');
+        Log('Dienststart-Aufgabe aus dem vorhandenen Starttyp vorbelegt: Auto -> gewählt.');
+      end
+      else
+      begin
+        WizardSelectTasks('!systemstart');
+        Log('Dienststart-Aufgabe aus dem vorhandenen Starttyp vorbelegt: ' + StartMode + ' -> abgewählt.');
+      end;
+    end;
+  except
+    Log('Dienststart-Aufgabe: Die Vorbelegung ist fehlgeschlagen: ' + GetExceptionMessage);
+  end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpSelectTasks then
+    PreselectStartTaskFromExistingService;
 end;
 
 function ExecChecked(FileName: String; Parameters: String; Description: String): Boolean;

@@ -74,7 +74,15 @@ Bundle und wird im gemeinsamen Startmenü als
 Der Dienst läuft als `NT AUTHORITY\LocalService`, nicht als `LocalSystem`. Der uneingeschränkte dienstspezifische
 SID `NT SERVICE\ERechnungsPrueferService` wird aktiviert. Standardmäßig konfiguriert der Installer
 `Automatic (Delayed Start)` und zwei verzögerte Neustartversuche bei unerwartetem Ausfall. Wird die Aufgabe
-**Beim Systemstart starten (verzögert)** abgewählt, erhält der Dienst den Starttyp `Manual`.
+**Beim Systemstart starten (verzögert)** abgewählt, erhält der Dienst den Starttyp `Manual`. Bei einem Update
+belegt der Installer diese Aufgabe aus dem tatsächlichen Starttyp des vorhandenen Dienstes vor: `Automatic`
+(mit oder ohne verzögerten Start) führt zur gewählten Aufgabe und damit erneut zu `Automatic (Delayed Start)`,
+`Manual` oder `Disabled` zur abgewählten Aufgabe und damit zu `Manual`. Die von Inno Setup gespeicherte
+Aufgabenauswahl früherer Setup-Läufe wird dafür nicht herangezogen (`UsePreviousTasks=no`). Nur `/TASKS=`,
+`/MERGETASKS=` oder eine `/LOADINF`-Datei mit einem `Tasks=`-Eintrag überschreiben diese Vorbelegung. Ein
+stilles Update ohne diese Parameter erhält damit den vorhandenen Starttyp; bis einschließlich 2.0.4 setzte es
+den Dienst wegen des Inno-Flags `checkedonce` auf `Manual` (Befund F-002 der 2.0.4-Abnahme). Das
+Installerprotokoll nennt die Herkunft der Vorbelegung.
 
 Maschinenzustand liegt ausschließlich unter `%ProgramData%\E-Rechnungs-Pruefer`:
 
@@ -234,8 +242,9 @@ Automatisierte Paket- und Freigabetests beginnen deshalb immer auf einer saubere
 
 Bei einem Dienstupdate wird der Dienst über SCM vor dem Ersetzen von Dateien deaktiviert und gestoppt; das Setup
 wartet auf `STOPPED`. Konfiguration und Token bleiben erhalten. Nur ein vor dem Update laufender Dienst wird nach
-erfolgreicher Installation wieder gestartet, und sein vorheriger Starttyp wird berücksichtigt. Setup- und
-SCM-Zustand werden bei Fehlern zurückgerollt, statt eine halb aktualisierte Installation weiterzubetreiben. Das
+erfolgreicher Installation wieder gestartet; der Starttyp folgt der aus dem vorhandenen Dienst vorbelegten
+Aufgabe **Beim Systemstart starten (verzögert)**, sofern die Kommandozeile sie nicht ausdrücklich setzt. Setup-
+und SCM-Zustand werden bei Fehlern zurückgerollt, statt eine halb aktualisierte Installation weiterzubetreiben. Das
 Fehler-Rollback entfernt einen vollständig neu angelegten Maschinenzustand nur über denselben strikt
 inventarisierenden Purge-Helfer und erst nach erneut bestätigter Abwesenheit des neuen SCM-Dienstes. Auch eine
 explizite Deinstallationsbereinigung verlangt vor jedem ProgramData-Zugriff einen gestoppten oder entfernten Dienst.
@@ -243,6 +252,13 @@ Das vollständige Onedir-Bundle wird zunächst nach `service.new` entpackt und d
 der alte Baum bleibt bis zum Commit als `service.rollback` erhalten. Dadurch verschwinden auch Dateien, die in der
 neuen Version nicht mehr enthalten sind. Starttyp, verzögerter Start, Beschreibung, Service-SID und Recovery werden
 ausschließlich über SCM-Abfrage- und Änderungs-APIs gesichert und exakt restauriert.
+
+Für unbeaufsichtigte Dienst-Updates genügt
+`E-Rechnungs-Pruefer-<Version>-Windows-x64-Dienst-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART`; der
+vorhandene Starttyp bleibt dabei erhalten. `/TASKS="systemstart"` erzwingt `Automatic (Delayed Start)`,
+`/TASKS=""` erzwingt `Manual`; beides gilt auch für einen laufenden Dienst. Der für 2.0.4 dokumentierte Workaround
+`/MERGETASKS="systemstart"` beziehungsweise `sc.exe config ERechnungsPrueferService start= delayed-auto` ist
+nicht mehr erforderlich, bleibt aber zulässig.
 
 Vor der ersten SCM- oder Maschinenmutation schreibt der Öffnen-Client ein unveränderliches
 `PREPARED`-Manifest unter
@@ -356,7 +372,9 @@ JSON-Inventar im Testverzeichnis erhalten. Der Diensttest prüft unter anderem D
 Starttyp, konfigurierte und durch erzwungenen Prozessabbruch ausgelöste Recovery, SCM-Zustände, reine
 Loopback-Bindung, geschützte DACLs samt effektiven Rechten, Browser-IPC, den Global-Mutex, API-Tokenfälle,
 Tokenpersistenz über Stop/Start und Update, einen absichtlich fehlgeschlagenen Update-Rollback sowie den
-vollständigen Bundlebaum, die Entfernung veralteter Dateien, den manuellen Starttyp, einen frühen Portkonflikt und
+vollständigen Bundlebaum, die Entfernung veralteter Dateien, den manuellen Starttyp, den Erhalt des Starttyps bei
+drei stillen Updates ohne `/TASKS` (laufender Dienst, SCM-Autostart trotz abgewählter Inno-Aufgabenerinnerung,
+SCM-Manuell trotz gewählter Aufgabenerinnerung), einen frühen Portkonflikt und
 Deinstallation mit Erhalt und ausdrücklicher Löschung von ProgramData. Mit `-RequireSignature` werden zusätzlich
 die installierten eigenen EXEs und Installer geprüft. Eine konkrete Windows-Testidentität wird als zusätzlicher
 Tokenleser provisioniert; der Test rotiert das Token bei gestopptem Dienst und weist nach, dass genau ihr

@@ -4,6 +4,25 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Windows-Dienst-Installer
+
+- Behebt den in der 2.0.4-Abnahme dokumentierten Befund F-002: Ein stilles Update des Windows-Dienstes ohne
+  `/TASKS` setzte den Starttyp seit 1.4.0 auf `Manual` statt `Automatic (Delayed Start)`, weil die Inno-Setup-Aufgabe
+  `systemstart` das Flag `checkedonce` trug und deshalb bei jeder Folgeinstallation abgewählt wurde. Das Flag ist
+  entfernt; der Dienst-Installer belegt die Aufgabe **Beim Systemstart starten (verzögert)** bei einem Update aus
+  dem tatsächlichen Starttyp des vorhandenen Dienstes vor (`Automatic` → gewählt, `Manual` oder `Disabled` →
+  abgewählt) und ignoriert die von Inno Setup gespeicherte Aufgabenauswahl früherer Läufe (`UsePreviousTasks=no`).
+  Eine ausdrückliche Angabe per `/TASKS=`, `/MERGETASKS=` oder `/LOADINF` mit `Tasks=` behält Vorrang. Ein bewusst
+  auf `Manual` gesetzter Dienst bleibt damit auch nach einem Update manuell; ein `Disabled`-Dienst wird wie bisher
+  zu `Manual`. Der Workaround aus den 2.0.4-Release-Notes (`/MERGETASKS="systemstart"` beziehungsweise
+  `sc.exe config ERechnungsPrueferService start= delayed-auto`) ist nicht mehr erforderlich. Das Installerprotokoll
+  nennt die Herkunft der Vorbelegung.
+- `scripts/test_windows_service_package.ps1` prüft zusätzlich drei stille Updates ohne `/TASKS`: Am laufenden
+  Dienst bleibt `Automatic (Delayed Start)` erhalten; ein per `sc.exe` wieder auf verzögerten Autostart gesetzter
+  Dienst bleibt automatisch, obwohl Inno Setup die Aufgabe als abgewählt gespeichert hat; ein per `sc.exe` auf
+  `Manual` gesetzter Dienst bleibt manuell, obwohl Inno Setup die Aufgabe als gewählt gespeichert hat. Der Test
+  läuft unverändert im CI-Job „Windows package and smoke test“ und im signierten Release-Workflow.
+
 ### Unterstützte Python-Versionen
 
 - Python 3.15 wird als Laufzeit unterstützt. Die CI-Matrix testet die Anwendung zusätzlich zu Python 3.11 bis 3.14
