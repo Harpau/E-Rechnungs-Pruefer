@@ -4,6 +4,13 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Unterstützte Python-Versionen
+
+- Python 3.15 wird als Laufzeit unterstützt. Die CI-Matrix testet die Anwendung zusätzlich zu Python 3.11 bis 3.14
+  unter Python 3.15, und das Docker-Image baut auf `python:3.15-slim` statt `python:3.13-slim` auf. Die
+  Mindestversion bleibt Python 3.11; Quality-Gate, Dependency-Audit, Windows-Paket und Release-Build bleiben
+  unverändert auf CPython 3.13.
+
 ## 2.0.4 – 2026-10-31
 
 ### Release-Paketierung
