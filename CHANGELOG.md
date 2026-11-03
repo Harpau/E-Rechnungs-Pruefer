@@ -4,7 +4,7 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
-## 2.1.0 – 2026-11-03
+## 2.1.0 – 2026-11-04
 
 ### Offizielle Prüfung von Factur-X EXTENDED
 
