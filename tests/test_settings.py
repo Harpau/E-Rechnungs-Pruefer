@@ -276,7 +276,8 @@ def test_facturx_extended_paths_default_to_the_vendor_tree_or_stay_empty(
         kosit_facturx_extended_repositories=(tmp_path / "a",),
     )
     assert explicit.kosit_facturx_extended_repositories == (tmp_path / "a",)
-    assert settings_module._split_paths("x/scenarios.xml;/abs/y.xml") == (
+    absolute = (tmp_path / "y.xml").resolve()
+    assert settings_module._split_paths(f"x/scenarios.xml;{absolute}") == (
         settings_module.PROJECT_ROOT / "x" / "scenarios.xml",
-        Path("/abs/y.xml"),
+        absolute,
     )
