@@ -65,6 +65,34 @@ def _ids(findings: list[dict[str, Any]]) -> set[str]:
     return {item["rule"]["id"] for item in findings}
 
 
+def _why(result: dict[str, Any]) -> str:
+    """Diagnostic text for assertion messages: what the official run actually reported."""
+
+    official = result["assessment"]["official"]
+    processing = result["assessment"]["processing"]
+    lines = [
+        f"official.status={official['status']} executed={official['executed']} configured={official['configured']}"
+    ]
+    lines.append(f"summary={official.get('summary')!r}")
+    for item in official["findings"] + processing["findings"]:
+        lines.append(f"{item['origin']} {item['rule']['id']}: {item['rule']['message'][:600]}")
+    technical = official.get("technical_output")
+    if technical:
+        lines.append(f"technical_output={technical[:1500]!r}")
+    return "\n".join(lines)
+
+
+def _why_raw(result: dict[str, Any]) -> str:
+    lines = [f"executed={result.get('executed')} accepted={result.get('accepted')} exit_code={result.get('exit_code')}"]
+    lines.append(f"summary={result.get('summary')!r}")
+    for item in result.get("findings", []):
+        lines.append(f"{item['id']}: {str(item.get('message'))[:600]}")
+    if result.get("technical_output"):
+        lines.append(f"technical_output={str(result['technical_output'])[:1500]!r}")
+    lines.append(f"state={ {key: result.get(key) for key in ('jar', 'scenarios', 'repositories', 'problems')} }")
+    return "\n".join(lines)
+
+
 @pytest.fixture(scope="module")
 def installation() -> Settings:
     validator = KositValidator(app_settings)
@@ -125,7 +153,7 @@ def test_valid_extended_invoices_are_accepted(installation: Settings, name: str)
     result = _analysis(_fixture(name), name)
 
     official = result["assessment"]["official"]
-    assert official["status"] == "accepted"
+    assert official["status"] == "accepted", _why(result)
     assert official["executed"] is True
     assert official["report_source"] == "file"
     assert not [item for item in official["findings"] if item["severity"] == "error"]
@@ -142,7 +170,7 @@ def test_valid_extended_invoices_are_accepted(installation: Settings, name: str)
 def test_schematron_and_schema_violations_are_rejected_with_rule_identifiers(installation: Settings) -> None:
     schematron = _analysis(_fixture("cii-facturx-extended-schematron-error.xml"), "schematron.xml")
     official = schematron["assessment"]["official"]
-    assert official["status"] == "rejected"
+    assert official["status"] == "rejected", _why(schematron)
     assert "BR-FXEXT-CO-15" in _ids(official["findings"])
     finding = next(item for item in official["findings"] if item["rule"]["id"] == "BR-FXEXT-CO-15")
     assert finding["severity"] == "error"
@@ -152,7 +180,7 @@ def test_schematron_and_schema_violations_are_rejected_with_rule_identifiers(ins
 
     schema = _analysis(_fixture("cii-facturx-extended-xsd-error.xml"), "schema.xml")
     official = schema["assessment"]["official"]
-    assert official["status"] == "rejected"
+    assert official["status"] == "rejected", _why(schema)
     assert _ids(official["findings"]) == {"cvc-complex-type.2.4.a"}
     (finding,) = official["findings"]
     assert finding["xml_location"] is not None and finding["xml_location"]["line"] is not None
@@ -188,7 +216,7 @@ def test_a_report_without_matching_scenario_is_no_decision(installation: Setting
 
     assert result["executed"] is False
     assert result["accepted"] is None
-    assert [item["id"] for item in result["findings"]] == ["KOSIT-SCENARIO"]
+    assert [item["id"] for item in result["findings"]] == ["KOSIT-SCENARIO"], _why_raw(result)
 
 
 def test_a_report_of_another_scenario_is_no_decision(extended_copy: Callable[[], tuple[Settings, Path]]) -> None:
@@ -204,9 +232,9 @@ def test_a_report_of_another_scenario_is_no_decision(extended_copy: Callable[[],
     result = _analysis(_fixture("cii-facturx-extended-valid.xml"), "valid.xml", settings=settings)
 
     official = result["assessment"]["official"]
-    assert official["status"] == "indeterminate"
+    assert official["status"] == "indeterminate", _why(result)
     assert official["executed"] is False
-    assert _ids(result["assessment"]["processing"]["findings"]) >= {"KOSIT-SCENARIO"}
+    assert _ids(result["assessment"]["processing"]["findings"]) >= {"KOSIT-SCENARIO"}, _why(result)
     assert result["assessment"]["processing"]["status"] == "incomplete"
 
 
@@ -283,7 +311,7 @@ def test_original_bytes_reach_kosit_and_leave_the_xml_export_unchanged(
 
     result = _analysis(pdf, "rechnung.pdf")
     official = result["assessment"]["official"]
-    assert official["status"] == "accepted"
+    assert official["status"] == "accepted", _why(result)
     root = etree.fromstring(official["raw_report"].encode("utf-8"))
     hash_value = root.findtext(f"{{{VARL}}}documentIdentification/{{{VARL}}}documentHash/{{{VARL}}}hashValue")
     assert hash_value is not None
@@ -295,7 +323,7 @@ def test_existing_en16931_and_xrechnung_control_cases_are_unchanged(installation
     result = _analysis((EXAMPLES / name).read_bytes(), name)
 
     official = result["assessment"]["official"]
-    assert official["status"] == "accepted"
+    assert official["status"] == "accepted", _why(result)
     assert official["executed"] is True
     assert "EXTENDED" not in (official["summary"] or "")
     assert result["capabilities"]["official_validation"] == "bundled"
