@@ -124,7 +124,10 @@ der Code mit `Invoice` beziehungsweise `CreditNote` kompatibel ist. Die Version 
 
 `app/profiles.py` erkennt XRechnung, EN 16931, Peppol Billing, Peppol Self-Billing, Factur-X und ZUGFeRD und
 ordnet interne sowie offizielle Fähigkeiten zu. Unbekannte oder fehlende Profile bleiben als solche erhalten;
-sie erhalten keine erfundene Vollunterstützung.
+sie erhalten keine erfundene Vollunterstützung. `app/official_rulesets.py` ergänzt ein Register exakter
+Regelsätze: Wurzelelement, Namespace und die rohe, unnormalisierte Profilkennung aus dem Originalbaum wählen
+derzeit den Regelsatz Factur-X 1.09.2 EXTENDED. Analyzer, KoSIT-Aufruf und Antwortaufbereitung verwenden dasselbe
+Auswahlergebnis; ähnliche Kennungen erhalten interne Hinweise (`PROFILE-002`, `PROFILE-003`) und keine Prüfung.
 
 `app/document_semantics.py` trennt die Rollen des Dokumentaustauschs von der wirtschaftlichen
 Gläubiger-/Schuldnerbeziehung. Self-Billing kann den Käufer zum Dokumentaussteller machen, ohne ihn dadurch zum
@@ -161,7 +164,13 @@ Ablehnung kein fehlgeschlagener Verarbeitungslauf. Ein gemeinsamer Status wird b
 
 ### KoSIT
 
-`app/validators/kosit.py` validiert die Konfiguration, startet Java in einem temporären Verzeichnis, liest die von KoSIT serialisierte VARL-Berichtdatei und übernimmt Fehlermeldungen. Eine valide `<rep:assessment>`-Entscheidung ist maßgeblich. Startfehler ohne auswertbaren Bericht sind kein Rechnungsurteil.
+`app/validators/kosit.py` validiert die Konfiguration, startet Java in einem temporären Verzeichnis, liest die von KoSIT serialisierte VARL-Berichtdatei und übernimmt Fehlermeldungen. Eine valide `<rep:assessment>`-Entscheidung ist maßgeblich. Startfehler ohne auswertbaren Bericht sind kein Rechnungsurteil; ein Bericht mit `<rep:noScenarioMatched>` ist für alle Pfade `indeterminate` (`KOSIT-SCENARIO`).
+
+Für einen gewählten Regelsatz läuft KoSIT getrennt mit eigenen Szenario- und Ressourcenpfaden. Vorher werden alle
+gebundenen Artefakte mit Größe und SHA-256 geprüft (fail-closed, `unavailable`), danach wird der Bericht an
+VARL-Namespace, Engine, Szenarioname, SHA-256-Dokument-Hash und genau eine Entscheidung gebunden; jede Abweichung
+ist `indeterminate` (`KOSIT-SCENARIO`, `KOSIT-REPORT`). Befunde mit einer Regel bekannter Abweichung erhalten den
+Verarbeitungshinweis `KOSIT-RULE-NOTICE`. Einzelheiten stehen in `docs/VALIDATION.md`.
 
 Die für Installation und Windows-Paket zulässigen Artefakte stehen mit SHA-256 in
 `packaging/kosit/components.lock.json`. Der öffentliche Health-Endpunkt übernimmt nur die Versionsangaben aus

@@ -399,14 +399,14 @@ def test_br49_uses_payment_occurrence_and_does_not_treat_bg16_as_xml_location() 
 def test_non_bundled_profile_does_not_execute_kosit(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    def unexpected_validate(_self, _xml: bytes, filename: str) -> dict:
+    def unexpected_validate(_self, _xml: bytes, filename: str, ruleset=None) -> dict:
         calls.append(filename)
         raise AssertionError("KoSIT darf für ein nicht gebündeltes Profil nicht ausgeführt werden.")
 
     monkeypatch.setattr("app.analyzer.KositValidator.validate", unexpected_validate)
     monkeypatch.setattr(
         "app.analyzer.KositValidator.configuration_state",
-        lambda _self: {"configured": True, "problems": []},
+        lambda _self, ruleset=None: {"configured": True, "problems": []},
     )
 
     result = analyze_bytes(
@@ -441,7 +441,7 @@ def test_kosit_receives_original_xml_bytes_after_structure_preflight(monkeypatch
     )
     received: list[tuple[bytes, str]] = []
 
-    def capture_original_bytes(_self, xml: bytes, filename: str) -> dict:
+    def capture_original_bytes(_self, xml: bytes, filename: str, ruleset=None) -> dict:
         received.append((xml, filename))
         return {
             "configured": True,
@@ -520,7 +520,7 @@ def test_card_identifier_is_redacted_from_official_and_xml_representations(
     </cac:PaymentMeans>
     """
 
-    def validate_with_card_data(_self, _xml: bytes, _filename: str) -> dict:
+    def validate_with_card_data(_self, _xml: bytes, _filename: str, ruleset=None) -> dict:
         return {
             "configured": True,
             "executed": True,

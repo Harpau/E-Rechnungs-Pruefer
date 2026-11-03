@@ -9,6 +9,7 @@ from lxml import etree
 
 from . import __version__
 from .analysis_builder import build_analysis_response
+from .official_rulesets import RulesetSelection, select_official_ruleset
 from .parsers.cii import parse_cii
 from .parsers.common import empty_party
 from .parsers.namespaces import CII_ROOT_NAMESPACE, UBL_ROOT_NAMESPACES
@@ -71,6 +72,48 @@ def _unknown_document(root: etree._Element) -> dict[str, Any]:
         "delivery": {},
         "profile": {"id": None, "name": "Nicht erkannt", "business_process_id": None},
     }
+
+
+def _identifier_findings(selection: RulesetSelection) -> list[dict[str, Any]]:
+    """Internal warnings when a known identifier is present but not exactly usable."""
+
+    findings: list[dict[str, Any]] = []
+    if selection.near_miss:
+        findings.append(
+            {
+                "id": "PROFILE-002",
+                "severity": "warning",
+                "title": "Profilkennung enthält Leerraum oder Kommentare",
+                "message": (
+                    "Die Profilkennung entspricht nur nach Entfernen von Leerraum oder Kommentaren einem bekannten "
+                    "Profil mit offiziellem Regelwerk. Die offizielle Prüfung wird deshalb nicht freigeschaltet; "
+                    "auch KoSIT vergleicht den Textknoten exakt."
+                ),
+                "location": "BT-24 / Guideline ID",
+                "actual": selection.raw_identifier,
+                "expected": selection.normalized_identifier,
+                "source": "Interne Prüfung",
+                "rule_class": "profile_precheck",
+            }
+        )
+    elif selection.reason == "ambiguous":
+        findings.append(
+            {
+                "id": "PROFILE-003",
+                "severity": "warning",
+                "title": "Mehrere Profilkennungen vorhanden",
+                "message": (
+                    f"Das Dokument enthält {selection.candidate_count} Profilkennungen (BT-24). Eine offizielle "
+                    "Prüfung wird nur für genau eine exakte Kennung freigeschaltet."
+                ),
+                "location": "BT-24 / Guideline ID",
+                "actual": str(selection.candidate_count),
+                "expected": "1",
+                "source": "Interne Prüfung",
+                "rule_class": "profile_precheck",
+            }
+        )
+    return findings
 
 
 def _detect_and_parse(root: etree._Element) -> tuple[dict[str, Any], str | None]:
@@ -144,10 +187,19 @@ def analyze_bytes(
         "original_xml": decode_xml_bytes(source.xml_bytes),
     }
 
+    # The rule-set selection reads the raw identifier from the original tree,
+    # before the parsers trim it; analyzer, validator and builder share it.
+    selection = select_official_ruleset(root) if not syntax_error else None
+    ruleset = selection.ruleset if selection is not None else None
+
     if syntax_error:
         builtin = None
     else:
         builtin = validate_builtin(working)
+        if selection is not None:
+            builtin_findings = builtin.setdefault("findings", [])
+            if isinstance(builtin_findings, list):
+                builtin_findings.extend(_identifier_findings(selection))
 
     kosit = KositValidator(app_settings)
     profile_value = parsed.get("profile")
@@ -155,15 +207,18 @@ def analyze_bytes(
     profile_data: dict[str, Any] = profile_value if isinstance(profile_value, dict) else {}
     document_data: dict[str, Any] = document_value if isinstance(document_value, dict) else {}
     profile_id = profile_data.get("id") or document_data.get("profile_id")
-    profile_capability = resolve_profile(profile_id).capabilities.official_validation
+    profile_resolution = resolve_profile(profile_id)
+    if ruleset is not None:
+        profile_resolution = profile_resolution.with_official_rules(ruleset.rules_version)
+    profile_capability = profile_resolution.capabilities.official_validation
     if (
         run_official_validation
         and app_settings.kosit_enabled
         and profile_capability is OfficialValidationCapability.BUNDLED
     ):
-        official = kosit.validate(source.xml_bytes, source.xml_filename)
+        official = kosit.validate(source.xml_bytes, source.xml_filename, ruleset=ruleset)
     else:
-        state = kosit.configuration_state()
+        state = kosit.configuration_state(ruleset)
         if not run_official_validation:
             summary = "Offizielle KoSIT-Prüfung wurde für diesen Aufruf nicht ausgeführt."
         elif profile_capability is OfficialValidationCapability.NOT_BUNDLED:
@@ -191,4 +246,5 @@ def analyze_bytes(
         syntax_error=syntax_error,
         duration_ms=duration_ms,
         application_version=__version__,
+        official_ruleset=ruleset,
     ).model_dump(mode="json")

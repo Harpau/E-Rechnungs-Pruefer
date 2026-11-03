@@ -1,29 +1,43 @@
 #!/usr/bin/env python3
-"""Install the exactly pinned KoSIT validator and XRechnung configuration.
+"""Install the exactly pinned KoSIT validator, XRechnung configuration and Factur-X EXTENDED artefacts.
 
 Nothing is downloaded at application runtime. This explicit setup script reads
-version, download URL and mandatory SHA-256 digest from the repository lock,
-verifies both artefacts, installs them below ``vendor/kosit`` and writes
-``.env.kosit``.
+versions, download URLs and mandatory SHA-256 digests from the repository lock,
+verifies every artefact in a staging directory, replaces ``vendor/kosit`` only
+after everything was verified, keeps the previous installation when the
+replacement fails, and writes ``.env.kosit`` atomically.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
+import os
 import shutil
 import sys
 import tempfile
-import urllib.error
-import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import kosit_components as components  # noqa: E402
+
+PROJECT_ROOT = SCRIPT_DIR.parent
 VENDOR_ROOT = PROJECT_ROOT / "vendor" / "kosit"
 DEFAULT_LOCK_FILE = PROJECT_ROOT / "packaging" / "kosit" / "components.lock.json"
+EXTENDED_SCENARIOS_SOURCE = PROJECT_ROOT / "packaging" / "kosit" / "facturx-extended" / "scenarios.xml"
+REQUIRED_COMPONENTS = ("validator", "xrechnung", "facturx_extended")
+REQUIRED_STANDARDS = (
+    "xrechnung",
+    "xrechnung_configuration",
+    "cen_en16931",
+    "xrechnung_schematron",
+    "facturx_extended",
+    "facturx_extended_source",
+)
 USER_AGENT = "e-rechnung-pruefer-kosit-installer/2.0.5"
 
 
@@ -33,59 +47,35 @@ class InstallError(RuntimeError):
 
 def load_lock(path: Path) -> dict[str, Any]:
     try:
-        payload: Any = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise InstallError("Die KoSIT-Sperrdatei muss ein JSON-Objekt enthalten.")
-        if payload.get("schema_version") != 1:
-            raise InstallError("Unbekannte Schema-Version der KoSIT-Sperrdatei.")
-        components = payload["components"]
+        payload = components.load_lock(path, required=REQUIRED_COMPONENTS)
         standards = payload["standards"]
-        for name in ("validator", "xrechnung"):
-            component = components[name]
-            for field in ("version", "filename", "url", "sha256"):
-                value = component[field]
-                if not isinstance(value, str) or not value:
-                    raise InstallError(f"Ungültiges Feld {name}.{field} in der KoSIT-Sperrdatei.")
-            if Path(component["filename"]).name != component["filename"]:
-                raise InstallError(f"Unsicherer Dateiname für {name} in der KoSIT-Sperrdatei.")
-            if not component["url"].startswith("https://"):
-                raise InstallError(f"Unsichere Download-URL für {name} in der KoSIT-Sperrdatei.")
-            digest = component["sha256"].lower()
-            if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
-                raise InstallError(f"Ungültige SHA-256-Prüfsumme für {name}.")
-        for field in ("xrechnung", "xrechnung_configuration", "cen_en16931", "xrechnung_schematron"):
+        for field in REQUIRED_STANDARDS:
             value = standards[field]
             if not isinstance(value, str) or not value:
                 raise InstallError(f"Ungültiges Feld standards.{field} in der KoSIT-Sperrdatei.")
-    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    except components.ComponentLockError as exc:
+        raise InstallError(f"KoSIT-Sperrdatei kann nicht gelesen werden: {exc}") from exc
+    except (KeyError, TypeError) as exc:
         raise InstallError(f"KoSIT-Sperrdatei kann nicht gelesen werden: {exc}") from exc
     return payload
 
 
 def download(url: str, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=180) as response, target.open("wb") as output:
-            shutil.copyfileobj(response, output)
-    except urllib.error.URLError as exc:
-        raise InstallError(f"Download fehlgeschlagen: {exc}") from exc
+        components.download(url, target, user_agent=USER_AGENT)
+    except components.ComponentLockError as exc:
+        raise InstallError(str(exc)) from exc
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return components.sha256_file(path)
 
 
 def verify_locked_digest(path: Path, expected: str) -> str:
-    actual = sha256_file(path)
-    if actual.lower() != expected.lower():
-        path.unlink(missing_ok=True)
-        raise InstallError(f"SHA-256-Prüfung für {path.name} fehlgeschlagen: erwartet {expected}, erhalten {actual}.")
-    return actual
+    try:
+        return components.verify_file(path, expected_sha256=expected)
+    except components.ComponentLockError as exc:
+        raise InstallError(str(exc)) from exc
 
 
 def manifest_attributes(jar_path: Path) -> dict[str, str]:
@@ -184,22 +174,28 @@ def _portable_path(path: Path) -> str:
         return str(resolved)
 
 
-def write_env(jar: Path, scenarios: Path, repository: Path) -> Path:
+def write_env(jar: Path, scenarios: Path, repository: Path, extended_repository: Path | None = None) -> Path:
+    """Write ``.env.kosit`` atomically so a failure never leaves a truncated file."""
+
     env_path = PROJECT_ROOT / ".env.kosit"
-    env_path.write_text(
-        "\n".join(
+    lines = [
+        "# Automatisch erzeugt durch scripts/install_kosit.py",
+        "KOSIT_ENABLED=true",
+        f"KOSIT_VALIDATOR_JAR={_portable_path(jar)}",
+        f"KOSIT_SCENARIOS={_portable_path(scenarios)}",
+        f"KOSIT_REPOSITORIES={_portable_path(repository)}",
+    ]
+    if extended_repository is not None:
+        lines.extend(
             [
-                "# Automatisch erzeugt durch scripts/install_kosit.py",
-                "KOSIT_ENABLED=true",
-                f"KOSIT_VALIDATOR_JAR={_portable_path(jar)}",
-                f"KOSIT_SCENARIOS={_portable_path(scenarios)}",
-                f"KOSIT_REPOSITORIES={_portable_path(repository)}",
-                "KOSIT_TIMEOUT_SECONDS=60",
-                "",
+                f"KOSIT_FACTURX_EXTENDED_SCENARIOS={_portable_path(extended_repository / 'scenarios.xml')}",
+                f"KOSIT_FACTURX_EXTENDED_REPOSITORIES={_portable_path(extended_repository)}",
             ]
-        ),
-        encoding="utf-8",
-    )
+        )
+    lines.extend(["KOSIT_TIMEOUT_SECONDS=60", ""])
+    temporary = env_path.with_name(env_path.name + ".tmp")
+    temporary.write_text("\n".join(lines), encoding="utf-8")
+    os.replace(temporary, env_path)
     return env_path
 
 
@@ -212,11 +208,13 @@ def install(force: bool, *, lock_file: Path = DEFAULT_LOCK_FILE) -> None:
     locked = load_lock(lock_file)
     validator_component = locked["components"]["validator"]
     config_component = locked["components"]["xrechnung"]
+    extended_component = locked["components"]["facturx_extended"]
     standards = locked["standards"]
 
     print(f"Validator:   {validator_component['version']} – {validator_component['filename']}")
     print(f"XRechnung:   {config_component['version']} – {config_component['filename']}")
     print(f"CEN-Regeln:  {standards['cen_en16931']}")
+    print(f"Factur-X:    {extended_component['version']} – Commit {extended_component['commit'][:7]}")
 
     with tempfile.TemporaryDirectory(prefix="kosit-download-") as temp:
         temp_path = Path(temp)
@@ -240,19 +238,47 @@ def install(force: bool, *, lock_file: Path = DEFAULT_LOCK_FILE) -> None:
         staged_jar = find_validator_jar(validator_dir)
         staged_scenarios = find_scenarios(config_dir)
         staged_repository = configuration_root(staged_scenarios, config_dir)
+
+        print("Lade Factur-X-EXTENDED-Artefakte herunter …")
+        try:
+            staged_extended = components.stage_facturx_extended(
+                extended_component,
+                stage_root,
+                scenarios_source=EXTENDED_SCENARIOS_SOURCE,
+                report_xsl_source=staged_repository / "resources" / "default-report.xsl",
+                user_agent=USER_AGENT,
+                downloader=download,
+            )
+        except components.ComponentLockError as exc:
+            raise InstallError(str(exc)) from exc
+
         jar_relative = staged_jar.relative_to(stage_root)
         scenarios_relative = staged_scenarios.relative_to(stage_root)
         repository_relative = staged_repository.relative_to(stage_root)
+        extended_relative = staged_extended.relative_to(stage_root)
 
-        VENDOR_ROOT.parent.mkdir(parents=True, exist_ok=True)
-        if VENDOR_ROOT.exists():
-            shutil.rmtree(VENDOR_ROOT)
-        shutil.move(str(stage_root), str(VENDOR_ROOT))
+        # Everything is verified. Only now is the existing installation touched,
+        # and every failure from here on restores it together with .env.kosit.
+        replacement = components.DirectoryReplacement(VENDOR_ROOT, stage_root)
+        try:
+            replacement.apply()
+            env_path = write_env(
+                VENDOR_ROOT / jar_relative,
+                VENDOR_ROOT / scenarios_relative,
+                VENDOR_ROOT / repository_relative,
+                VENDOR_ROOT / extended_relative,
+            )
+        except Exception as exc:
+            replacement.rollback()
+            raise InstallError(
+                f"Der Austausch wurde zurückgenommen; die bisherige Installation und .env.kosit bleiben erhalten: {exc}"
+            ) from exc
+        replacement.finish()
 
     jar = VENDOR_ROOT / jar_relative
     scenarios = VENDOR_ROOT / scenarios_relative
     repository = VENDOR_ROOT / repository_relative
-    env_path = write_env(jar, scenarios, repository)
+    extended = VENDOR_ROOT / extended_relative
 
     print("\nKoSIT wurde eingerichtet.")
     print(f"JAR:          {jar}")
@@ -261,6 +287,7 @@ def install(force: bool, *, lock_file: Path = DEFAULT_LOCK_FILE) -> None:
     print(f"Szenarien:    {scenarios}")
     print(f"Ressourcen:   {repository}")
     print(f"Config SHA-256: {config_sha256}")
+    print(f"Factur-X EXTENDED: {extended} ({extended_component['tag']}, {extended_component['commit'][:7]})")
     print(f"Konfiguration: {env_path}")
     if shutil.which("java") is None:
         print("\nHinweis: Java ist noch nicht im PATH. Benötigt wird eine unterstützte Java-Laufzeit.")
@@ -275,7 +302,7 @@ def main() -> int:
     try:
         install(args.force, lock_file=args.lock_file)
         return 0
-    except InstallError as exc:
+    except (InstallError, components.ComponentLockError) as exc:
         print(f"Fehler: {exc}", file=sys.stderr)
         return 1
 

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Prepare locked Java and KoSIT components for the Windows package."""
+"""Prepare locked Java, KoSIT and Factur-X EXTENDED components for the Windows package.
+
+All components are downloaded into a cache, verified, assembled in a staging tree
+and only then moved to ``runtime/java`` and ``vendor/kosit``. A failure during the
+replacement restores both previous trees.
+"""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import shutil
 import sys
 import tempfile
@@ -15,9 +18,17 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import kosit_components as shared  # noqa: E402
+
+PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_LOCK_FILE = PROJECT_ROOT / "packaging" / "windows" / "components.lock.json"
 DEFAULT_CACHE_DIR = PROJECT_ROOT / ".cache" / "windows-components"
+EXTENDED_SCENARIOS_SOURCE = PROJECT_ROOT / "packaging" / "kosit" / "facturx-extended" / "scenarios.xml"
+REQUIRED_COMPONENTS = ("java", "validator", "xrechnung", "facturx_extended")
 USER_AGENT = f"e-rechnung-pruefer-windows-builder/{(PROJECT_ROOT / 'VERSION').read_text(encoding='utf-8').strip()}"
 
 
@@ -26,36 +37,26 @@ class ComponentError(RuntimeError):
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return shared.sha256_file(path)
 
 
-def _load_lock(path: Path) -> dict[str, dict[str, str]]:
+def _load_lock(path: Path) -> dict[str, dict[str, Any]]:
     try:
-        payload: Any = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ComponentError("Die Komponenten-Sperrdatei muss ein JSON-Objekt enthalten.")
-        if payload.get("schema_version") != 1:
-            raise ComponentError("Unbekannte Schema-Version der Komponenten-Sperrdatei.")
-        components = payload["components"]
-        for name in ("java", "validator", "xrechnung"):
-            component = components[name]
-            for field in ("version", "filename", "url", "sha256"):
-                value = component[field]
-                if not isinstance(value, str) or not value:
-                    raise ComponentError(f"Ungültiges Feld {name}.{field} in der Komponenten-Sperrdatei.")
-            digest = component["sha256"]
-            if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest.lower()):
-                raise ComponentError(f"Ungültige SHA-256-Prüfsumme für {name}.")
-    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise ComponentError(f"Komponenten-Sperrdatei kann nicht gelesen werden: {exc}") from exc
+        payload = shared.load_lock(path, required=REQUIRED_COMPONENTS)
+    except shared.ComponentLockError as exc:
+        raise ComponentError(str(exc)) from exc
+    components: dict[str, dict[str, Any]] = payload["components"]
     return components
 
 
-def _download_locked(component: dict[str, str], cache_dir: Path) -> Path:
+def _download_file(url: str, target: Path) -> None:
+    try:
+        shared.download(url, target, user_agent=USER_AGENT)
+    except shared.ComponentLockError as exc:
+        raise ComponentError(str(exc)) from exc
+
+
+def _download_locked(component: dict[str, Any], cache_dir: Path) -> Path:
     target = cache_dir / Path(component["filename"]).name
     expected = component["sha256"].lower()
     if target.is_file() and sha256_file(target).lower() == expected:
@@ -103,7 +104,14 @@ def _find_java_root(extraction_root: Path) -> Path:
     return candidates[0].parent.parent
 
 
-def _prepare_tree(components: dict[str, dict[str, str]], cache_dir: Path, stage_root: Path) -> None:
+def _find_default_report(configuration_root: Path) -> Path:
+    candidates = [path for path in configuration_root.rglob("default-report.xsl") if "src" not in path.parts]
+    if len(candidates) != 1:
+        raise ComponentError("Die XRechnung-Konfiguration enthält keine eindeutige resources/default-report.xsl.")
+    return candidates[0]
+
+
+def _prepare_tree(components: dict[str, dict[str, Any]], cache_dir: Path, stage_root: Path) -> None:
     java_archive = _download_locked(components["java"], cache_dir)
     validator_jar = _download_locked(components["validator"], cache_dir)
     xrechnung_archive = _download_locked(components["xrechnung"], cache_dir)
@@ -114,35 +122,57 @@ def _prepare_tree(components: dict[str, dict[str, str]], cache_dir: Path, stage_
     (stage_root / "runtime").mkdir()
     shutil.move(str(java_root), str(stage_root / "runtime" / "java"))
 
-    validator_target = stage_root / "vendor" / "kosit" / "validator" / validator_jar.name
+    kosit_root = stage_root / "vendor" / "kosit"
+    validator_target = kosit_root / "validator" / validator_jar.name
     validator_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(validator_jar, validator_target)
-    _safe_extract(xrechnung_archive, stage_root / "vendor" / "kosit" / "xrechnung")
+    _safe_extract(xrechnung_archive, kosit_root / "xrechnung")
+
+    try:
+        shared.stage_facturx_extended(
+            components["facturx_extended"],
+            kosit_root,
+            scenarios_source=EXTENDED_SCENARIOS_SOURCE,
+            report_xsl_source=_find_default_report(kosit_root / "xrechnung"),
+            user_agent=USER_AGENT,
+            cache_dir=cache_dir,
+            downloader=_download_file,
+        )
+    except shared.ComponentLockError as exc:
+        raise ComponentError(str(exc)) from exc
 
 
 def prepare(lock_file: Path, cache_dir: Path) -> None:
     components = _load_lock(lock_file)
-    for name in ("java", "validator", "xrechnung"):
+    for name in REQUIRED_COMPONENTS:
         print(f"{name}: {components[name]['version']}")
 
+    java_target = PROJECT_ROOT / "runtime" / "java"
+    kosit_target = PROJECT_ROOT / "vendor" / "kosit"
     with tempfile.TemporaryDirectory(prefix="einvoice-windows-components-") as temporary:
         stage_root = Path(temporary) / "stage"
         stage_root.mkdir()
         _prepare_tree(components, cache_dir, stage_root)
 
-        java_target = PROJECT_ROOT / "runtime" / "java"
-        kosit_target = PROJECT_ROOT / "vendor" / "kosit"
-        java_target.parent.mkdir(parents=True, exist_ok=True)
-        kosit_target.parent.mkdir(parents=True, exist_ok=True)
-        if java_target.exists():
-            shutil.rmtree(java_target)
-        if kosit_target.exists():
-            shutil.rmtree(kosit_target)
-        shutil.move(str(stage_root / "runtime" / "java"), str(java_target))
-        shutil.move(str(stage_root / "vendor" / "kosit"), str(kosit_target))
+        # Both trees are complete and verified. Replace them together and restore
+        # both when either replacement fails.
+        java_replacement = shared.DirectoryReplacement(java_target, stage_root / "runtime" / "java")
+        kosit_replacement = shared.DirectoryReplacement(kosit_target, stage_root / "vendor" / "kosit")
+        try:
+            java_replacement.apply()
+            kosit_replacement.apply()
+        except Exception as exc:
+            kosit_replacement.rollback()
+            java_replacement.rollback()
+            raise ComponentError(
+                f"Der Austausch wurde zurückgenommen; bisherige Java- und KoSIT-Bäume bleiben erhalten: {exc}"
+            ) from exc
+        kosit_replacement.finish()
+        java_replacement.finish()
 
     print(f"Java vorbereitet: {java_target}")
     print(f"KoSIT vorbereitet: {kosit_target}")
+    print(f"Factur-X EXTENDED vorbereitet: {kosit_target / shared.FACTURX_EXTENDED_DIRECTORY}")
 
 
 def main() -> int:
@@ -153,7 +183,7 @@ def main() -> int:
     try:
         prepare(args.lock_file, args.cache_dir)
         return 0
-    except ComponentError as exc:
+    except (ComponentError, shared.ComponentLockError) as exc:
         print(f"Fehler: {exc}", file=sys.stderr)
         return 1
 

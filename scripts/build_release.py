@@ -51,6 +51,11 @@ SAFE_XML_ROOTS = {
     PurePosixPath("app/examples"),
     PurePosixPath("tests/fixtures"),
 }
+# Individually reviewed XML files outside the safe roots. Never widen this to a directory:
+# a customer invoice placed next to the scenario file must stay excluded.
+SAFE_XML_FILES = {
+    PurePosixPath("packaging/kosit/facturx-extended/scenarios.xml"),
+}
 SENSITIVE_SUFFIXES = {".pdf", ".p12", ".pfx", ".pem", ".key"}
 
 
@@ -68,7 +73,11 @@ def should_include(relative: Path) -> bool:
         return False
     if relative.suffix.lower() in SENSITIVE_SUFFIXES:
         return False
-    if relative.suffix.lower() == ".xml" and not any(_is_below(posix, root) for root in SAFE_XML_ROOTS):
+    if (
+        relative.suffix.lower() == ".xml"
+        and posix not in SAFE_XML_FILES
+        and not any(_is_below(posix, root) for root in SAFE_XML_ROOTS)
+    ):
         return False
     return True
 

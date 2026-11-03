@@ -4,6 +4,88 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Offizielle Prüfung von Factur-X EXTENDED
+
+- Eine CII-Rechnung mit exakt der Kennung `urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended` wird
+  jetzt offiziell gegen Factur-X 1.09.2 EXTENDED geprüft, sobald die Artefakte über `scripts/install_kosit.py`
+  eingerichtet sind. Das neue Register `app/official_rulesets.py` bindet Wurzelelement, Namespace und die rohe
+  Kennung aus dem Originalbaum an genau einen Regelsatz; Leerraum, Kommentare, abweichende Schreibweise, ähnliche
+  Kennungen, mehrere Kennungen oder eine UBL-Datei mit derselben Kennung schalten keine Prüfung frei und erhalten
+  bei Leerraum oder Kommentaren den internen Hinweis `PROFILE-002`, bei mehreren Kennungen `PROFILE-003`.
+- Der Extended-Lauf verwendet eigene Szenario- und Ressourcenpfade (`KOSIT_FACTURX_EXTENDED_SCENARIOS`,
+  `KOSIT_FACTURX_EXTENDED_REPOSITORIES`, automatisch unter `vendor/kosit/facturx-extended/`). Vor jedem Start
+  müssen alle gebundenen Artefakte mit Größe und SHA-256 vorhanden sein; andernfalls lautet der offizielle Status
+  `unavailable` mit Klartextbefund. Der XRechnung-Pfad bleibt davon unberührt.
+- Der VARL-Bericht eines Extended-Laufs wird an Szenarioname, Dokument-Hash (SHA-256) und genau eine ausdrückliche
+  Annahme oder Ablehnung gebunden. Fehlendes Szenario, abweichender Hash, unbekannter Algorithmus, ungültiges Base64,
+  fehlende, doppelte oder widersprüchliche Bewertung und ein falscher Namespace ergeben `indeterminate` mit den
+  Verarbeitungsbefunden `KOSIT-SCENARIO` beziehungsweise `KOSIT-REPORT`; weder das Attribut `valid` noch der
+  Prozess-Rückgabecode ersetzen die Entscheidung. Regelkennungen stammen aus dem Attribut `code` der Berichtsmeldungen,
+  Befunde tragen Profil und Regelstand.
+- Für alle Prüfpfade gilt: Ein KoSIT-Bericht mit `rep:noScenarioMatched` ist keine Ablehnung mehr, sondern
+  `indeterminate` mit dem Befund `KOSIT-SCENARIO`.
+- Der KoSIT-Prozess erhält eine eigene, sofort geschlossene Pipe als Standardeingabe. KoSIT prüft beim Start mit
+  `System.in.available()`, ob eine Eingabe über stdin kommt; ein geerbter stdin-Handle, der keine Pipe ist (etwa
+  `NUL` auf CI-Runnern), ließ den Validator unter Windows mit `java.io.IOException: Incorrect function` abbrechen,
+  bevor ein Bericht entstand. Das betraf jeden KoSIT-Lauf in solchen Umgebungen, nicht nur Factur-X EXTENDED.
+- Die Zusammenfassung einer Extended-Prüfung nennt Regelstand und Herausgeber (`Factur-X 1.09.2 EXTENDED /
+  FNFE-MPE France_RFE v1.4.0.03 (a63e6b5)`), weist den Regelstand als Festlegung des Prüfers aus und stellt klar,
+  dass nur die XML und nicht die PDF-Konformität geprüft wurde. Browseransicht, HTML- und PDF-Bericht zeigen
+  denselben Text über den gemeinsamen Präsentationsvertrag.
+- Befunde mit einer der zwölf Regeln, die im Release 1.09.2 eine bekannte, in FNFE `fix-FR04` korrigierte
+  Abweichung haben (`BR-FXEXT-S/Z/E/AE/IC/G/O/AF/AG-01`, `BR-FXEXT-CO-10/12/13`), erhalten zusätzlich den
+  Infobefund `KOSIT-RULE-NOTICE` auf der Verarbeitungsachse; der offizielle Befund bleibt unverändert.
+- `/api/health` nennt unter `kosit.components` zusätzlich `facturx_extended` (`1.09.2`) und
+  `facturx_extended_source` und meldet in `kosit.facturx_extended_configured`, ob das Extended-Regelpaket
+  vollständig und unverändert eingerichtet ist. `docs/VALIDATION.md`, `docs/ARCHITECTURE.md` und `README.md`
+  beschreiben Auswahl, Bindung, Statusmatrix, bekannte Abweichungen und die Grenzen der Prüfung.
+
+### Abnahme mit echten Regelläufen
+
+- Neue Integrationssuite `tests/test_kosit_facturx_extended_integration.py` mit dem registrierten Marker
+  `kosit_integration`: Ohne `EINVOICE_KOSIT_INTEGRATION=1` wird sie übersprungen; mit gesetzter Variable schlagen
+  fehlende, unvollständige oder manipulierte Komponenten und fehlendes Java fehl statt zu überspringen. Sie prüft mit
+  dem echten KoSIT-Validator und den gebundenen Artefakten echte Annahme und Ablehnung mit Regelkennungen, fehlende
+  Dateien und falsche Hashes (`unavailable`), falschen Szenarionamen und fehlendes Szenario (`indeterminate`),
+  Start- und Zeitüberschreitungsfehler, ähnliche Kennungen und UBL ohne Freischaltung, bytegleiche Übergabe und
+  unveränderten Export über `/api/xml`, unveränderte EN-16931-/XRechnung-Kontrollfälle, den Health-Endpunkt und
+  das Fehlen externer Referenzen in den installierten Artefakten.
+- `ci.yml` und `release.yml` führen die Suite in einem eigenen Schritt unmittelbar nach der Bereitstellung der
+  gebundenen Java- und KoSIT-Komponenten aus. `scripts/test_windows_package.ps1` und
+  `scripts/test_windows_service_package.ps1` prüfen zusätzlich einen Factur-X-EXTENDED-Annahme- und -Ablehnungsfall
+  im installierten Desktop- und Dienstpaket; der Paket-Healthcheck verlangt `kosit.facturx_extended_configured`.
+
+### Offizielle Prüfkomponenten (KoSIT)
+
+- Die Sperrdateien `packaging/kosit/components.lock.json` und `packaging/windows/components.lock.json` tragen
+  `schema_version` 2 und binden zusätzlich die Komponente `facturx_extended`: die Validierungsartefakte für Factur-X
+  1.09.2 EXTENDED (vier XSD, Schematron, kompilierte XSLT, Codelisten und LICENSE) aus dem Repository
+  `fnfempe/France_RFE` von FNFE-MPE, Tag v1.4.0.03, Commit `a63e6b538bdaff460f17c38dc1bc5455cf1ba35a`, je Datei mit
+  Größe und SHA-256 an diesen Commit gebunden (Apache License 2.0). Die Dateien sind bytegleich mit dem technischen
+  Teil des FeRD-Pakets ZUGFeRD 2.5.2 vom 04.08.2026. Die Loader lehnen Branch- oder Tag-Referenzen, Nicht-HTTPS-URLs,
+  absolute oder aufsteigende Zielpfade, unter Windows kollidierende Zielnamen und unvollständige Hashes ab.
+- `scripts/install_kosit.py` lädt diese Artefakte zusätzlich zu Validator und XRechnung-Konfiguration, legt sie unter
+  `vendor/kosit/facturx-extended/` ab, kopiert die versionierte Szenariodatei
+  `packaging/kosit/facturx-extended/scenarios.xml` und `resources/default-report.xsl` aus der XRechnung-Konfiguration
+  dorthin, schreibt `SOURCE.txt` mit Herkunft und Hashliste und ergänzt `.env.kosit` um
+  `KOSIT_FACTURX_EXTENDED_SCENARIOS` und `KOSIT_FACTURX_EXTENDED_REPOSITORIES`. Die Anwendung wertet diese
+  Konfiguration noch nicht aus; die offizielle Prüfung von Factur-X EXTENDED folgt in einem weiteren Schritt.
+- Installer und `scripts/prepare_windows_components.py` tauschen `vendor/kosit` beziehungsweise `runtime/java` erst
+  nach vollständiger Verifikation aller Komponenten aus, sichern den bisherigen Baum und nehmen den Austausch bei
+  jedem Fehler zurück; `.env.kosit` wird atomar geschrieben und bleibt bei einem Fehlschlag unverändert. Die
+  gemeinsame Logik liegt in `scripts/kosit_components.py`.
+- `scripts/build_release.py` gibt genau die Datei `packaging/kosit/facturx-extended/scenarios.xml` für das
+  Repository-ZIP frei, nicht das Verzeichnis; `MANIFEST.in` nimmt sie in die Source Distribution auf. `THIRD_PARTY.md`
+  nennt die Herkunft und Lizenz der Artefakte; `.env.example` nennt die neuen Schlüssel und das JAR 1.6.3.
+
+### Tests
+
+- Synthetische Fixtures unter `tests/fixtures/` für Factur-X EXTENDED: gültige Rechnung, gültige Rechnung mit
+  Unterpositionen, XSD-Fehler, Schematron-Verstoß, Kennungen mit Leerraum, Kommentaren, abweichender Schreibweise,
+  `#compliant#`, Suffix, ZUGFeRD-2.0-Kennung und doppeltem Kontextparameter, eine UBL-Rechnung mit derselben Kennung
+  sowie 15 synthetische KoSIT-VARL-Berichte nach dem Aufbau von Validator 1.6.3. Die CII-Fixtures wurden gegen die
+  echten Regeln geprüft; die Tests sichern, dass ähnliche Kennungen keine offizielle Prüfung freischalten.
+
 ## 2.0.5 – 2026-11-02
 
 ### Windows-Dienst-Installer

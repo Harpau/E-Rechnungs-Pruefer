@@ -80,6 +80,9 @@ app = [
 [tool.pytest.ini_options]
 addopts = "-q --strict-config --strict-markers"
 testpaths = ["tests"]
+markers = [
+  "kosit_integration: Integrationstests mit echtem KoSIT-Validator und gebundenen Factur-X-EXTENDED-Artefakten; laufen nur mit EINVOICE_KOSIT_INTEGRATION=1 und schlagen dann bei fehlenden Komponenten fehl",
+]
 filterwarnings = [
   'error:^Using `httpx` with `starlette\.testclient` is deprecated; install `httpx2` instead\.$:starlette.exceptions.StarletteDeprecationWarning',
 ]
@@ -118,7 +121,14 @@ line-ending = "lf"
 
 [tool.mypy]
 python_version = "3.11"
-files = ["app", "scripts/verify_version.py", "scripts/build_release.py", "scripts/prepare_windows_components.py"]
+files = [
+  "app",
+  "scripts/verify_version.py",
+  "scripts/build_release.py",
+  "scripts/kosit_components.py",
+  "scripts/install_kosit.py",
+  "scripts/prepare_windows_components.py",
+]
 check_untyped_defs = true
 no_implicit_optional = true
 warn_redundant_casts = true

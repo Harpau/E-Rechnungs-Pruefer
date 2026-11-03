@@ -107,6 +107,11 @@ jobs:
           key: windows-components-${{ hashFiles('packaging/windows/components.lock.json') }}
       - name: Prepare locked Java and KoSIT components
         run: python scripts/prepare_windows_components.py
+      - name: Extended integration tests with the real KoSIT validator
+        env:
+          EINVOICE_KOSIT_INTEGRATION: "1"
+          KOSIT_TIMEOUT_SECONDS: "180"
+        run: python -m pytest tests/test_kosit_facturx_extended_integration.py -m kosit_integration
       - name: Install pinned Inno Setup
         shell: pwsh
         run: |

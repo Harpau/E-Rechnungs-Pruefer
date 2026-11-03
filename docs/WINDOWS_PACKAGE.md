@@ -317,6 +317,14 @@ $InnoSetupCompiler = .\scripts\install_inno_setup.ps1
 .\scripts\build_windows.ps1 -InnoSetupCompiler $InnoSetupCompiler
 ```
 
+`prepare_windows_components.py` lädt neben Java, Validator und XRechnung-Konfiguration auch die gebundenen
+Factur-X-1.09.2-EXTENDED-Artefakte nach `vendor\kosit\facturx-extended\` und tauscht `runtime\java` und
+`vendor\kosit` erst nach vollständiger Verifikation beider Bäume aus; ein Fehler stellt beide vorherigen Bäume
+wieder her. Vor dem Installerbau prüft der Workflow die Integrationssuite
+`tests\test_kosit_facturx_extended_integration.py` mit `EINVOICE_KOSIT_INTEGRATION=1` gegen genau diese Bäume;
+die installierten Pakettests verlangen anschließend einen Factur-X-EXTENDED-Annahme- und -Ablehnungsfall sowie
+`kosit.facturx_extended_configured` im Healthcheck.
+
 Für signierte GitHub-Builds gilt stattdessen der vollständige, gehashte Windows-x64-Lock
 `packaging\windows\requirements-release.txt` zusammen mit CPython 3.13.14. Der Workflow installiert diesen Lock
 mit `--require-hashes --only-binary=:all:` und anschließend das lokale Projekt ohne erneute

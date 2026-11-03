@@ -116,10 +116,22 @@ def _discover_repositories(scenarios: tuple[Path, ...]) -> tuple[Path, ...]:
     return tuple(repositories)
 
 
+def _discover_facturx_extended_scenarios() -> tuple[Path, ...]:
+    candidate = PROJECT_ROOT / "vendor" / "kosit" / "facturx-extended" / "scenarios.xml"
+    return (candidate,) if candidate.is_file() else ()
+
+
 _JAR_FROM_ENV = os.getenv("KOSIT_VALIDATOR_JAR")
 _SCENARIOS_FROM_ENV = os.getenv("KOSIT_SCENARIOS")
 _REPOSITORIES_FROM_ENV = os.getenv("KOSIT_REPOSITORIES")
 _DEFAULT_SCENARIOS = _split_paths(_SCENARIOS_FROM_ENV) if _SCENARIOS_FROM_ENV else _discover_scenarios()
+_FACTURX_EXTENDED_SCENARIOS_FROM_ENV = os.getenv("KOSIT_FACTURX_EXTENDED_SCENARIOS")
+_FACTURX_EXTENDED_REPOSITORIES_FROM_ENV = os.getenv("KOSIT_FACTURX_EXTENDED_REPOSITORIES")
+_DEFAULT_FACTURX_EXTENDED_SCENARIOS = (
+    _split_paths(_FACTURX_EXTENDED_SCENARIOS_FROM_ENV)
+    if _FACTURX_EXTENDED_SCENARIOS_FROM_ENV
+    else _discover_facturx_extended_scenarios()
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +146,14 @@ class Settings:
     kosit_scenarios: tuple[Path, ...] = _DEFAULT_SCENARIOS
     kosit_repositories: tuple[Path, ...] = (
         _split_paths(_REPOSITORIES_FROM_ENV) if _REPOSITORIES_FROM_ENV else _discover_repositories(_DEFAULT_SCENARIOS)
+    )
+    # Separate scenario and repository of the Factur-X EXTENDED rule set; the
+    # paths are only used when the exact profile identifier selects that rule set.
+    kosit_facturx_extended_scenarios: tuple[Path, ...] = _DEFAULT_FACTURX_EXTENDED_SCENARIOS
+    kosit_facturx_extended_repositories: tuple[Path, ...] = (
+        _split_paths(_FACTURX_EXTENDED_REPOSITORIES_FROM_ENV)
+        if _FACTURX_EXTENDED_REPOSITORIES_FROM_ENV
+        else tuple(path.parent for path in _DEFAULT_FACTURX_EXTENDED_SCENARIOS)
     )
     kosit_timeout_seconds: int = int(os.getenv("KOSIT_TIMEOUT_SECONDS", "60"))
     host: str = os.getenv("HOST", "127.0.0.1")

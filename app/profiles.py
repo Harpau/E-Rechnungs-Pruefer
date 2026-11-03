@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Final
@@ -83,6 +83,18 @@ class ProfileResolution:
             "issuance_mode": self.issuance_mode.value,
             "capabilities": self.capabilities.to_dict(),
         }
+
+    def with_official_rules(self, rules_version: str) -> ProfileResolution:
+        """Return a copy whose official validation is bundled through an exactly selected rule set."""
+
+        return replace(
+            self,
+            capabilities=replace(
+                self.capabilities,
+                official_validation=OfficialValidationCapability.BUNDLED,
+                official_rules_version=rules_version,
+            ),
+        )
 
 
 _BUNDLED_RULES = "CEN-EN16931-validation-1.3.16 / XRechnung-3.0.2"

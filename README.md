@@ -26,7 +26,8 @@ Reine Sicht- oder Scan-PDFs ohne eingebettete strukturierte XML werden bewusst n
 - lesbare Darstellung von Kopf, Parteien, Positionen, Einheiten, Preisbasismengen, Steuern, Summen, Zahlung, Referenzen, Lieferung und Hinweisen
 - XML-Text- und Tabellenansichten sowie bytegetreuer Export der ursprünglichen XML-Bytes
 - interne Pflichtfeld-, Datums-, Format-, Rechen- und Plausibilitätsprüfungen
-- optionale KoSIT-Prüfung mit zuverlässiger Auswertung des VARL-Berichts
+- optionale KoSIT-Prüfung mit zuverlässiger Auswertung des VARL-Berichts, für EN 16931/XRechnung und für
+  Factur-X EXTENDED (Regelstand 1.09.2) mit einem an Szenario und Dokument gebundenen Bericht
 - geschlossenes Analyseschema 2 mit getrennten Achsen für offizielle Konformität, interne Prüfung und
   technischen Verarbeitungsabschluss
 - versionierte Dokumenttypauflösung für 62 UNTDID-1001-Codes aus CEN EN 16931 1.3.16 sowie abgeleitete
@@ -145,6 +146,14 @@ oder unter Windows:
 
 Der Check umfasst Versionskonsistenz, Ruff, Mypy sowie Pytest mit Branch Coverage. Mit `python scripts/build_release.py` entstehen Wheel, Source Distribution, ein bereinigtes Repository-ZIP und SHA-256-Prüfsummen.
 
+Die Integrationssuite mit dem echten KoSIT-Validator und den gebundenen Factur-X-EXTENDED-Artefakten wird im
+normalen Lauf übersprungen. Nach `python scripts/install_kosit.py` lässt sie sich gezielt starten; mit gesetzter
+Variable schlägt sie bei fehlenden Komponenten fehl statt zu überspringen:
+
+```sh
+EINVOICE_KOSIT_INTEGRATION=1 .venv/bin/python -m pytest tests/test_kosit_facturx_extended_integration.py -m kosit_integration
+```
+
 Die Windows-x64-Installer werden nativ auf Windows beziehungsweise im Windows-Job von GitHub Actions gebaut. Sie
 können auf dem Intel-Mac entwickelt, aber nicht erzeugt oder ausgeführt werden.
 
@@ -206,15 +215,28 @@ Der Installer:
 - installiert ausschließlich die in `packaging/kosit/components.lock.json` festgelegten Artefakte;
 - prüft deren verpflichtende SHA-256-Prüfsummen vor der Installation;
 - installiert die XRechnung-Szenarien nach `vendor/kosit/`;
-- schreibt die lokale, von Git ausgeschlossene Datei `.env.kosit`.
+- lädt die Factur-X-1.09.2-EXTENDED-Artefakte (XSD, Schematron, XSLT, Codelisten, LICENSE) einzeln und
+  hashgebunden vom festgeschriebenen Commit des FNFE-MPE-Repositorys `fnfempe/France_RFE` nach
+  `vendor/kosit/facturx-extended/` und legt die versionierte Szenariodatei sowie `SOURCE.txt` dazu;
+- tauscht eine vorhandene Installation erst nach vollständiger Verifikation aus und nimmt den Austausch bei
+  einem Fehler zurück;
+- schreibt die lokale, von Git ausgeschlossene Datei `.env.kosit` atomar.
 
 Die Anwendung verwendet KoSIT ohne `-p/--print`, liest primär die erzeugte `*-report.xml` und wertet die ausdrückliche VARL-Entscheidung `<rep:accept/>` oder `<rep:reject/>` aus. Java-, JAR-, Konfigurations- und Timeoutfehler werden als „nicht ausgeführt“ und nicht als Rechnungsablehnung ausgewiesen.
 
 Die Sperrdatei [`packaging/kosit/components.lock.json`](packaging/kosit/components.lock.json) legt derzeit
 KoSIT Validator **1.6.3** und die XRechnung-Validator-Konfiguration **2026-08-31** für XRechnung **3.0.2**
-fest. Darin enthalten sind CEN-EN-16931-Regeln **1.3.16** und XRechnung-Schematron **2.6.0**. Installer und
+fest. Darin enthalten sind CEN-EN-16931-Regeln **1.3.16** und XRechnung-Schematron **2.6.0**. Für Factur-X
+EXTENDED bindet sie die Artefakte des Release **1.09.2** (FNFE-MPE `France_RFE` v1.4.0.03, Commit `a63e6b5`,
+Apache License 2.0, bytegleich mit dem technischen Teil des FeRD-Pakets ZUGFeRD 2.5.2). Installer und
 Windows-Build prüfen die festgelegten SHA-256-Werte; `/api/health` veröffentlicht die Komponentenversionen ohne
-lokale Pfade.
+lokale Pfade und meldet, ob das Extended-Regelpaket vollständig eingerichtet ist.
+
+Die Anwendung ist eine Anwendung der Norm EN 16931. Die offizielle Prüfung einer Factur-X-EXTENDED-Rechnung
+setzt eine exakte Profilkennung voraus, prüft ausschließlich die eingebettete XML und ist keine Aussage zur
+PDF/A-Konformität; der verwendete Regelstand ist eine Festlegung des Prüfers, weil die Kennung
+`urn:factur-x.eu:1p0:extended` keine Version nennt. Einzelheiten stehen in
+[`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 ## Steuerkategorien
 

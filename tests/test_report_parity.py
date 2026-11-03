@@ -356,3 +356,119 @@ def test_prefixed_tax_label_is_detected_case_insensitively_without_changing_raw_
         }
     ]
     assert presentation["tax_breakdown_gaps"] == ["s – Standardsteuersatz · 19 %"]
+
+
+def _extended_rejection(ruleset) -> dict:
+    return {
+        "configured": True,
+        "problems": [],
+        "jar": None,
+        "jar_main_class": "x",
+        "scenarios": [],
+        "repositories": [],
+        "ruleset": ruleset.id,
+        "rules_version": ruleset.rules_version,
+        "executed": True,
+        "accepted": False,
+        "exit_code": 1,
+        "summary": (
+            "KoSIT-Prüfung abgeschlossen: Rechnung wurde nach Factur-X 1.09.2 EXTENDED abgelehnt. "
+            f"Bewertung im Bericht: reject. Regelstand: {ruleset.rules_version} ({ruleset.publisher}). "
+            "Geprüft wurde ausschließlich die XML, nicht die PDF-Konformität."
+        ),
+        "findings": [
+            {
+                "id": "BR-FXEXT-CO-10",
+                "severity": "error",
+                "title": "KoSIT-Prüfmeldung",
+                "message": "[BR-FXEXT-CO-10] - Synthetischer Summenfehler.",
+                "location": None,
+                "actual": None,
+                "expected": None,
+                "source": "KoSIT Validator",
+                "profile": ruleset.profile_id,
+                "version": ruleset.rules_version,
+            },
+            {
+                "id": "KOSIT-RULE-NOTICE",
+                "severity": "info",
+                "title": "Hinweis zu bekannter Regelabweichung",
+                "message": "Die Regel(n) BR-FXEXT-CO-10 des Release Factur-X 1.09.2 weichen in bekannter Weise ab.",
+                "location": None,
+                "actual": "BR-FXEXT-CO-10",
+                "expected": None,
+                "source": "KoSIT-Anbindung",
+                "profile": ruleset.profile_id,
+                "version": ruleset.rules_version,
+            },
+        ],
+        "raw_report": "<rep:report/>",
+        "technical_output": None,
+        "report_source": "file",
+        "scenario": ruleset.scenario_name,
+    }
+
+
+def test_extended_rules_version_and_deviation_notice_are_presented_identically(monkeypatch):
+    from pathlib import Path
+
+    from app.official_rulesets import FACTURX_EXTENDED
+    from app.validators.kosit import KositValidator
+
+    monkeypatch.setattr(
+        KositValidator,
+        "validate",
+        lambda _self, _xml, _filename, ruleset=None: _extended_rejection(ruleset),
+    )
+    fixture = Path(__file__).resolve().parent / "fixtures" / "cii-facturx-extended-valid.xml"
+    analysis = analyze_bytes(fixture.read_bytes(), fixture.name, "application/xml", run_official_validation=True)
+
+    official = analysis["assessment"]["official"]
+    assert official["status"] == "rejected"
+    assert FACTURX_EXTENDED.rules_version in official["summary"]
+    official_ids = [item["rule"]["id"] for item in official["findings"]]
+    assert official_ids == ["BR-FXEXT-CO-10"]
+    assert official["findings"][0]["rule"]["version"] == FACTURX_EXTENDED.rules_version
+    assert official["findings"][0]["rule"]["profile"] == FACTURX_EXTENDED.profile_id
+    processing_ids = [item["rule"]["id"] for item in analysis["assessment"]["processing"]["findings"]]
+    assert "KOSIT-RULE-NOTICE" in processing_ids
+    assert analysis["assessment"]["processing"]["status"] == "limited"
+
+    presentation = build_report_presentation(analysis)
+    axes = {axis["key"]: axis for axis in presentation["axes"]}
+    assert axes["official"]["status"] == "rejected"
+    assert FACTURX_EXTENDED.rules_version in axes["official"]["summary"]
+    assert [item["rule"]["id"] for item in axes["official"]["findings"]] == ["BR-FXEXT-CO-10"]
+    assert "KOSIT-RULE-NOTICE" in [item["rule"]["id"] for item in axes["processing"]["findings"]]
+    assert axes["processing"]["counts"]["info"] >= 1
+    facts = {fact["key"]: fact["value"] for fact in presentation["header_facts"]}
+    assert facts["official_validation"] == "Enthalten"
+
+    # The HTML and PDF reports are built from the same presentation and must show the same text.
+    import re
+
+    from fastapi.testclient import TestClient
+    from pypdf import PdfReader
+
+    from app.main import app
+    from app.pdf_report import render_pdf_report
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/report",
+        files={"file": (fixture.name, fixture.read_bytes(), "application/xml")},
+        data={"official": "true"},
+    )
+    assert response.status_code == 200
+    html_text = " ".join(
+        re.sub(r"<[^>]+>", " ", re.sub(r"<style\b[^>]*>.*?</style>", "", response.text, flags=re.DOTALL)).split()
+    )
+    assert FACTURX_EXTENDED.rules_version in html_text
+    assert "BR-FXEXT-CO-10" in html_text and "KOSIT-RULE-NOTICE" in html_text
+
+    from io import BytesIO
+
+    payload = render_pdf_report(analysis, generated_at="03.11.2026 12:00:00 CET", version="test")
+    pdf_text = " ".join(" ".join(page.extract_text() for page in PdfReader(BytesIO(payload)).pages).split())
+    assert "v1.4.0.03" in pdf_text and "a63e6b5" in pdf_text
+    assert "BR-FXEXT-CO-10" in pdf_text and "KOSIT-RULE-NOTICE" in pdf_text

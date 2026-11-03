@@ -47,5 +47,11 @@ Lizenz- und NOTICE-Dateien aus den offiziellen Archiven bleiben erhalten, soweit
 - KoSIT Validator: Apache License 2.0
 - Validator Configuration for XRechnung: Apache License 2.0
 - eingebundene Schema-, Schematron- und Codelist-Artefakte: Bedingungen der jeweiligen offiziellen Veröffentlichung
+- Factur-X 1.09.2 EXTENDED Validierungsartefakte (XSD, Schematron, kompilierte XSLT, Codelisten) von FNFE-MPE aus dem
+  Repository `fnfempe/France_RFE`, Tag v1.4.0.03, Commit a63e6b5: Apache License 2.0. Die Dateien sind bytegleich mit
+  dem technischen Teil des FeRD-Pakets ZUGFeRD 2.5.2; FeRD stellt Schemata und Schematron ebenfalls unter Apache 2.0.
+  `scripts/install_kosit.py` lädt sie einzeln mit SHA-256-Bindung an den Commit und legt die LICENSE-Datei des
+  Repositorys unter `vendor/kosit/facturx-extended/` ab. Spezifikationstexte, Codelisten-Tabellen, Beispielrechnungen
+  und Logos aus dem FeRD-Paket werden nicht verwendet; die Marken „Factur-X“ und „ZUGFeRD“ werden nur beschreibend genannt.
 
 Bei einer Weitergabe einer lokal erweiterten Installation müssen die enthaltenen LICENSE- und NOTICE-Dateien dieser Komponenten beachtet werden.

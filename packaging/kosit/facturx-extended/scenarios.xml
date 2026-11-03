@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Szenariokonfiguration des E-Rechnungs-Pruefers fuer die offizielle XML-Pruefung von Factur-X EXTENDED.
+
+  Regelstand: Factur-X 1.09.2 EXTENDED, gemeinsames Release von FeRD und FNFE-MPE vom 2026-08-04.
+  Artefakte:  FNFE-MPE, Repository fnfempe/France_RFE, Tag v1.4.0.03,
+              Commit a63e6b538bdaff460f17c38dc1bc5455cf1ba35a (Apache License 2.0),
+              bytegleich mit dem technischen Teil des FeRD-Pakets ZUGFeRD 2.5.2.
+  Die Dateipfade sind relativ zum Repository vendor/kosit/facturx-extended, das
+  scripts/install_kosit.py aus packaging/kosit/components.lock.json aufbaut.
+  Der Szenarioname ist Teil der Berichtbindung in app/validators/kosit.py und darf
+  nicht ohne Anpassung von app/official_rulesets.py geaendert werden.
+-->
+<scenarios xmlns="http://www.xoev.de/de/validator/framework/1/scenarios" frameworkVersion="1.0.0">
+  <name>E-Rechnungs-Pruefer: Factur-X 1.09.2 EXTENDED</name>
+  <author>E-Rechnungs-Pruefer</author>
+  <date>2026-11-03</date>
+  <description>
+    <p>Prueft CII-Rechnungen mit der Kennung urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended
+      gegen XSD und Schematron von Factur-X 1.09.2 EXTENDED (FNFE-MPE France_RFE v1.4.0.03, Commit a63e6b5).</p>
+  </description>
+  <scenario>
+    <name>Factur-X 1.09.2 EXTENDED (CII)</name>
+    <description>
+      <p>XML Schema Factur-X 1.09.2 EXTENDED und Schematron FACTUR-X_EXTENDED als kompilierte XSLT.</p>
+      <p>Die Kennung wird exakt verglichen; andere Factur-X- und ZUGFeRD-Profile sind nicht Teil dieser Konfiguration.</p>
+    </description>
+    <namespace prefix="rsm">urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100</namespace>
+    <namespace prefix="ram">urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100</namespace>
+    <namespace prefix="rep">http://www.xoev.de/de/validator/varl/1</namespace>
+    <match>exists(/rsm:CrossIndustryInvoice[rsm:ExchangedDocumentContext/ram:GuidelineSpecifiedDocumentContextParameter/ram:ID/text() = 'urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended'])</match>
+    <validateWithXmlSchema>
+      <resource>
+        <name>XML Schema Factur-X 1.09.2 EXTENDED</name>
+        <location>resources/xsd/Factur-X_EXTENDED.xsd</location>
+      </resource>
+    </validateWithXmlSchema>
+    <validateWithSchematron>
+      <resource>
+        <name>Schematron Factur-X 1.09.2 EXTENDED</name>
+        <location>resources/xslt/FACTUR-X_EXTENDED.xslt</location>
+      </resource>
+    </validateWithSchematron>
+    <createReport>
+      <resource>
+        <name>Validation report Factur-X EXTENDED</name>
+        <location>resources/report/default-report.xsl</location>
+      </resource>
+    </createReport>
+    <acceptMatch>/rep:report/rep:assessment[1]/rep:accept[1]</acceptMatch>
+  </scenario>
+  <noScenarioReport>
+    <resource>
+      <name>Default Report</name>
+      <location>resources/report/default-report.xsl</location>
+    </resource>
+  </noScenarioReport>
+</scenarios>

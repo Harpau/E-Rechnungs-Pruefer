@@ -102,6 +102,7 @@ from .findings import (
     SemanticReference,
     XmlLocation,
 )
+from .official_rulesets import OfficialRuleset
 from .profiles import OfficialValidationCapability as ProfileOfficialValidationCapability
 from .profiles import resolve_profile
 from .xml_utils import InvoiceInputError, date_object, xml_decimal_value
@@ -752,6 +753,8 @@ def _is_processing_finding(source: dict[str, Any]) -> bool:
                 "KOSIT-EXEC",
                 "KOSIT-OUTPUT-TRUNCATED",
                 "KOSIT-RESULT-MISMATCH",
+                "KOSIT-SCENARIO",
+                "KOSIT-RULE-NOTICE",
             )
         )
         or finding_id == "KOSIT-EXIT"
@@ -1130,11 +1133,16 @@ def _build_analysis_response(
     syntax_error: str | None,
     duration_ms: Decimal,
     application_version: str,
+    official_ruleset: OfficialRuleset | None = None,
 ) -> AnalysisResponse:
     document_source = _mapping(parsed.get("document"))
     profile_source = _mapping(parsed.get("profile"))
     profile_id = profile_source.get("id") or document_source.get("profile_id")
     profile_resolution = resolve_profile(profile_id)
+    if official_ruleset is not None:
+        # The analyzer selected the rule set from the exact raw identifier; the
+        # builder must describe the same capability it validated with.
+        profile_resolution = profile_resolution.with_official_rules(official_ruleset.rules_version)
     syntax_value = str(document_source.get("syntax") or "UNKNOWN")
     syntax = Syntax(syntax_value) if syntax_value in {item.value for item in Syntax} else Syntax.UNKNOWN
     ubl_root = None
@@ -1442,6 +1450,7 @@ def build_analysis_response(
     syntax_error: str | None,
     duration_ms: Decimal,
     application_version: str,
+    official_ruleset: OfficialRuleset | None = None,
 ) -> AnalysisResponse:
     try:
         return _build_analysis_response(
@@ -1452,6 +1461,7 @@ def build_analysis_response(
             syntax_error=syntax_error,
             duration_ms=duration_ms,
             application_version=application_version,
+            official_ruleset=official_ruleset,
         )
     except ValidationError as exc:
         if _only_string_too_long_errors(exc):

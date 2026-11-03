@@ -78,6 +78,11 @@ def test_release_filter_excludes_local_and_sensitive_files():
     assert module.should_include(Path(".claude/settings.local.json")) is False
     assert module.should_include(Path("e_rechnung_pruefer.egg-info/PKG-INFO")) is False
     assert module.should_include(Path("app/main.py")) is True
+    # The Extended scenario file is released as a single reviewed file, never as a directory.
+    assert module.should_include(Path("packaging/kosit/facturx-extended/scenarios.xml")) is True
+    assert module.should_include(Path("packaging/kosit/facturx-extended/rechnung.xml")) is False
+    assert module.should_include(Path("packaging/kosit/facturx-extended/sub/scenarios.xml")) is False
+    assert module.should_include(Path("packaging/kosit/scenarios.xml")) is False
 
 
 def test_clean_target_limits_bytecode_cleanup_to_owned_code_roots():
@@ -103,6 +108,7 @@ def test_python_and_windows_package_manifests_include_required_runtime_files():
     for expected in (
         "include app/presentation_contract.json",
         "include packaging/kosit/components.lock.json",
+        "include packaging/kosit/facturx-extended/scenarios.xml",
         "recursive-include docs/acceptance-templates *.json",
         "recursive-include docs/examples *.json",
         "recursive-include tests *.mjs",
@@ -124,6 +130,7 @@ def test_repository_release_artifact_inventory_contains_required_runtime_and_sup
     assert {
         "app/presentation_contract.json",
         "packaging/kosit/components.lock.json",
+        "packaging/kosit/facturx-extended/scenarios.xml",
         "docs/acceptance-templates/acceptance-plan.json",
         "docs/acceptance-templates/ui-task.json",
         "docs/examples/node-red-e-rechnungs-pruefer-flow.json",
