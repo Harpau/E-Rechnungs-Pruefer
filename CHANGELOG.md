@@ -4,6 +4,8 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 2.1.0 – 2026-11-03
+
 ### Offizielle Prüfung von Factur-X EXTENDED
 
 - Eine CII-Rechnung mit exakt der Kennung `urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended` wird
@@ -39,6 +41,11 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   `facturx_extended_source` und meldet in `kosit.facturx_extended_configured`, ob das Extended-Regelpaket
   vollständig und unverändert eingerichtet ist. `docs/VALIDATION.md`, `docs/ARCHITECTURE.md` und `README.md`
   beschreiben Auswahl, Bindung, Statusmatrix, bekannte Abweichungen und die Grenzen der Prüfung.
+- Grenzen der Prüfung: Die Kennung `urn:factur-x.eu:1p0:extended` nennt keine Spezifikationsversion; der
+  Regelstand 1.09.2 ist eine Festlegung des Prüfers. Der FNFE-Hotfix `fix-FR04` aus v1.4.0.04 wird nicht verwendet.
+  Geprüft wird ausschließlich die XML, nicht die PDF/A-Konformität einer Hybrid-PDF. Installer und Windows-Pakete
+  verwenden nur die Apache-2.0-lizenzierten Validierungsartefakte von FNFE-MPE; Spezifikationstexte,
+  Codelisten-Tabellen, Beispielrechnungen und Logos aus dem FeRD-Paket werden nicht verteilt.
 
 ### Abnahme mit echten Regelläufen
 
@@ -68,8 +75,10 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   `vendor/kosit/facturx-extended/` ab, kopiert die versionierte Szenariodatei
   `packaging/kosit/facturx-extended/scenarios.xml` und `resources/default-report.xsl` aus der XRechnung-Konfiguration
   dorthin, schreibt `SOURCE.txt` mit Herkunft und Hashliste und ergänzt `.env.kosit` um
-  `KOSIT_FACTURX_EXTENDED_SCENARIOS` und `KOSIT_FACTURX_EXTENDED_REPOSITORIES`. Die Anwendung wertet diese
-  Konfiguration noch nicht aus; die offizielle Prüfung von Factur-X EXTENDED folgt in einem weiteren Schritt.
+  `KOSIT_FACTURX_EXTENDED_SCENARIOS` und `KOSIT_FACTURX_EXTENDED_REPOSITORIES`. Eine vorhandene Installation
+  aus 2.0.x wird mit `python scripts/install_kosit.py --force` aktualisiert; ohne die Extended-Artefakte bleibt der
+  offizielle Status einer Factur-X-EXTENDED-Rechnung `unavailable`, EN-16931- und XRechnung-Prüfungen laufen
+  unverändert.
 - Installer und `scripts/prepare_windows_components.py` tauschen `vendor/kosit` beziehungsweise `runtime/java` erst
   nach vollständiger Verifikation aller Komponenten aus, sichern den bisherigen Baum und nehmen den Austausch bei
   jedem Fehler zurück; `.env.kosit` wird atomar geschrieben und bleibt bei einem Fehlschlag unverändert. Die
