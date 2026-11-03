@@ -1,4 +1,4 @@
-E-RECHNUNGS-VIEWER & PRUEFER 2.0.5
+E-RECHNUNGS-VIEWER & PRUEFER 2.1.0
 ====================================
 
 WAS DIE ANWENDUNG MACHT
@@ -10,6 +10,20 @@ werden nicht per OCR rekonstruiert.
 
 Die interne Pruefung ist eine transparente Vorpruefung. Sie ersetzt weder die
 optionale offizielle KoSIT-Pruefung noch Steuer- oder Rechtsberatung.
+
+NEU IN 2.1.0: OFFIZIELLE PRUEFUNG VON FACTUR-X EXTENDED
+--------------------------------------------------------
+Eine CII-Rechnung mit exakt der Kennung
+urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended wird bei
+eingerichteten KoSIT-Komponenten offiziell gegen Factur-X 1.09.2 EXTENDED
+geprueft. Die Regelartefakte stammen von FNFE-MPE (France_RFE v1.4.0.03,
+Apache License 2.0); der Bericht ist an Szenario und Dokument-Hash gebunden.
+EN-16931- und XRechnung-Pruefungen bleiben unveraendert.
+
+Grenzen: Die Kennung nennt keine Spezifikationsversion, der Regelstand 1.09.2
+ist eine Festlegung des Pruefers. Der FNFE-Hotfix fix-FR04 wird nicht
+verwendet. Geprueft wird nur die XML, nicht die PDF/A-Konformitaet einer
+Hybrid-PDF. Details: docs\VALIDATION.md
 
 SCHNELLSTART AUS DEM QUELL- ODER REPOSITORY-ZIP
 -----------------------------------------------
@@ -40,10 +54,11 @@ Ein GitHub Release kann zwei alternative, signierte Installer enthalten:
   fuer 2.0.4 dokumentierte Workaround (/MERGETASKS="systemstart" oder
   sc.exe config ... start= delayed-auto) ist nicht mehr erforderlich.
 
-Beide Betriebsarten enthalten Python, Java und die festgeschriebenen
-KoSIT-/XRechnung-Komponenten. Sie duerfen nicht gleichzeitig installiert oder
-als Backend betrieben werden. Vor einem Wechsel muss die bisherige Betriebsart
-vollstaendig deinstalliert werden; API-Tokens werden nicht uebernommen.
+Beide Betriebsarten enthalten Python, Java und die festgeschriebenen KoSIT-,
+XRechnung- und Factur-X-EXTENDED-Komponenten. Sie duerfen nicht gleichzeitig
+installiert oder als Backend betrieben werden. Vor einem Wechsel muss die
+bisherige Betriebsart vollstaendig deinstalliert werden; API-Tokens werden
+nicht uebernommen.
 
 Details: docs\WINDOWS_PACKAGE.md
 
@@ -73,16 +88,33 @@ Angabe gilt readable.
 OFFIZIELLE KOSIT-PRUEFUNG IM QUELLBETRIEB
 -----------------------------------------
 Die interne Pruefung funktioniert sofort. Fuer die offizielle XSD-/
-Schematron-Pruefung im Quellbetrieb:
+Schematron-Pruefung (EN 16931, XRechnung und Factur-X EXTENDED) im
+Quellbetrieb:
 
    python scripts\install_kosit.py
 
 Unter Linux oder macOS lautet der Pfad scripts/install_kosit.py. Der Installer
 verwendet ausschliesslich die in packaging\kosit\components.lock.json
-festgeschriebenen Versionen und verpflichtenden SHA-256-Pruefsummen. Lokale
-KoSIT-Dateien und Konfigurationen werden nicht in Git oder Quell-/Repository-
-Release-ZIPs aufgenommen. Die Windows-Binaries enthalten dagegen nur die beim
-Build geprueften, festgeschriebenen KoSIT- und Java-Komponenten.
+festgeschriebenen Versionen und verpflichtenden SHA-256-Pruefsummen. Er
+richtet den Validator, die XRechnung-Konfiguration und seit 2.1.0 auch die
+Factur-X-EXTENDED-Artefakte unter vendor\kosit\facturx-extended\ ein,
+tauscht eine vorhandene Installation erst nach vollstaendiger Verifikation
+aus und nimmt den Austausch bei einem Fehler zurueck.
+
+Upgrade aus 2.0.x im Quellbetrieb: Eine vorhandene KoSIT-Installation mit
+
+   python scripts\install_kosit.py --force
+
+aktualisieren. Erst damit entstehen die Extended-Artefakte und die Schluessel
+KOSIT_FACTURX_EXTENDED_SCENARIOS und KOSIT_FACTURX_EXTENDED_REPOSITORIES in
+.env.kosit; ohne sie bleibt der offizielle Status einer Factur-X-EXTENDED-
+Rechnung "nicht verfuegbar", waehrend EN-16931-/XRechnung-Pruefungen weiter
+laufen. /api/health meldet den Stand in kosit.facturx_extended_configured.
+
+Lokale KoSIT-Dateien und Konfigurationen werden nicht in Git oder Quell-/
+Repository-Release-ZIPs aufgenommen. Die Windows-Binaries enthalten dagegen
+nur die beim Build geprueften, festgeschriebenen KoSIT-, Factur-X-EXTENDED-
+und Java-Komponenten.
 
 API-TOKEN UND BROWSER
 ---------------------
@@ -126,4 +158,5 @@ docs\VALIDATION.md              Umfang und Grenzen der Pruefungen
 docs\WINDOWS_PACKAGE.md         Windows-Desktop- und Dienstmodus
 docs\RELEASE.md                 Release- und Signierungsprozess
 docs\CODEX.md                   Weiterentwicklung mit Codex
+THIRD_PARTY.md                  Herkunft und Lizenzen der Drittkomponenten
 SECURITY.md                     Sicherheitshinweise
