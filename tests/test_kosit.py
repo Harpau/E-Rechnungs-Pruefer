@@ -91,6 +91,29 @@ def test_process_output_budget_is_enforced_while_draining_pipes(
     assert not kosit_module._RUNNING_PROCESSES
 
 
+def test_kosit_process_gets_a_private_closed_stdin_pipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """KoSIT probes System.in.available(); an inherited NUL or closed handle breaks that on Windows."""
+
+    process = Mock()
+    process.stdout = io.BytesIO(b"")
+    process.stderr = io.BytesIO(b"")
+    process.wait.return_value = 0
+    observed: dict[str, object] = {}
+
+    def popen(command, **kwargs):
+        observed.update(kwargs)
+        return process
+
+    monkeypatch.setattr(kosit_module, "_RUNNING_PROCESS_LOCK", Lock())
+    monkeypatch.setattr(kosit_module, "_RUNNING_PROCESSES", set())
+    monkeypatch.setattr(kosit_module.subprocess, "Popen", popen)
+
+    kosit_module._run_kosit_process(["java"], capture_output=True, timeout=5, check=False, cwd=".", creationflags=0)
+
+    assert observed["stdin"] is subprocess.PIPE
+    process.stdin.close.assert_called_once_with()
+
+
 def test_kosit_subprocess_never_inherits_api_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:
     process = Mock(returncode=0)
     process.stdout = io.BytesIO()

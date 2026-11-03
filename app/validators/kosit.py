@@ -354,14 +354,26 @@ def _start_kosit_process(
     creationflags: int,
 ) -> subprocess.Popen[bytes]:
     _ensure_kosit_process_job()
-    return subprocess.Popen(
+    # KoSIT probes System.in.available() at start-up. An inherited stdin that is
+    # no pipe (NUL or a closed handle, as on CI runners and in services) makes
+    # that probe fail on Windows with "Incorrect function" before any report is
+    # written. A private pipe that is closed right away reads as a clean EOF.
+    process = subprocess.Popen(
         command,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=cwd,
         creationflags=creationflags,
         env={key: value for key, value in os.environ.items() if key != API_TOKEN_ENV},
     )
+    stdin = getattr(process, "stdin", None)
+    if stdin is not None:
+        try:
+            stdin.close()
+        except OSError:
+            pass
+    return process
 
 
 def _run_kosit_process(

@@ -24,6 +24,10 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   Befunde tragen Profil und Regelstand.
 - Für alle Prüfpfade gilt: Ein KoSIT-Bericht mit `rep:noScenarioMatched` ist keine Ablehnung mehr, sondern
   `indeterminate` mit dem Befund `KOSIT-SCENARIO`.
+- Der KoSIT-Prozess erhält eine eigene, sofort geschlossene Pipe als Standardeingabe. KoSIT prüft beim Start mit
+  `System.in.available()`, ob eine Eingabe über stdin kommt; ein geerbter stdin-Handle, der keine Pipe ist (etwa
+  `NUL` auf CI-Runnern), ließ den Validator unter Windows mit `java.io.IOException: Incorrect function` abbrechen,
+  bevor ein Bericht entstand. Das betraf jeden KoSIT-Lauf in solchen Umgebungen, nicht nur Factur-X EXTENDED.
 - Die Zusammenfassung einer Extended-Prüfung nennt Regelstand und Herausgeber (`Factur-X 1.09.2 EXTENDED /
   FNFE-MPE France_RFE v1.4.0.03 (a63e6b5)`), weist den Regelstand als Festlegung des Prüfers aus und stellt klar,
   dass nur die XML und nicht die PDF-Konformität geprüft wurde. Browseransicht, HTML- und PDF-Bericht zeigen
