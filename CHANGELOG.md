@@ -24,6 +24,17 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   Befunde tragen Profil und Regelstand.
 - Für alle Prüfpfade gilt: Ein KoSIT-Bericht mit `rep:noScenarioMatched` ist keine Ablehnung mehr, sondern
   `indeterminate` mit dem Befund `KOSIT-SCENARIO`.
+- Die Zusammenfassung einer Extended-Prüfung nennt Regelstand und Herausgeber (`Factur-X 1.09.2 EXTENDED /
+  FNFE-MPE France_RFE v1.4.0.03 (a63e6b5)`), weist den Regelstand als Festlegung des Prüfers aus und stellt klar,
+  dass nur die XML und nicht die PDF-Konformität geprüft wurde. Browseransicht, HTML- und PDF-Bericht zeigen
+  denselben Text über den gemeinsamen Präsentationsvertrag.
+- Befunde mit einer der zwölf Regeln, die im Release 1.09.2 eine bekannte, in FNFE `fix-FR04` korrigierte
+  Abweichung haben (`BR-FXEXT-S/Z/E/AE/IC/G/O/AF/AG-01`, `BR-FXEXT-CO-10/12/13`), erhalten zusätzlich den
+  Infobefund `KOSIT-RULE-NOTICE` auf der Verarbeitungsachse; der offizielle Befund bleibt unverändert.
+- `/api/health` nennt unter `kosit.components` zusätzlich `facturx_extended` (`1.09.2`) und
+  `facturx_extended_source` und meldet in `kosit.facturx_extended_configured`, ob das Extended-Regelpaket
+  vollständig und unverändert eingerichtet ist. `docs/VALIDATION.md`, `docs/ARCHITECTURE.md` und `README.md`
+  beschreiben Auswahl, Bindung, Statusmatrix, bekannte Abweichungen und die Grenzen der Prüfung.
 
 ### Offizielle Prüfkomponenten (KoSIT)
 

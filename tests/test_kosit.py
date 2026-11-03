@@ -608,6 +608,8 @@ def test_public_kosit_component_versions_match_the_locked_bundle() -> None:
         "xrechnung_configuration": payload["standards"]["xrechnung_configuration"],
         "cen_en16931": payload["standards"]["cen_en16931"],
         "xrechnung_schematron": payload["standards"]["xrechnung_schematron"],
+        "facturx_extended": payload["standards"]["facturx_extended"],
+        "facturx_extended_source": payload["standards"]["facturx_extended_source"],
     }
 
 

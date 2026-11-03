@@ -754,6 +754,7 @@ def _is_processing_finding(source: dict[str, Any]) -> bool:
                 "KOSIT-OUTPUT-TRUNCATED",
                 "KOSIT-RESULT-MISMATCH",
                 "KOSIT-SCENARIO",
+                "KOSIT-RULE-NOTICE",
             )
         )
         or finding_id == "KOSIT-EXIT"

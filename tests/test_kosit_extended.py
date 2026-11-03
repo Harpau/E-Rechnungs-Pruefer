@@ -128,6 +128,8 @@ def test_bound_run_uses_the_ruleset_paths_and_a_fixed_file_name(
     assert result["report_source"] == "file"
     assert result["findings"] == []
     assert "Factur-X 1.09.2 EXTENDED" in result["summary"]
+    assert ruleset.rules_version in result["summary"]
+    assert "nicht die PDF-Konformität" in result["summary"]
 
 
 @pytest.mark.parametrize(
@@ -161,7 +163,15 @@ def test_bound_run_uses_the_ruleset_paths_and_a_fixed_file_name(
             {"cvc-complex-type.2.4.a"},
             None,
         ),
-        ("kosit-report-fixfr04-rule.xml", "cii-facturx-extended-valid.xml", 1, True, False, {"BR-FXEXT-CO-10"}, None),
+        (
+            "kosit-report-fixfr04-rule.xml",
+            "cii-facturx-extended-valid.xml",
+            1,
+            True,
+            False,
+            {"BR-FXEXT-CO-10", "KOSIT-RULE-NOTICE"},
+            None,
+        ),
         (
             "kosit-report-noscenario-reject.xml",
             "cii-facturx-extended-id-whitespace.xml",
@@ -223,8 +233,15 @@ def test_bound_run_accepts_only_reports_bound_to_scenario_and_document(
         for item in result["findings"]:
             assert item["version"] == ruleset.rules_version
             assert item["profile"] == ruleset.profile_id
-            assert item["severity"] in {"error", "warning"}
+            assert item["severity"] in {"error", "warning", "info"}
         assert result["raw_report"] is not None
+        if "KOSIT-RULE-NOTICE" in ids:
+            notice = next(item for item in result["findings"] if item["id"] == "KOSIT-RULE-NOTICE")
+            assert notice["severity"] == "info"
+            assert notice["source"] == "KoSIT-Anbindung"
+            assert "fix-FR04" in notice["message"] and "BR-FXEXT-CO-10" in notice["actual"]
+        else:
+            assert all(item["id"] not in ruleset.known_deviation_rules for item in result["findings"])
     else:
         assert ids == {not_executed_id}
         assert result["raw_report"] is None

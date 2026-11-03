@@ -997,7 +997,12 @@ class KositValidator:
             if accepted
             else f"KoSIT-Prüfung abgeschlossen: Rechnung wurde nach {ruleset.label} abgelehnt."
         )
-        summary += f" Bewertung im Bericht: {'accept' if accepted else 'reject'}."
+        summary += (
+            f" Bewertung im Bericht: {'accept' if accepted else 'reject'}."
+            f" Regelstand: {ruleset.rules_version} ({ruleset.publisher}), KoSIT Validator als Prüfmaschine."
+            " Der Regelstand ist eine Festlegung des Prüfers, die Kennung nennt keine Version."
+            " Geprüft wurde ausschließlich die XML, nicht die PDF-Konformität."
+        )
         exit_code_accepts = completed.returncode == 0
         if exit_code_accepts != accepted:
             findings.append(
@@ -1014,6 +1019,28 @@ class KositValidator:
                     "actual": str(completed.returncode),
                     "expected": "0 bei Annahme, ungleich 0 bei Ablehnung",
                     "source": "KoSIT Validator",
+                }
+            )
+        deviations = sorted({str(item["id"]) for item in findings} & ruleset.known_deviation_rules)
+        if deviations:
+            # Transparent processing notice; the official finding itself stays untouched.
+            findings.append(
+                {
+                    "id": "KOSIT-RULE-NOTICE",
+                    "severity": "info",
+                    "title": "Hinweis zu bekannter Regelabweichung",
+                    "message": (
+                        f"Die Regel(n) {', '.join(deviations)} des Release Factur-X 1.09.2 weichen in bekannter Weise ab: "
+                        "Unterpositions-XPath in BR-FXEXT-X-01 und Rundung in BR-FXEXT-CO-10/12/13. FNFE-MPE hat die "
+                        "Korrektur fix-FR04 (v1.4.0.04) veröffentlicht, die Übernahme ist für Factur-X 1.10 / ZUGFeRD 2.6 "
+                        "angekündigt. Der offizielle Befund bleibt unverändert; dieser Hinweis ist eine Einordnung des Prüfers."
+                    ),
+                    "location": None,
+                    "actual": ", ".join(deviations),
+                    "expected": None,
+                    "source": "KoSIT-Anbindung",
+                    "profile": ruleset.profile_id,
+                    "version": ruleset.rules_version,
                 }
             )
         if not accepted and not any(item["severity"] == "error" for item in findings):

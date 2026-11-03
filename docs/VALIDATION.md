@@ -80,8 +80,9 @@ die CII-Liste enthält unverändert alle 62 Codes.
 
 Die Profilauflösung erkennt XRechnung, EN 16931, Peppol Billing, Peppol Self-Billing, Factur-X und ZUGFeRD.
 Unbekannte und fehlende Profile erhalten nur partielle interne Fähigkeiten. Die gebündelte offizielle Prüfung
-ist auf die erkannten EN-16931-/XRechnung-Fälle begrenzt; ein erkanntes, aber nicht gebündeltes Profil führt bei
-angeforderter offizieller Prüfung zu `official.status = "unsupported"` und startet KoSIT nicht.
+ist auf die erkannten EN-16931-/XRechnung-Fälle sowie auf das exakt erkannte Profil Factur-X EXTENDED begrenzt
+(Abschnitt „Factur-X EXTENDED“); ein erkanntes, aber nicht gebündeltes Profil führt bei angeforderter
+offizieller Prüfung zu `official.status = "unsupported"` und startet KoSIT nicht.
 
 `roles` trennt:
 
@@ -196,17 +197,92 @@ Konsolenparameter `--print` wird nicht verwendet. Als Rückfall kann ein vollst�
 
 Entscheidungsreihenfolge:
 
-1. `<rep:assessment><rep:accept/></rep:assessment>` → `accepted`;
-2. `<rep:assessment><rep:reject/></rep:assessment>` → `rejected`;
-3. nur bei älteren oder angepassten Berichten ohne Assessment: Prozessrückgabecode als Rückfall;
-4. kein valider Bericht → keine offizielle Rechnungsentscheidung.
+1. `<rep:noScenarioMatched>` im Bericht → keine Rechnungsentscheidung, `indeterminate` mit dem
+   Verarbeitungsbefund `KOSIT-SCENARIO` (KoSIT lehnt ein Dokument ohne passendes Szenario ab, das sagt nichts
+   über die Rechnung aus);
+2. `<rep:assessment><rep:accept/></rep:assessment>` → `accepted`;
+3. `<rep:assessment><rep:reject/></rep:assessment>` → `rejected`;
+4. nur bei älteren oder angepassten Berichten ohne Assessment: Prozessrückgabecode als Rückfall;
+5. kein valider Bericht → keine offizielle Rechnungsentscheidung.
 
 Widersprechen sich Bericht und Rückgabecode, bleibt die XML-Entscheidung maßgeblich; die Abweichung wird als
 technischer Verarbeitungsbefund ausgewiesen. Java-, JAR-, Konfigurations- und Timeoutfehler sind niemals eine
 KoSIT-Ablehnung.
 
 `packaging/kosit/components.lock.json` pinnt KoSIT Validator 1.6.3, XRechnung 3.0.2,
-Validator-Konfiguration 2026-08-31, CEN EN 16931 1.3.16 und XRechnung-Schematron 2.6.0 samt Artefakt-Hashes.
+Validator-Konfiguration 2026-08-31, CEN EN 16931 1.3.16 und XRechnung-Schematron 2.6.0 samt Artefakt-Hashes
+sowie die Factur-X-1.09.2-EXTENDED-Artefakte aus `fnfempe/France_RFE` v1.4.0.03 (Commit `a63e6b5`) je Datei mit
+Größe und SHA-256. `/api/health` nennt diese Versionen unter `kosit.components` und meldet in
+`kosit.facturx_extended_configured`, ob das Extended-Regelpaket vollständig und unverändert eingerichtet ist.
+
+## Factur-X EXTENDED
+
+Die Anwendung ist eine Anwendung der Norm EN 16931; die offizielle Prüfung von Factur-X EXTENDED verwendet die
+von FNFE-MPE und FeRD veröffentlichten technischen Artefakte und trifft keine Aussage im Namen dieser Herausgeber.
+
+### Auswahl des Regelsatzes
+
+`app/official_rulesets.py` bindet genau die Kombination aus Wurzelelement `CrossIndustryInvoice`, CII-Namespace
+und der rohen Kennung `urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended` an den Regelsatz
+`facturx-extended-1.09.2`. Die Kennung wird vor jeder Normalisierung direkt aus dem Originalbaum gelesen: genau ein
+Element `GuidelineSpecifiedDocumentContextParameter/ID` ohne Kindknoten, dessen Text exakt übereinstimmt. Das ist
+bewusst strenger als das KoSIT-XPath `text() = '…'`, das eine Kennung mit nachgestelltem Kommentar noch akzeptiert.
+
+| Dokument | Auswahl | Status | interner Befund |
+|---|---|---|---|
+| exakte Kennung, CII | Regelsatz | gebundene Prüfung | – |
+| Kennung mit Leerraum oder Zeilenumbruch | keine | `unsupported` | `PROFILE-002` |
+| Kennung durch Kommentar geteilt oder mit nachgestelltem Kommentar | keine | `unsupported` | `PROFILE-002` |
+| mehrere `GuidelineSpecifiedDocumentContextParameter` | keine | `unsupported` | `PROFILE-003` |
+| abweichende Schreibweise, `#compliant#`, Suffix, ZUGFeRD-2.0-Kennung | keine | `unsupported` | – |
+| UBL-Rechnung mit derselben Kennung | keine | `unsupported` | – |
+
+Die Peppol-Geschäftsprozesskennung (BT-23) beeinflusst die Auswahl nicht.
+
+### Regelstand
+
+Die Kennung `1p0:extended` ist seit Factur-X 1.0 unverändert und nennt keine Spezifikationsversion. Der Prüfer legt
+den Regelstand fest: Factur-X 1.09.2 EXTENDED, gemeinsames Release von FeRD und FNFE-MPE vom 2026-08-04, Artefakte
+aus `fnfempe/France_RFE` Tag v1.4.0.03 (bytegleich mit dem technischen Teil des FeRD-Pakets ZUGFeRD 2.5.2). Der
+Hotfix `fix-FR04` aus v1.4.0.04 wird nicht verwendet. Die davon betroffenen Regeln `BR-FXEXT-S/Z/E/AE/IC/G/O/AF/AG-01`
+(Unterpositions-XPath) und `BR-FXEXT-CO-10/12/13` (Rundung) gelten als bekannte Abweichungen des Release 1.09.2:
+Ein offizieller Befund mit einer dieser Kennungen bleibt unverändert und erhält zusätzlich den Infobefund
+`KOSIT-RULE-NOTICE` auf der Verarbeitungsachse. Die Übernahme der Korrektur ist für Factur-X 1.10 / ZUGFeRD 2.6
+angekündigt.
+
+### Vorprüfung und gebundener Lauf
+
+Vor jedem Extended-Lauf müssen Java, das Standalone-JAR, die Szenariodatei `scenarios.xml`, das Report-Stylesheet
+`resources/report/default-report.xsl` und alle acht gebundenen Artefakte mit Größe und SHA-256 vorhanden sein.
+Jede Abweichung ergibt `unavailable` mit dem Befund `KOSIT-CONFIG`. Der XRechnung-Pfad bleibt davon unberührt; ein
+fehlendes Extended-Paket beeinträchtigt EN-16931- und XRechnung-Prüfungen nicht.
+
+Der Lauf verwendet die eigenen Pfade `KOSIT_FACTURX_EXTENDED_SCENARIOS` und `KOSIT_FACTURX_EXTENDED_REPOSITORIES`
+(Standard `vendor/kosit/facturx-extended/`), übergibt die unveränderten Original-XML-Bytes unter dem festen Namen
+`rechnung.xml` und liest ausschließlich die Berichtsdatei `rechnung-report.xml`. Der Bericht wird gebunden an:
+
+- Wurzel `rep:report` im Namespace `http://www.xoev.de/de/validator/varl/1` mit `rep:engine/rep:name`;
+- `rep:scenarioMatched/s:scenario/s:name` gleich `Factur-X 1.09.2 EXTENDED (CII)`;
+- `rep:documentIdentification/rep:documentHash` mit Algorithmus `SHA-256` und gültigem Base64, dessen Wert dem
+  SHA-256 der übergebenen Bytes entspricht;
+- genau ein `rep:assessment` mit genau einem Kind `rep:accept` oder `rep:reject`.
+
+Fehlendes Szenario oder falscher Szenarioname ergeben `indeterminate` mit `KOSIT-SCENARIO`; alle anderen
+Bindungsfehler `indeterminate` mit `KOSIT-REPORT`. Weder das Attribut `valid` noch textuelle Statusangaben noch
+der Prozess-Rückgabecode ersetzen die Entscheidung; ein abweichender Rückgabecode bleibt die Warnung
+`KOSIT-RESULT-MISMATCH`. Regelkennungen stammen aus dem Attribut `code` der `rep:message`-Elemente; offizielle
+Befunde tragen Profilkennung und Regelstand in `rule.profile` und `rule.version`, Warnregeln der Artefakte wie
+`PEPPOL-EN16931-R008` erscheinen als Warnungen.
+
+| Situation | `assessment.official.status` | Verarbeitung |
+|---|---|---|
+| Vorprüfung schlägt fehl (Java, JAR, Szenariodatei, Regeldateien, Hashes) | `unavailable` | `incomplete` |
+| Start-, Laufzeit-, Timeout- oder Bindungsfehler nach bestandener Vorprüfung | `indeterminate` | `incomplete` |
+| gebundener Bericht nimmt an | `accepted` | `complete`, sofern keine andere Begrenzung vorliegt |
+| gebundener Bericht lehnt ab | `rejected` | `complete`, sofern keine andere Begrenzung vorliegt |
+
+Eine erfolgreiche XML-Prüfung ist keine Aussage zur PDF/A-Konformität einer hybriden Rechnung; PDF, XMP-Metadaten
+und sichtbare Rechnungsinhalte werden nicht geprüft.
 
 ## Bekannte Grenzen
 
@@ -215,4 +291,5 @@ Validator-Konfiguration 2026-08-31, CEN EN 16931 1.3.16 und XRechnung-Schematron
 - keine Prüfung von Handelsregister-, Steuer-ID- oder Kontoinhaberdaten gegen externe Register;
 - keine vollständige juristische Würdigung von Leistungsort, Steuerbefreiung oder Reverse Charge;
 - keine Garantie, dass ein externer Validator dieselben Versionen der Regelartefakte verwendet;
+- keine Prüfung der PDF/A-Konformität, der XMP-Metadaten oder des Sichtteils hybrider Rechnungen;
 - keine OCR-Interpretation visueller PDFs.
