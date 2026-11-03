@@ -90,7 +90,7 @@ def test_release_signing_uses_oidc_and_azure_key_vault() -> None:
         "workflow_dispatch:",
         "environment: release",
         "id-token: write",
-        "uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43",
+        "uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906",
         "client-id: ${{ secrets.AZURE_CLIENT_ID }}",
         "tenant-id: ${{ secrets.AZURE_TENANT_ID }}",
         "subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}",
