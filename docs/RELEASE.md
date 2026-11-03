@@ -180,11 +180,14 @@ Für KoSIT und XRechnung ist
 |---|---|---|
 | KoSIT Validator | `validator-1.6.3-standalone.jar` / 1.6.3 | `799e64befca97d4080e03608c80b85dd5a5ecc5f4ae4f35d1116ec2855b9a7c9` |
 | XRechnung-Konfiguration | `xrechnung-3.0.2-validator-configuration-2026-08-31.zip` | `2530cd107c414511c5d0462ec10f886910395abfca820db82e83d70bf01221a8` |
+| Factur-X EXTENDED | `fnfempe/France_RFE` v1.4.0.03, Commit `a63e6b538bdaff460f17c38dc1bc5455cf1ba35a`, acht Dateien | je Datei in der Sperrdatei, gespiegelt in `app/official_rulesets.py` |
 
 Die darin ausgewiesenen Standards sind XRechnung 3.0.2, Konfigurationsstand 2026-08-31,
-CEN-EN-16931-Regeln 1.3.16 und XRechnung-Schematron 2.6.0. Dateiname, URL, Version und Hash müssen gemeinsam
-aktualisiert werden; `app/component_versions.py`, Health-Antwort, Tests und Dokumenttyp-Registry müssen denselben
-Stand nennen. Ein Hash- oder Versionsunterschied ist ein Releasefehler.
+CEN-EN-16931-Regeln 1.3.16, XRechnung-Schematron 2.6.0 und Factur-X 1.09.2 EXTENDED. Dateiname, URL, Version und
+Hash müssen gemeinsam aktualisiert werden; `app/component_versions.py`, `app/official_rulesets.py`, Health-Antwort,
+Tests und Dokumenttyp-Registry müssen denselben Stand nennen. Ein Hash- oder Versionsunterschied ist ein
+Releasefehler. Die Factur-X-Artefakte werden ausschließlich über Rohdateien eines festen Commits bezogen; ein
+Branch- oder Tag-Bezug ist in den Sperrdateien unzulässig und wird von den Loadern abgelehnt.
 
 ## 4. Artefakte prüfen
 

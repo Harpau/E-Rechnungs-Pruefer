@@ -528,6 +528,9 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     if (-not $health.kosit.configured) {
         throw "Das Windows-Paket enthält keine betriebsbereite KoSIT-Konfiguration."
     }
+    if (-not $health.kosit.facturx_extended_configured) {
+        throw "Das Windows-Paket enthält kein vollständiges Factur-X-EXTENDED-Regelpaket."
+    }
     if ($runtime.port -ne 18080) {
         throw "Die installierte Anwendung verwendet nicht den konfigurierten festen Port."
     }
@@ -634,6 +637,38 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
         -not $Official.assessment.official.executed -or
         $Official.assessment.official.status -ne "accepted") {
         throw "KoSIT wurde im installierten Paket nicht erfolgreich ausgeführt: $($Official.assessment.official.summary)"
+    }
+
+    # Factur-X EXTENDED: bound validation with the locked artefacts of the installed package.
+    $ExtendedExample = Join-Path $ProjectRoot "tests\fixtures\cii-facturx-extended-valid.xml"
+    $ExtendedJson = & curl.exe --silent --show-error --fail `
+        --cookie $CookieFile `
+        --header "X-Einvoice-UI-Revision: $UiRevision" `
+        --form "file=@$ExtendedExample;type=application/xml" `
+        --form "official=true" `
+        "http://127.0.0.1:$($runtime.port)/api/analyze"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Factur-X-EXTENDED-Prüfung über das installierte Paket ist fehlgeschlagen."
+    }
+    $Extended = $ExtendedJson | ConvertFrom-Json
+    if ($Extended.schema_version -ne 2 -or
+        -not $Extended.assessment.official.executed -or
+        $Extended.assessment.official.status -ne "accepted" -or
+        $Extended.capabilities.official_validation -ne "bundled") {
+        throw "Factur-X EXTENDED wurde im installierten Paket nicht gebunden geprüft: $($Extended.assessment.official.summary)"
+    }
+    $ExtendedRejectedExample = Join-Path $ProjectRoot "tests\fixtures\cii-facturx-extended-schematron-error.xml"
+    $ExtendedRejected = (& curl.exe --silent --show-error --fail `
+        --cookie $CookieFile `
+        --header "X-Einvoice-UI-Revision: $UiRevision" `
+        --form "file=@$ExtendedRejectedExample;type=application/xml" `
+        --form "official=true" `
+        "http://127.0.0.1:$($runtime.port)/api/analyze") | ConvertFrom-Json
+    if ($ExtendedRejected.schema_version -ne 2 -or
+        -not $ExtendedRejected.assessment.official.executed -or
+        $ExtendedRejected.assessment.official.status -ne "rejected" -or
+        -not (@($ExtendedRejected.assessment.official.findings | ForEach-Object { $_.rule.id }) -contains "BR-FXEXT-CO-15")) {
+        throw "Factur-X-EXTENDED-Ablehnungsfall im installierten Paket fehlgeschlagen: $($ExtendedRejected.assessment.official.summary)"
     }
 
     & curl.exe --silent --show-error --fail `

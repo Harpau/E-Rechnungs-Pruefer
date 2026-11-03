@@ -36,6 +36,21 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   vollständig und unverändert eingerichtet ist. `docs/VALIDATION.md`, `docs/ARCHITECTURE.md` und `README.md`
   beschreiben Auswahl, Bindung, Statusmatrix, bekannte Abweichungen und die Grenzen der Prüfung.
 
+### Abnahme mit echten Regelläufen
+
+- Neue Integrationssuite `tests/test_kosit_facturx_extended_integration.py` mit dem registrierten Marker
+  `kosit_integration`: Ohne `EINVOICE_KOSIT_INTEGRATION=1` wird sie übersprungen; mit gesetzter Variable schlagen
+  fehlende, unvollständige oder manipulierte Komponenten und fehlendes Java fehl statt zu überspringen. Sie prüft mit
+  dem echten KoSIT-Validator und den gebundenen Artefakten echte Annahme und Ablehnung mit Regelkennungen, fehlende
+  Dateien und falsche Hashes (`unavailable`), falschen Szenarionamen und fehlendes Szenario (`indeterminate`),
+  Start- und Zeitüberschreitungsfehler, ähnliche Kennungen und UBL ohne Freischaltung, bytegleiche Übergabe und
+  unveränderten Export über `/api/xml`, unveränderte EN-16931-/XRechnung-Kontrollfälle, den Health-Endpunkt und
+  das Fehlen externer Referenzen in den installierten Artefakten.
+- `ci.yml` und `release.yml` führen die Suite in einem eigenen Schritt unmittelbar nach der Bereitstellung der
+  gebundenen Java- und KoSIT-Komponenten aus. `scripts/test_windows_package.ps1` und
+  `scripts/test_windows_service_package.ps1` prüfen zusätzlich einen Factur-X-EXTENDED-Annahme- und -Ablehnungsfall
+  im installierten Desktop- und Dienstpaket; der Paket-Healthcheck verlangt `kosit.facturx_extended_configured`.
+
 ### Offizielle Prüfkomponenten (KoSIT)
 
 - Die Sperrdateien `packaging/kosit/components.lock.json` und `packaging/windows/components.lock.json` tragen

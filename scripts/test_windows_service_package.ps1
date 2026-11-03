@@ -1240,6 +1240,28 @@ if ($Rejected.schema_version -ne 2 -or
     throw "Realer KoSIT-Ablehnungsfall fehlgeschlagen."
 }
 
+# Factur-X EXTENDED: bound validation with the locked artefacts of the installed service package.
+$ExtendedExample = Join-Path $ProjectRoot "tests\fixtures\cii-facturx-extended-valid.xml"
+$ExtendedRejectedExample = Join-Path $ProjectRoot "tests\fixtures\cii-facturx-extended-schematron-error.xml"
+$ExtendedAccepted = (& curl.exe --silent --show-error --fail --header "Authorization: Bearer $Token" `
+    --form "file=@$ExtendedExample;type=application/xml" --form "official=true" `
+    "http://127.0.0.1:$Port/api/analyze") | ConvertFrom-Json
+if ($ExtendedAccepted.schema_version -ne 2 -or
+    -not $ExtendedAccepted.assessment.official.executed -or
+    $ExtendedAccepted.assessment.official.status -ne "accepted" -or
+    $ExtendedAccepted.capabilities.official_validation -ne "bundled") {
+    throw "Factur-X-EXTENDED-Annahmefall im Dienstpaket fehlgeschlagen: $($ExtendedAccepted.assessment.official.summary)"
+}
+$ExtendedRejected = (& curl.exe --silent --show-error --fail --header "Authorization: Bearer $Token" `
+    --form "file=@$ExtendedRejectedExample;type=application/xml" --form "official=true" `
+    "http://127.0.0.1:$Port/api/analyze") | ConvertFrom-Json
+if ($ExtendedRejected.schema_version -ne 2 -or
+    -not $ExtendedRejected.assessment.official.executed -or
+    $ExtendedRejected.assessment.official.status -ne "rejected" -or
+    -not (@($ExtendedRejected.assessment.official.findings | ForEach-Object { $_.rule.id }) -contains "BR-FXEXT-CO-15")) {
+    throw "Factur-X-EXTENDED-Ablehnungsfall im Dienstpaket fehlgeschlagen: $($ExtendedRejected.assessment.official.summary)"
+}
+
 $TokenBeforeRestart = $Token
 Stop-Service $ServiceName
 Wait-ServiceState -Name $ServiceName -State "Stopped"
