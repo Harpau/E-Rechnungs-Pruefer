@@ -174,7 +174,7 @@ def test_manual_release_preview_uploads_internal_recovery_installer_separately()
     assert "INTERNAL-TEST-windows-recovery" not in production_block
 
     assert "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" in internal_block
-    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in internal_block
+    assert "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" in internal_block
     assert "name: INTERNAL-TEST-windows-recovery-${{ github.run_id }}-${{ github.run_attempt }}" in internal_block
     assert "retention-days: 1" in internal_block
     assert "if-no-files-found: error" in internal_block
