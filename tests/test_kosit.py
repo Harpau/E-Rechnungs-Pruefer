@@ -535,6 +535,20 @@ def test_installer_uses_locked_components_and_selects_only_standalone_jar(tmp_pa
         "xrechnung_configuration": "2026-08-31",
         "cen_en16931": "1.3.16",
         "xrechnung_schematron": "2.6.0",
+        "facturx_extended": "1.09.2",
+        "facturx_extended_source": "fnfempe/France_RFE v1.4.0.03 a63e6b5",
+    }
+    extended = locked["components"]["facturx_extended"]
+    assert extended["kind"] == "fileset"
+    assert extended["commit"] == "a63e6b538bdaff460f17c38dc1bc5455cf1ba35a"
+    assert extended["base_url"].endswith(f"/{extended['commit']}/")
+    assert len(extended["files"]) == 8
+    assert {item["target"] for item in extended["files"]} >= {
+        "resources/xsd/Factur-X_EXTENDED.xsd",
+        "resources/xslt/FACTUR-X_EXTENDED.xslt",
+        "resources/xslt/FACTUR-X_EXTENDED_codedb.xml",
+        "resources/schematron/FACTUR-X_EXTENDED.sch",
+        "LICENSE",
     }
 
     normal = tmp_path / "validator-1.6.3.jar"
@@ -552,7 +566,10 @@ def test_installer_rejects_unknown_lock_schema_and_invalid_digest(tmp_path):
     spec.loader.exec_module(module)
 
     lock_path = tmp_path / "components.lock.json"
-    lock_path.write_text(json.dumps({"schema_version": 2, "components": {}}), encoding="utf-8")
+    lock_path.write_text(json.dumps({"schema_version": 3, "components": {}}), encoding="utf-8")
+    with pytest.raises(module.InstallError, match="Schema-Version"):
+        module.load_lock(lock_path)
+    lock_path.write_text(json.dumps({"schema_version": 1, "components": {}}), encoding="utf-8")
     with pytest.raises(module.InstallError, match="Schema-Version"):
         module.load_lock(lock_path)
 
@@ -565,7 +582,7 @@ def test_installer_rejects_unknown_lock_schema_and_invalid_digest(tmp_path):
     lock_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "components": {"validator": component, "xrechnung": component},
                 "standards": {
                     "xrechnung": "3.0.2",

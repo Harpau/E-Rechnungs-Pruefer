@@ -33,12 +33,20 @@ def test_repository_component_lock_is_valid() -> None:
     assert locked["java"]["filename"].endswith("windows_hotspot_21.0.13_9.zip")
     assert locked["validator"] == kosit_lock["components"]["validator"]
     assert locked["xrechnung"] == kosit_lock["components"]["xrechnung"]
+    assert locked["facturx_extended"] == kosit_lock["components"]["facturx_extended"]
+    assert locked["facturx_extended"]["kind"] == "fileset"
+    assert locked["facturx_extended"]["tag"] == "v1.4.0.03"
+    assert len(locked["facturx_extended"]["files"]) == 8
     assert kosit_lock["standards"]["cen_en16931"] == "1.3.16"
+    assert kosit_lock["standards"]["facturx_extended"] == "1.09.2"
 
 
 def test_load_lock_rejects_unknown_schema_and_invalid_digest(tmp_path: Path) -> None:
     path = tmp_path / "lock.json"
-    path.write_text(json.dumps({"schema_version": 2, "components": {}}), encoding="utf-8")
+    path.write_text(json.dumps({"schema_version": 3, "components": {}}), encoding="utf-8")
+    with pytest.raises(components.ComponentError, match="Schema-Version"):
+        components._load_lock(path)
+    path.write_text(json.dumps({"schema_version": 1, "components": {}}), encoding="utf-8")
     with pytest.raises(components.ComponentError, match="Schema-Version"):
         components._load_lock(path)
 
@@ -46,7 +54,7 @@ def test_load_lock_rejects_unknown_schema_and_invalid_digest(tmp_path: Path) -> 
     path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "components": {"java": component, "validator": component, "xrechnung": component},
             }
         ),

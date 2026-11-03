@@ -4,6 +4,37 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Offizielle Prüfkomponenten (KoSIT)
+
+- Die Sperrdateien `packaging/kosit/components.lock.json` und `packaging/windows/components.lock.json` tragen
+  `schema_version` 2 und binden zusätzlich die Komponente `facturx_extended`: die Validierungsartefakte für Factur-X
+  1.09.2 EXTENDED (vier XSD, Schematron, kompilierte XSLT, Codelisten und LICENSE) aus dem Repository
+  `fnfempe/France_RFE` von FNFE-MPE, Tag v1.4.0.03, Commit `a63e6b538bdaff460f17c38dc1bc5455cf1ba35a`, je Datei mit
+  Größe und SHA-256 an diesen Commit gebunden (Apache License 2.0). Die Dateien sind bytegleich mit dem technischen
+  Teil des FeRD-Pakets ZUGFeRD 2.5.2 vom 04.08.2026. Die Loader lehnen Branch- oder Tag-Referenzen, Nicht-HTTPS-URLs,
+  absolute oder aufsteigende Zielpfade, unter Windows kollidierende Zielnamen und unvollständige Hashes ab.
+- `scripts/install_kosit.py` lädt diese Artefakte zusätzlich zu Validator und XRechnung-Konfiguration, legt sie unter
+  `vendor/kosit/facturx-extended/` ab, kopiert die versionierte Szenariodatei
+  `packaging/kosit/facturx-extended/scenarios.xml` und `resources/default-report.xsl` aus der XRechnung-Konfiguration
+  dorthin, schreibt `SOURCE.txt` mit Herkunft und Hashliste und ergänzt `.env.kosit` um
+  `KOSIT_FACTURX_EXTENDED_SCENARIOS` und `KOSIT_FACTURX_EXTENDED_REPOSITORIES`. Die Anwendung wertet diese
+  Konfiguration noch nicht aus; die offizielle Prüfung von Factur-X EXTENDED folgt in einem weiteren Schritt.
+- Installer und `scripts/prepare_windows_components.py` tauschen `vendor/kosit` beziehungsweise `runtime/java` erst
+  nach vollständiger Verifikation aller Komponenten aus, sichern den bisherigen Baum und nehmen den Austausch bei
+  jedem Fehler zurück; `.env.kosit` wird atomar geschrieben und bleibt bei einem Fehlschlag unverändert. Die
+  gemeinsame Logik liegt in `scripts/kosit_components.py`.
+- `scripts/build_release.py` gibt genau die Datei `packaging/kosit/facturx-extended/scenarios.xml` für das
+  Repository-ZIP frei, nicht das Verzeichnis; `MANIFEST.in` nimmt sie in die Source Distribution auf. `THIRD_PARTY.md`
+  nennt die Herkunft und Lizenz der Artefakte; `.env.example` nennt die neuen Schlüssel und das JAR 1.6.3.
+
+### Tests
+
+- Synthetische Fixtures unter `tests/fixtures/` für Factur-X EXTENDED: gültige Rechnung, gültige Rechnung mit
+  Unterpositionen, XSD-Fehler, Schematron-Verstoß, Kennungen mit Leerraum, Kommentaren, abweichender Schreibweise,
+  `#compliant#`, Suffix, ZUGFeRD-2.0-Kennung und doppeltem Kontextparameter, eine UBL-Rechnung mit derselben Kennung
+  sowie 15 synthetische KoSIT-VARL-Berichte nach dem Aufbau von Validator 1.6.3. Die CII-Fixtures wurden gegen die
+  echten Regeln geprüft; die Tests sichern, dass ähnliche Kennungen keine offizielle Prüfung freischalten.
+
 ## 2.0.5 – 2026-11-02
 
 ### Windows-Dienst-Installer
