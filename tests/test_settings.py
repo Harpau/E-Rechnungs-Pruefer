@@ -253,3 +253,30 @@ def test_discover_repositories_falls_back_to_scenario_directory(
     monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
 
     assert settings_module._discover_repositories((scenario,)) == (scenario.parent,)
+
+
+def test_facturx_extended_paths_default_to_the_vendor_tree_or_stay_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings_module, "PROJECT_ROOT", tmp_path)
+    assert settings_module._discover_facturx_extended_scenarios() == ()
+
+    scenarios = tmp_path / "vendor" / "kosit" / "facturx-extended" / "scenarios.xml"
+    scenarios.parent.mkdir(parents=True)
+    scenarios.write_text("<scenarios/>", encoding="utf-8")
+    assert settings_module._discover_facturx_extended_scenarios() == (scenarios,)
+
+    current = settings_module.settings
+    assert isinstance(current.kosit_facturx_extended_scenarios, tuple)
+    assert isinstance(current.kosit_facturx_extended_repositories, tuple)
+    for scenario in current.kosit_facturx_extended_scenarios:
+        assert scenario.name == "scenarios.xml"
+    explicit = settings_module.Settings(
+        kosit_facturx_extended_scenarios=(tmp_path / "a" / "scenarios.xml",),
+        kosit_facturx_extended_repositories=(tmp_path / "a",),
+    )
+    assert explicit.kosit_facturx_extended_repositories == (tmp_path / "a",)
+    assert settings_module._split_paths("x/scenarios.xml;/abs/y.xml") == (
+        settings_module.PROJECT_ROOT / "x" / "scenarios.xml",
+        Path("/abs/y.xml"),
+    )

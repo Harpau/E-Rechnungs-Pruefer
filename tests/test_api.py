@@ -332,7 +332,7 @@ def test_report_header_maps_official_status(
                 "source": "KoSIT-Anbindung",
             }
         ]
-    monkeypatch.setattr("app.analyzer.KositValidator.validate", lambda _self, _xml, _filename: result)
+    monkeypatch.setattr("app.analyzer.KositValidator.validate", lambda _self, _xml, _filename, ruleset=None: result)
 
     response = client.post(
         "/api/report",
@@ -426,7 +426,7 @@ def test_index_and_examples_are_available():
 def test_index_disables_official_validation_when_kosit_is_unavailable(monkeypatch):
     monkeypatch.setattr(
         "app.main.KositValidator.configuration_state",
-        lambda _self: {"configured": False, "problems": ["KoSIT-Testkonfiguration fehlt."]},
+        lambda _self, ruleset=None: {"configured": False, "problems": ["KoSIT-Testkonfiguration fehlt."]},
     )
 
     response = client.get("/")
@@ -441,7 +441,7 @@ def test_index_disables_official_validation_when_kosit_is_unavailable(monkeypatc
 def test_index_enables_official_validation_when_kosit_is_configured(monkeypatch):
     monkeypatch.setattr(
         "app.main.KositValidator.configuration_state",
-        lambda _self: {"configured": True, "problems": []},
+        lambda _self, ruleset=None: {"configured": True, "problems": []},
     )
 
     response = client.get("/")

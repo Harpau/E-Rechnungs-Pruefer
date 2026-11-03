@@ -18,6 +18,8 @@ from lxml import etree
 
 from app.analyzer import analyze_bytes
 from app.profiles import ProfileFamily, resolve_profile
+from app.settings import Settings
+from app.validators.kosit import KositValidator
 from app.xml_utils import safe_parse_xml
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -127,3 +129,87 @@ def test_look_alike_identifiers_never_unlock_an_official_validation(name: str) -
 def test_profile_family_of_look_alike_identifiers_is_preserved(name: str, family: ProfileFamily) -> None:
     result = analyze_bytes((FIXTURES / name).read_bytes(), name, run_official_validation=False)
     assert resolve_profile(result["profile"]["id"]).family is family
+
+
+def test_exact_identifier_is_bundled_but_unavailable_without_the_extended_rules() -> None:
+    payload = (FIXTURES / "cii-facturx-extended-valid.xml").read_bytes()
+    result = analyze_bytes(
+        payload,
+        "cii-facturx-extended-valid.xml",
+        run_official_validation=True,
+        app_settings=Settings(kosit_enabled=False),
+    )
+
+    official = result["assessment"]["official"]
+    assert official["status"] == "unavailable"
+    assert official["executed"] is False
+    assert official["configured"] is False
+    assert result["capabilities"]["official_validation"] == "unavailable"
+    assert result["assessment"]["processing"]["status"] == "incomplete"
+    assert result["profile"]["id"] == EXTENDED_URN
+    assert resolve_profile(result["profile"]["id"]).family is ProfileFamily.FACTUR_X
+
+
+def test_exact_identifier_runs_the_bound_extended_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_validate(self: KositValidator, xml: bytes, filename: str, ruleset=None) -> dict:
+        observed["ruleset"] = ruleset
+        observed["xml"] = xml
+        return {
+            "configured": True,
+            "problems": [],
+            "jar": None,
+            "jar_main_class": "x",
+            "scenarios": [],
+            "repositories": [],
+            "ruleset": ruleset.id if ruleset else None,
+            "rules_version": ruleset.rules_version if ruleset else None,
+            "executed": True,
+            "accepted": True,
+            "exit_code": 0,
+            "summary": "KoSIT-Prüfung erfolgreich: Rechnung wurde nach Factur-X 1.09.2 EXTENDED akzeptiert.",
+            "findings": [],
+            "raw_report": "<rep:report/>",
+            "technical_output": None,
+            "report_source": "file",
+            "scenario": "Factur-X 1.09.2 EXTENDED (CII)",
+        }
+
+    monkeypatch.setattr(KositValidator, "validate", fake_validate)
+    payload = (FIXTURES / "cii-facturx-extended-valid.xml").read_bytes()
+
+    result = analyze_bytes(payload, "cii-facturx-extended-valid.xml", run_official_validation=True)
+
+    assert observed["ruleset"] is not None
+    assert observed["ruleset"].id == "facturx-extended-1.09.2"
+    assert observed["xml"] == payload
+    assert result["assessment"]["official"]["status"] == "accepted"
+    assert result["assessment"]["official"]["executed"] is True
+    assert result["capabilities"]["official_validation"] == "bundled"
+    assert result["assessment"]["processing"]["status"] == "complete"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_ids"),
+    [
+        ("cii-facturx-extended-id-whitespace.xml", {"PROFILE-002"}),
+        ("cii-facturx-extended-id-comment-middle.xml", {"PROFILE-002"}),
+        ("cii-facturx-extended-id-comment-end.xml", {"PROFILE-002"}),
+        ("cii-facturx-extended-id-duplicate.xml", {"PROFILE-003"}),
+        ("cii-facturx-extended-id-case.xml", set()),
+        ("cii-facturx-extended-id-compliant.xml", set()),
+        ("cii-facturx-extended-valid.xml", set()),
+    ],
+)
+def test_near_miss_identifiers_get_an_internal_warning(name: str, expected_ids: set[str]) -> None:
+    result = analyze_bytes((FIXTURES / name).read_bytes(), name, run_official_validation=False)
+    internal = result["assessment"]["internal"]
+    ids = {item["rule"]["id"] for item in internal["findings"] if item["rule"]["id"].startswith("PROFILE-00")}
+
+    assert ids - {"PROFILE-001"} == expected_ids
+    for item in internal["findings"]:
+        if item["rule"]["id"] in expected_ids:
+            assert item["severity"] == "warning"
+            assert item["origin"] == "internal"
+            assert item["rule_class"] == "profile_precheck"

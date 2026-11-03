@@ -4,6 +4,27 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Offizielle Prüfung von Factur-X EXTENDED
+
+- Eine CII-Rechnung mit exakt der Kennung `urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended` wird
+  jetzt offiziell gegen Factur-X 1.09.2 EXTENDED geprüft, sobald die Artefakte über `scripts/install_kosit.py`
+  eingerichtet sind. Das neue Register `app/official_rulesets.py` bindet Wurzelelement, Namespace und die rohe
+  Kennung aus dem Originalbaum an genau einen Regelsatz; Leerraum, Kommentare, abweichende Schreibweise, ähnliche
+  Kennungen, mehrere Kennungen oder eine UBL-Datei mit derselben Kennung schalten keine Prüfung frei und erhalten
+  bei Leerraum oder Kommentaren den internen Hinweis `PROFILE-002`, bei mehreren Kennungen `PROFILE-003`.
+- Der Extended-Lauf verwendet eigene Szenario- und Ressourcenpfade (`KOSIT_FACTURX_EXTENDED_SCENARIOS`,
+  `KOSIT_FACTURX_EXTENDED_REPOSITORIES`, automatisch unter `vendor/kosit/facturx-extended/`). Vor jedem Start
+  müssen alle gebundenen Artefakte mit Größe und SHA-256 vorhanden sein; andernfalls lautet der offizielle Status
+  `unavailable` mit Klartextbefund. Der XRechnung-Pfad bleibt davon unberührt.
+- Der VARL-Bericht eines Extended-Laufs wird an Szenarioname, Dokument-Hash (SHA-256) und genau eine ausdrückliche
+  Annahme oder Ablehnung gebunden. Fehlendes Szenario, abweichender Hash, unbekannter Algorithmus, ungültiges Base64,
+  fehlende, doppelte oder widersprüchliche Bewertung und ein falscher Namespace ergeben `indeterminate` mit den
+  Verarbeitungsbefunden `KOSIT-SCENARIO` beziehungsweise `KOSIT-REPORT`; weder das Attribut `valid` noch der
+  Prozess-Rückgabecode ersetzen die Entscheidung. Regelkennungen stammen aus dem Attribut `code` der Berichtsmeldungen,
+  Befunde tragen Profil und Regelstand.
+- Für alle Prüfpfade gilt: Ein KoSIT-Bericht mit `rep:noScenarioMatched` ist keine Ablehnung mehr, sondern
+  `indeterminate` mit dem Befund `KOSIT-SCENARIO`.
+
 ### Offizielle Prüfkomponenten (KoSIT)
 
 - Die Sperrdateien `packaging/kosit/components.lock.json` und `packaging/windows/components.lock.json` tragen

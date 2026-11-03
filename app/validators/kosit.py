@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import ctypes
+import hashlib
 import os
 import re
 import secrets
@@ -26,6 +29,7 @@ from typing import IO, Any
 from lxml import etree
 
 from ..desktop_security import API_TOKEN_ENV, SERVICE_MODE_ENV
+from ..official_rulesets import OfficialRuleset
 from ..settings import Settings
 from ..windows_acl import WindowsServiceAcl
 from ..windows_service_config import ServicePaths
@@ -46,6 +50,12 @@ _REPORT_END_RE = re.compile(rb"</(?:[A-Za-z_][A-Za-z0-9_.-]*:)?report\s*>", re.I
 _FORMAT_ERROR_PREFIX = b"[Format error!] <"
 _FORMAT_ERROR_SUFFIX = b"> with params <"
 _XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml"
+_VARL_NAMESPACE = "http://www.xoev.de/de/validator/varl/1"
+_SCENARIOS_NAMESPACE = "http://www.xoev.de/de/validator/framework/1/scenarios"
+# Bound rule-set runs always use this ASCII file name: KoSIT derives the report
+# name from it and percent-encodes non-ASCII characters otherwise.
+_BOUND_INVOICE_FILENAME = "rechnung.xml"
+_RULESET_REPORT_STYLESHEET = Path("resources") / "report" / "default-report.xsl"
 WINDOWS_SUBPROCESS_CREATION_FLAGS = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if sys.platform == "win32" else 0
 _RUNNING_PROCESS_LOCK = Lock()
 _RUNNING_PROCESSES: set[subprocess.Popen[bytes]] = set()
@@ -97,6 +107,23 @@ class _ExtendedLimitInformation(Structure):
         ("PeakProcessMemoryUsed", SIZE_T),
         ("PeakJobMemoryUsed", SIZE_T),
     )
+
+
+class _ReportBindingError(Exception):
+    """A KoSIT report could not be bound to the expected rule set and document."""
+
+    def __init__(self, finding_id: str, message: str) -> None:
+        super().__init__(message)
+        self.finding_id = finding_id
+        self.message = message
+
+
+def _sha256_of_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class _BoundedPipeCapture:
@@ -495,9 +522,43 @@ class KositValidator:
                 return value.strip() or None
         return None
 
-    def configuration_state(self) -> dict[str, Any]:
+    def _ruleset_paths(self, ruleset: OfficialRuleset | None) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        if ruleset is None:
+            return tuple(self.settings.kosit_scenarios), tuple(self.settings.kosit_repositories)
+        scenarios = getattr(self.settings, f"kosit_{ruleset.settings_key}_scenarios", ())
+        repositories = getattr(self.settings, f"kosit_{ruleset.settings_key}_repositories", ())
+        return tuple(scenarios), tuple(repositories)
+
+    @staticmethod
+    def _ruleset_file_problems(repositories: tuple[Path, ...], ruleset: OfficialRuleset) -> list[str]:
+        """Fail closed: every bound artefact must exist with its locked size and SHA-256."""
+
+        if not repositories:
+            return [f"Ressourcenverzeichnis für {ruleset.label} ist nicht eingerichtet."]
+        repository = repositories[0]
+        problems: list[str] = []
+        for item in ruleset.files:
+            path = repository / item.target
+            if not path.is_file():
+                problems.append(f"Regeldatei fehlt: {item.target}")
+                continue
+            try:
+                size = path.stat().st_size
+                digest = _sha256_of_file(path) if size == item.size else None
+            except OSError as exc:
+                problems.append(f"Regeldatei {item.target} ist nicht lesbar: {exc}")
+                continue
+            if size != item.size:
+                problems.append(f"Regeldatei {item.target} hat {size} statt {item.size} Bytes.")
+            elif digest != item.sha256:
+                problems.append(f"Regeldatei {item.target} entspricht nicht der gebundenen SHA-256-Prüfsumme.")
+        if not (repository / _RULESET_REPORT_STYLESHEET).is_file():
+            problems.append(f"Report-Stylesheet fehlt: {_RULESET_REPORT_STYLESHEET.as_posix()}")
+        return problems
+
+    def configuration_state(self, ruleset: OfficialRuleset | None = None) -> dict[str, Any]:
         jar = self.settings.kosit_validator_jar
-        scenarios = self.settings.kosit_scenarios
+        scenarios, repositories = self._ruleset_paths(ruleset)
         problems: list[str] = []
         main_class: str | None = None
         if not self.settings.kosit_enabled:
@@ -514,23 +575,32 @@ class KositValidator:
                     "Benötigt wird das offizielle '*-standalone.jar', nicht validator-<Version>.jar."
                 )
         if not scenarios:
-            problems.append("KOSIT_SCENARIOS ist nicht gesetzt.")
+            if ruleset is None:
+                problems.append("KOSIT_SCENARIOS ist nicht gesetzt.")
+            else:
+                problems.append(
+                    f"Regelpaket {ruleset.label} ist nicht eingerichtet (scripts/install_kosit.py --force ausführen)."
+                )
         else:
             for scenario in scenarios:
                 if not scenario.is_file():
                     problems.append(f"Szenariokonfiguration wurde nicht gefunden: {scenario}")
         if shutil.which(self.settings.kosit_java_bin) is None:
             problems.append(f"Java wurde nicht gefunden: {self.settings.kosit_java_bin}")
-        for repository in self.settings.kosit_repositories:
+        for repository in repositories:
             if not repository.exists():
                 problems.append(f"KoSIT-Ressourcenverzeichnis wurde nicht gefunden: {repository}")
+        if ruleset is not None and scenarios:
+            problems.extend(self._ruleset_file_problems(repositories, ruleset))
         return {
             "configured": not problems,
             "problems": problems,
             "jar": str(jar) if jar else None,
             "jar_main_class": main_class,
             "scenarios": [str(path) for path in scenarios],
-            "repositories": [str(path) for path in self.settings.kosit_repositories],
+            "repositories": [str(path) for path in repositories],
+            "ruleset": ruleset.id if ruleset else None,
+            "rules_version": ruleset.rules_version if ruleset else None,
         }
 
     @staticmethod
@@ -757,6 +827,225 @@ class KositValidator:
         return findings, decision, assessment, True
 
     @staticmethod
+    def _report_has_no_scenario(report_bytes: bytes | None) -> bool:
+        root = KositValidator._parse_xml_root(report_bytes)
+        if root is None:
+            return False
+        return any(
+            isinstance(element.tag, str) and local_name(element).lower() == "noscenariomatched"
+            for element in root.iter()
+        )
+
+    @staticmethod
+    def _bound_findings(matched: etree._Element, ruleset: OfficialRuleset) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for message in matched.iter(f"{{{_VARL_NAMESPACE}}}message"):
+            if len(findings) >= 500:
+                break
+            code = (message.get("code") or message.get("id") or "KOSIT-MESSAGE").strip()
+            level = (message.get("level") or "").strip().lower()
+            severity = "error" if level in {"error", "fatal"} else "warning" if level == "warning" else "info"
+            text = " ".join(" ".join(message.itertext()).split())[:2000]
+            key = (code, text)
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            line = message.get("lineNumber")
+            column = message.get("columnNumber")
+            findings.append(
+                {
+                    "id": code[:200],
+                    "severity": severity,
+                    "title": "KoSIT-Prüfmeldung",
+                    "message": text,
+                    "location": message.get("xpathLocation"),
+                    "line": int(line) if line and line.isdigit() else None,
+                    "column": int(column) if column and column.isdigit() else None,
+                    "actual": None,
+                    "expected": None,
+                    "source": "KoSIT Validator",
+                    "profile": ruleset.profile_id,
+                    "version": ruleset.rules_version,
+                }
+            )
+        return findings
+
+    @classmethod
+    def _bind_report(
+        cls,
+        report_bytes: bytes,
+        ruleset: OfficialRuleset,
+        xml_bytes: bytes,
+    ) -> tuple[bool, list[dict[str, Any]], str]:
+        """Bind a VARL report to the expected scenario and the exact document.
+
+        Every deviation raises ``_ReportBindingError``; nothing falls back to the
+        ``valid`` attribute, textual status values or the process exit code.
+        """
+
+        root = cls._parse_xml_root(report_bytes)
+        if root is None:
+            raise _ReportBindingError("KOSIT-REPORT", "Der KoSIT-Prüfbericht ist kein wohlgeformtes XML.")
+        if root.tag != f"{{{_VARL_NAMESPACE}}}report":
+            raise _ReportBindingError(
+                "KOSIT-REPORT", "Der KoSIT-Prüfbericht liegt nicht im erwarteten VARL-Namespace vor."
+            )
+        engine = root.findtext(f"{{{_VARL_NAMESPACE}}}engine/{{{_VARL_NAMESPACE}}}name")
+        if not (engine or "").strip():
+            raise _ReportBindingError("KOSIT-REPORT", "Der KoSIT-Prüfbericht nennt keine Prüf-Engine.")
+
+        matched = root.find(f"{{{_VARL_NAMESPACE}}}scenarioMatched")
+        if root.find(f"{{{_VARL_NAMESPACE}}}noScenarioMatched") is not None or matched is None:
+            raise _ReportBindingError(
+                "KOSIT-SCENARIO",
+                "KoSIT hat kein Prüfszenario angewendet; die Profilkennung passt nicht exakt zur Szenariokonfiguration.",
+            )
+        scenario_name = matched.findtext(f"{{{_SCENARIOS_NAMESPACE}}}scenario/{{{_SCENARIOS_NAMESPACE}}}name")
+        if scenario_name != ruleset.scenario_name:
+            raise _ReportBindingError(
+                "KOSIT-SCENARIO",
+                f"Der Bericht gehört zum Szenario {scenario_name!r}, erwartet wurde {ruleset.scenario_name!r}.",
+            )
+
+        hash_prefix = f"{{{_VARL_NAMESPACE}}}documentIdentification/{{{_VARL_NAMESPACE}}}documentHash/"
+        algorithm = root.findtext(hash_prefix + f"{{{_VARL_NAMESPACE}}}hashAlgorithm")
+        value = root.findtext(hash_prefix + f"{{{_VARL_NAMESPACE}}}hashValue")
+        if algorithm is None or value is None:
+            raise _ReportBindingError("KOSIT-REPORT", "Der KoSIT-Prüfbericht enthält keinen Dokument-Hash.")
+        if algorithm.strip().upper() != "SHA-256":
+            raise _ReportBindingError(
+                "KOSIT-REPORT", f"Unbekannter Hash-Algorithmus im KoSIT-Prüfbericht: {algorithm.strip()[:50]}"
+            )
+        try:
+            digest = base64.b64decode(value.strip(), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise _ReportBindingError(
+                "KOSIT-REPORT", "Der Dokument-Hash im KoSIT-Prüfbericht ist kein gültiges Base64."
+            ) from exc
+        if digest != hashlib.sha256(xml_bytes).digest():
+            raise _ReportBindingError(
+                "KOSIT-REPORT", "Der Dokument-Hash im KoSIT-Prüfbericht gehört nicht zur übergebenen XML."
+            )
+
+        assessments = root.findall(f"{{{_VARL_NAMESPACE}}}assessment")
+        if len(assessments) != 1:
+            raise _ReportBindingError("KOSIT-REPORT", "Der KoSIT-Prüfbericht enthält nicht genau eine Bewertung.")
+        decisions = [local_name(child) for child in assessments[0] if isinstance(child.tag, str)]
+        if decisions == ["accept"]:
+            decision = True
+        elif decisions == ["reject"]:
+            decision = False
+        else:
+            raise _ReportBindingError(
+                "KOSIT-REPORT", "Die Bewertung im KoSIT-Prüfbericht ist weder eine eindeutige Annahme noch Ablehnung."
+            )
+        return decision, cls._bound_findings(matched, ruleset), scenario_name
+
+    def _finish_bound_validation(
+        self,
+        state: dict[str, Any],
+        ruleset: OfficialRuleset,
+        xml_bytes: bytes,
+        completed: subprocess.CompletedProcess[bytes],
+        report_path: Path,
+    ) -> dict[str, Any]:
+        stdout = completed.stdout.decode("utf-8", errors="replace").strip()
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        technical_output = "\n".join(part for part in (stderr, stdout) if part).strip() or None
+        try:
+            try:
+                with report_path.open("rb") as handle:
+                    report_payload = handle.read(MAXIMUM_KOSIT_REPORT_BYTES + 1)
+            except FileNotFoundError:
+                raise _ReportBindingError(
+                    "KOSIT-REPORT", "KoSIT hat keinen Prüfbericht für die gebundene Prüfung geschrieben."
+                ) from None
+            except OSError as exc:
+                raise _ReportBindingError("KOSIT-REPORT", f"Der KoSIT-Prüfbericht ist nicht lesbar: {exc}") from exc
+            if len(report_payload) > MAXIMUM_KOSIT_REPORT_BYTES:
+                raise _ReportBindingError(
+                    "KOSIT-REPORT",
+                    f"Der KoSIT-Prüfbericht überschreitet das Bytebudget von {MAXIMUM_KOSIT_REPORT_BYTES} Bytes.",
+                )
+            accepted, findings, scenario_name = self._bind_report(report_payload, ruleset, xml_bytes)
+        except _ReportBindingError as exc:
+            diagnostic = exc.message
+            if self._looks_like_startup_failure(technical_output or ""):
+                summary = "KoSIT-Prüfung wurde wegen einer technischen Start- oder JAR-Konfigurationsstörung nicht ausgeführt."
+            elif exc.finding_id == "KOSIT-SCENARIO":
+                summary = "KoSIT hat kein passendes Prüfszenario angewendet; es liegt keine Rechnungsentscheidung vor."
+            else:
+                summary = (
+                    "KoSIT-Prüfung lieferte keinen an Szenario und Dokument gebundenen Prüfbericht und wurde "
+                    "daher nicht als Rechnungsprüfung gewertet."
+                )
+            return {
+                **self._not_executed(
+                    state,
+                    summary=summary,
+                    message=diagnostic,
+                    finding_id=exc.finding_id,
+                    exit_code=completed.returncode,
+                    technical_output=technical_output,
+                ),
+                "scenario": None,
+            }
+
+        summary = (
+            f"KoSIT-Prüfung erfolgreich: Rechnung wurde nach {ruleset.label} akzeptiert."
+            if accepted
+            else f"KoSIT-Prüfung abgeschlossen: Rechnung wurde nach {ruleset.label} abgelehnt."
+        )
+        summary += f" Bewertung im Bericht: {'accept' if accepted else 'reject'}."
+        exit_code_accepts = completed.returncode == 0
+        if exit_code_accepts != accepted:
+            findings.append(
+                {
+                    "id": "KOSIT-RESULT-MISMATCH",
+                    "severity": "warning",
+                    "title": "KoSIT-Bericht und Prozess-Rückgabecode widersprechen sich",
+                    "message": (
+                        f"Der XML-Bericht bewertet die Rechnung als {'akzeptiert' if accepted else 'abgelehnt'}, "
+                        f"der Prozess endete jedoch mit Rückgabecode {completed.returncode}. "
+                        "Für die Anzeige wurde die ausdrückliche Bewertung im XML-Bericht verwendet."
+                    ),
+                    "location": None,
+                    "actual": str(completed.returncode),
+                    "expected": "0 bei Annahme, ungleich 0 bei Ablehnung",
+                    "source": "KoSIT Validator",
+                }
+            )
+        if not accepted and not any(item["severity"] == "error" for item in findings):
+            findings.append(
+                {
+                    "id": "KOSIT-REJECT",
+                    "severity": "error",
+                    "title": "KoSIT-Validator hat die Rechnung abgelehnt",
+                    "message": "Der KoSIT-Prüfbericht enthält eine Ablehnungsentscheidung ohne separat extrahierte Einzelmeldung.",
+                    "location": None,
+                    "actual": str(completed.returncode),
+                    "expected": "Annahmeentscheidung im KoSIT-Bericht",
+                    "source": "KoSIT Validator",
+                    "profile": ruleset.profile_id,
+                    "version": ruleset.rules_version,
+                }
+            )
+        raw_report = report_payload.decode("utf-8", errors="replace")
+        return {
+            **state,
+            "executed": True,
+            "accepted": accepted,
+            "exit_code": completed.returncode,
+            "summary": summary,
+            "findings": findings,
+            "raw_report": raw_report,
+            "technical_output": stderr or None,
+            "report_source": "file",
+            "scenario": scenario_name,
+        }
+
+    @staticmethod
     def _not_executed(
         state: dict[str, Any],
         *,
@@ -797,8 +1086,8 @@ class KositValidator:
         lowered = text.lower()
         return any(pattern in lowered for pattern in TECHNICAL_START_PATTERNS)
 
-    def validate(self, xml_bytes: bytes, filename: str) -> dict[str, Any]:
-        state = self.configuration_state()
+    def validate(self, xml_bytes: bytes, filename: str, ruleset: OfficialRuleset | None = None) -> dict[str, Any]:
+        state = self.configuration_state(ruleset)
         if not state["configured"]:
             detail = " ".join(state.get("problems") or [])
             return self._not_executed(
@@ -807,9 +1096,10 @@ class KositValidator:
                 message=detail or None,
             )
 
+        scenarios, repositories = self._ruleset_paths(ruleset)
         with _kosit_temporary_directory() as temp_path:
             temp_dir = str(temp_path)
-            invoice_path = temp_path / Path(filename).name
+            invoice_path = temp_path / (_BOUND_INVOICE_FILENAME if ruleset is not None else Path(filename).name)
             if invoice_path.suffix.lower() != ".xml":
                 invoice_path = invoice_path.with_suffix(".xml")
 
@@ -821,9 +1111,9 @@ class KositValidator:
                 "-jar",
                 str(self.settings.kosit_validator_jar),
             ]
-            for scenario in self.settings.kosit_scenarios:
+            for scenario in scenarios:
                 command.extend(["-s", str(scenario)])
-            for repository in self.settings.kosit_repositories:
+            for repository in repositories:
                 command.extend(["-r", str(repository)])
 
             # KoSIT serializes a report for every check. Reading that file is
@@ -854,6 +1144,17 @@ class KositValidator:
                     summary=f"KoSIT-Validator konnte nicht gestartet werden: {exc}",
                     message=str(exc),
                     finding_id="KOSIT-START",
+                )
+
+            if ruleset is not None:
+                # A bound run reads exactly the report KoSIT writes for the fixed
+                # file name; console fallbacks and mtime guesses are not accepted.
+                return self._finish_bound_validation(
+                    state,
+                    ruleset,
+                    xml_bytes,
+                    completed,
+                    report_directory / f"{invoice_path.stem}-report.xml",
                 )
 
             try:
@@ -888,6 +1189,23 @@ class KositValidator:
                     f"{MAXIMUM_KOSIT_CONSOLE_BYTES} Bytes und wurde gekürzt."
                 )
                 technical_output = "\n".join(part for part in (overflow_notice, technical_output) if part)
+
+            if valid_report and self._report_has_no_scenario(report_payload):
+                # KoSIT rejects a document that matches no scenario. That says
+                # nothing about the invoice and must never be shown as a rejection.
+                return self._not_executed(
+                    state,
+                    summary=(
+                        "KoSIT hat kein passendes Prüfszenario angewendet; es liegt keine Rechnungsentscheidung vor."
+                    ),
+                    message=(
+                        "Der VARL-Bericht enthält rep:noScenarioMatched. Die Profilkennung passt zu keinem "
+                        "Szenario der verwendeten KoSIT-Konfiguration."
+                    ),
+                    finding_id="KOSIT-SCENARIO",
+                    exit_code=completed.returncode,
+                    technical_output=technical_output or None,
+                )
 
             # A Java/configuration failure without a valid report says nothing
             # about the invoice and must never be shown as a rejection.
