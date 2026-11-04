@@ -79,6 +79,7 @@ class OfficialAssessment(ContractModel):
     summary: str | None = Field(default=None, max_length=4000)
     exit_code: int | None = None
     report_source: OfficialReportSource | None = None
+    scenario: str | None = Field(default=None, max_length=500)
     raw_report: str | None = None
     technical_output: str | None = Field(default=None, max_length=2_000_000)
     findings: list[Finding] = Field(default_factory=list)

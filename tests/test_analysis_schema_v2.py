@@ -424,21 +424,20 @@ def test_non_bundled_profile_does_not_execute_kosit(monkeypatch: pytest.MonkeyPa
 
 
 def test_kosit_receives_original_xml_bytes_after_structure_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
-    split_at = len(XRECHNUNG_PROFILE) // 2
-    shown_profile = (
-        XRECHNUNG_PROFILE[:split_at]
-        + "<!-- synthetischer Kommentar -->"
-        + "<?synthetic test?>"
-        + XRECHNUNG_PROFILE[split_at:]
-    )
+    # The identifier itself stays exact (otherwise no scenario is bound); the
+    # comment, processing instruction, CRLF line ends and character reference
+    # sit beside it and must reach KoSIT unchanged.
+    identifier = f"<cbc:CustomizationID>{XRECHNUNG_PROFILE}</cbc:CustomizationID>"
     payload = (
-        _ubl(profile=shown_profile)
+        _ubl(profile=XRECHNUNG_PROFILE)
+        .replace(identifier.encode(), (identifier + "<!-- synthetischer Kommentar --><?synthetic test?>").encode())
         .replace(b"\n", b"\r\n")
         .replace(
             b"SYNTHETISCH-380",
             b"SYNTHETISCH-&#51;80",
         )
     )
+    assert b"<!-- synthetischer Kommentar -->" in payload
     received: list[tuple[bytes, str]] = []
 
     def capture_original_bytes(_self, xml: bytes, filename: str, ruleset=None) -> dict:
@@ -452,7 +451,8 @@ def test_kosit_receives_original_xml_bytes_after_structure_preflight(monkeypatch
             "findings": [],
             "raw_report": "<rep:report xmlns:rep='http://www.xoev.de/de/validator/varl/1'><rep:assessment><rep:accept/></rep:assessment></rep:report>",
             "technical_output": None,
-            "report_source": "varl",
+            "report_source": "file",
+            "scenario": "EN16931 XRechnung (UBL Invoice)",
         }
 
     monkeypatch.setattr("app.analyzer.KositValidator.validate", capture_original_bytes)
@@ -468,6 +468,50 @@ def test_kosit_receives_original_xml_bytes_after_structure_preflight(monkeypatch
     assert received == [(payload, "synthetische-originalbytes.xml")]
     assert result["profile"]["id"] == XRECHNUNG_PROFILE
     assert result["assessment"]["official"]["executed"] is True
+    assert result["assessment"]["official"]["scenario"] == "EN16931 XRechnung (UBL Invoice)"
+    assert result["assessment"]["official"]["report_source"] == "file"
+    assert result["capabilities"]["official_validation"] == "bundled"
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_internal_ids"),
+    [
+        ("urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_2.3", set()),
+        ("urn:cen.eu:en16931:2017#conformant#urn:xeinkauf.de:kosit:xrechnung_3.0", set()),
+        (f" {XRECHNUNG_PROFILE} ", {"PROFILE-002"}),
+        (f"{EN_PROFILE}\n", {"PROFILE-002"}),
+    ],
+    ids=["xrechnung-2.3", "conformant", "xrechnung-whitespace", "en16931-newline"],
+)
+def test_identifiers_without_bound_scenario_are_unsupported_without_a_run(
+    monkeypatch: pytest.MonkeyPatch, profile: str, expected_internal_ids: set[str]
+) -> None:
+    def unexpected_validate(_self, _xml: bytes, filename: str, ruleset=None) -> dict:
+        raise AssertionError("Ohne gebundenes Szenario darf KoSIT nicht ausgeführt werden.")
+
+    monkeypatch.setattr("app.analyzer.KositValidator.validate", unexpected_validate)
+    monkeypatch.setattr(
+        "app.analyzer.KositValidator.configuration_state",
+        lambda _self, ruleset=None: {"configured": True, "problems": []},
+    )
+
+    result = analyze_bytes(
+        _ubl(profile=profile),
+        "synthetische-rechnung-ohne-szenario.xml",
+        "application/xml",
+        run_official_validation=True,
+        app_settings=replace(settings, kosit_enabled=True),
+    )
+
+    official = result["assessment"]["official"]
+    assert official["status"] == "unsupported"
+    assert official["executed"] is False
+    assert official["scenario"] is None
+    assert "ungebundener KoSIT-Lauf" in official["summary"]
+    assert result["capabilities"]["official_validation"] == "not-bundled"
+    assert result["assessment"]["processing"]["status"] == "complete"
+    internal_ids = set(_finding_by_id(result, "internal"))
+    assert internal_ids & {"PROFILE-002", "PROFILE-003"} == expected_internal_ids
 
 
 def test_unknown_document_type_does_not_claim_self_billing_status() -> None:

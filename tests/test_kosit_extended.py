@@ -55,9 +55,9 @@ def _ruleset_for(repository: Path) -> OfficialRuleset:
 def _settings(tmp_path: Path, *, extended: bool = True) -> tuple[Settings, Path]:
     jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar)
-    legacy_scenarios = tmp_path / "xrechnung" / "scenarios.xml"
-    legacy_scenarios.parent.mkdir(parents=True, exist_ok=True)
-    legacy_scenarios.write_text("<scenarios/>", encoding="utf-8")
+    shared_scenarios = tmp_path / "xrechnung" / "scenarios.xml"
+    shared_scenarios.parent.mkdir(parents=True, exist_ok=True)
+    shared_scenarios.write_text("<scenarios/>", encoding="utf-8")
     repository = tmp_path / "facturx-extended"
     repository.mkdir(exist_ok=True)
     return (
@@ -65,8 +65,8 @@ def _settings(tmp_path: Path, *, extended: bool = True) -> tuple[Settings, Path]
             kosit_enabled=True,
             kosit_java_bin=sys.executable,
             kosit_validator_jar=jar,
-            kosit_scenarios=(legacy_scenarios,),
-            kosit_repositories=(legacy_scenarios.parent,),
+            kosit_scenarios=(shared_scenarios,),
+            kosit_repositories=(shared_scenarios.parent,),
             kosit_facturx_extended_scenarios=(repository / "scenarios.xml",) if extended else (),
             kosit_facturx_extended_repositories=(repository,) if extended else (),
             kosit_timeout_seconds=5,
@@ -358,11 +358,11 @@ def test_precheck_fails_closed_on_missing_or_tampered_artefacts(
     assert result["executed"] is False
     assert result["configured"] is False
     assert [item["id"] for item in result["findings"]] == ["KOSIT-CONFIG"]
-    # The legacy XRechnung path stays configured and unaffected.
+    # The shared XRechnung installation stays configured and unaffected.
     assert KositValidator(settings).configuration_state()["configured"] is True
 
 
-def test_missing_extended_configuration_does_not_affect_the_legacy_path(tmp_path: Path) -> None:
+def test_missing_extended_configuration_does_not_affect_the_shared_path(tmp_path: Path) -> None:
     settings, repository = _settings(tmp_path, extended=False)
     ruleset = _ruleset_for(repository)
 
@@ -372,20 +372,23 @@ def test_missing_extended_configuration_does_not_affect_the_legacy_path(tmp_path
     assert any("nicht eingerichtet" in problem for problem in state["problems"])
     assert state["ruleset"] == "facturx-extended-1.09.2"
     assert state["rules_version"] == ruleset.rules_version
-    legacy = KositValidator(settings).configuration_state()
-    assert legacy["configured"] is True
-    assert legacy["ruleset"] is None
+    shared = KositValidator(settings).configuration_state()
+    assert shared["configured"] is True
+    assert shared["ruleset"] is None
 
 
-def test_legacy_path_treats_no_scenario_as_no_decision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_validate_without_ruleset_never_starts_kosit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings, _repository = _settings(tmp_path, extended=False)
-    monkeypatch.setattr(
-        kosit_module, "_run_kosit_process", _fake_run(_fixture("kosit-report-noscenario-reject.xml"), returncode=1)
-    )
+
+    def never(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        raise AssertionError("Ohne gebundenen Regelsatz darf KoSIT nicht gestartet werden")
+
+    monkeypatch.setattr(kosit_module, "_run_kosit_process", never)
 
     result = KositValidator(settings).validate(_fixture("cii-facturx-extended-id-whitespace.xml"), "rechnung.xml")
 
     assert result["executed"] is False
     assert result["accepted"] is None
+    assert result["scenario"] is None
     assert [item["id"] for item in result["findings"]] == ["KOSIT-SCENARIO"]
-    assert "kein passendes Prüfszenario" in result["summary"]
+    assert "kein gebundenes Prüfszenario" in result["summary"]

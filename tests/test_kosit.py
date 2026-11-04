@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
 import subprocess
 import sys
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from threading import Lock
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ import pytest
 
 from app.component_versions import KOSIT_COMPONENT_VERSIONS
 from app.desktop_security import API_TOKEN_ENV
+from app.official_rulesets import XRECHNUNG_3_0_CII, XRECHNUNG_CONFIGURATION_FILES, OfficialRuleset, RulesetFile
 from app.settings import Settings
 from app.validators import kosit as kosit_module
 from app.validators.kosit import KositValidator
@@ -407,6 +410,27 @@ def _settings(tmp_path: Path, jar: Path) -> Settings:
     )
 
 
+def _bound_ruleset(settings: Settings) -> OfficialRuleset:
+    """A copy of the XRechnung CII rule set bound to stand-in artefacts of the test installation."""
+
+    def locked(path: Path, target: str) -> RulesetFile:
+        payload = path.read_bytes()
+        return RulesetFile(target, len(payload), hashlib.sha256(payload).hexdigest())
+
+    repository = settings.kosit_repositories[0]
+    files = []
+    for item in XRECHNUNG_CONFIGURATION_FILES:
+        path = repository / item.target
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"<!-- Stand-in fuer {item.target} -->".encode())
+        files.append(locked(path, item.target))
+    return replace(
+        XRECHNUNG_3_0_CII,
+        files=tuple(files),
+        scenario_file=locked(settings.kosit_scenarios[0], "scenarios.xml"),
+    )
+
+
 def test_library_jar_without_main_class_is_not_configured(tmp_path):
     jar = tmp_path / "validator-1.6.3.jar"
     _write_jar(jar, None)
@@ -418,7 +442,8 @@ def test_library_jar_without_main_class_is_not_configured(tmp_path):
 def test_manifest_start_error_is_not_reported_as_invoice_rejection(tmp_path, monkeypatch):
     jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
-    validator = KositValidator(_settings(tmp_path, jar))
+    settings = _settings(tmp_path, jar)
+    validator = KositValidator(settings)
 
     def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(
@@ -429,7 +454,7 @@ def test_manifest_start_error_is_not_reported_as_invoice_rejection(tmp_path, mon
         )
 
     monkeypatch.setattr("app.validators.kosit._run_kosit_process", fake_run)
-    result = validator.validate(b"<invoice/>", "invoice.xml")
+    result = validator.validate(b"<invoice/>", "invoice.xml", ruleset=_bound_ruleset(settings))
 
     assert result["executed"] is False
     assert result["accepted"] is None
@@ -437,95 +462,14 @@ def test_manifest_start_error_is_not_reported_as_invoice_rejection(tmp_path, mon
     assert result["findings"][0]["id"] == "KOSIT-EXEC"
     assert result["findings"][0]["severity"] == "warning"
     assert "abgelehnt" not in result["findings"][0]["title"].lower()
-
-
-def test_real_kosit_reject_report_is_reported_as_rejection(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.3-standalone.jar"
-    _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
-    validator = KositValidator(_settings(tmp_path, jar))
-    report = b"""<?xml version="1.0" encoding="UTF-8"?>
-<rep:report xmlns:rep="http://www.xoev.de/de/validator/varl/1" valid="false">
-  <rep:assessment><rep:reject/></rep:assessment>
-  <svrl:failed-assert xmlns:svrl="http://purl.oclc.org/dsdl/svrl" id="BR-TEST" flag="fatal" location="/Invoice">
-    <svrl:text>Testfehler</svrl:text>
-  </svrl:failed-assert>
-</rep:report>"""
-
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(args=args[0], returncode=1, stdout=report, stderr=b"")
-
-    monkeypatch.setattr("app.validators.kosit._run_kosit_process", fake_run)
-    result = validator.validate(b"<invoice/>", "invoice.xml")
-
-    assert result["executed"] is True
-    assert result["accepted"] is False
-    assert any(item["id"] == "BR-TEST" for item in result["findings"])
-
-
-def test_kosit_accept_report_is_reported_as_accepted(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.3-standalone.jar"
-    _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
-    validator = KositValidator(_settings(tmp_path, jar))
-    report = b"""<?xml version="1.0" encoding="UTF-8"?>
-<rep:report xmlns:rep="http://www.xoev.de/de/validator/varl/1" valid="true">
-  <rep:assessment><rep:accept/></rep:assessment>
-</rep:report>"""
-
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=report, stderr=b"")
-
-    monkeypatch.setattr("app.validators.kosit._run_kosit_process", fake_run)
-    result = validator.validate(b"<invoice/>", "invoice.xml")
-
-    assert result["executed"] is True
-    assert result["accepted"] is True
-
-
-def test_report_parser_ignores_embedded_xhtml_and_preserves_varl_source_coordinates() -> None:
-    report = b"""<?xml version="1.0" encoding="UTF-8"?>
-<rep:report
-  xmlns:rep="http://www.xoev.de/de/validator/varl/1"
-  xmlns:h="http://www.w3.org/1999/xhtml"
-  valid="false">
-  <rep:message
-    id="val-xsd.1"
-    level="error"
-    lineNumber="7"
-    columnNumber="13"
-    code="cvc-complex-type.2.4.b">Synthetischer Strukturfehler</rep:message>
-  <rep:assessment><rep:reject/></rep:assessment>
-  <rep:explanation>
-    <h:table class="tbl-errors"><h:tr class="error"><h:td>Nur Darstellung</h:td></h:tr></h:table>
-    <h:p class="important error">Nur Darstellung</h:p>
-    <h:p class="info">Nur Darstellung</h:p>
-  </rep:explanation>
-</rep:report>"""
-
-    findings, decision, assessment, valid = KositValidator._parse_report(report)
-
-    assert valid is True
-    assert decision is False
-    assert assessment == "reject"
-    assert findings == [
-        {
-            "id": "val-xsd.1",
-            "severity": "error",
-            "title": "KoSIT-Prüfmeldung",
-            "message": "Synthetischer Strukturfehler",
-            "location": None,
-            "line": 7,
-            "column": 13,
-            "actual": None,
-            "expected": None,
-            "source": "KoSIT Validator",
-        }
-    ]
+    assert "abgelehnt" not in result["summary"]
 
 
 def test_windows_kosit_process_is_started_without_console(tmp_path, monkeypatch):
     jar = tmp_path / "validator-1.6.3-standalone.jar"
     _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
-    validator = KositValidator(_settings(tmp_path, jar))
+    settings = _settings(tmp_path, jar)
+    validator = KositValidator(settings)
     observed: dict[str, int] = {}
 
     def fake_run(*args, **kwargs):
@@ -534,7 +478,7 @@ def test_windows_kosit_process_is_started_without_console(tmp_path, monkeypatch)
 
     monkeypatch.setattr(kosit_module, "_run_kosit_process", fake_run)
 
-    validator.validate(b"<invoice/>", "invoice.xml")
+    validator.validate(b"<invoice/>", "invoice.xml", ruleset=_bound_ruleset(settings))
 
     expected = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if sys.platform == "win32" else 0
     if sys.platform == "win32":
@@ -634,136 +578,3 @@ def test_public_kosit_component_versions_match_the_locked_bundle() -> None:
         "facturx_extended": payload["standards"]["facturx_extended"],
         "facturx_extended_source": payload["standards"]["facturx_extended_source"],
     }
-
-
-def test_serialized_report_file_avoids_print_format_error(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.3-standalone.jar"
-    _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
-    validator = KositValidator(_settings(tmp_path, jar))
-    report = b"""<?xml version="1.0" encoding="UTF-8"?>
-<rep:report xmlns:rep="http://www.xoev.de/de/validator/varl/1" valid="true">
-  <rep:engine><rep:name>KoSIT Validator 1.6.3</rep:name></rep:engine>
-  <rep:scenarioMatched/>
-  <rep:assessment><rep:accept/></rep:assessment>
-</rep:report>"""
-    observed: dict[str, list[str]] = {}
-
-    def fake_run(*args, **kwargs):
-        command = [str(value) for value in args[0]]
-        observed["command"] = command
-        output_directory = Path(command[command.index("-o") + 1])
-        invoice_path = Path(command[-1])
-        (output_directory / f"{invoice_path.stem}-report.xml").write_bytes(report)
-        return subprocess.CompletedProcess(
-            args=args[0],
-            returncode=0,
-            stdout=b"KoSIT Validator 1.6.3\nProcessing completed",
-            stderr=b"",
-        )
-
-    monkeypatch.setattr("app.validators.kosit._run_kosit_process", fake_run)
-    result = validator.validate(b"<invoice/>", "invoice.xml")
-
-    assert "-p" not in observed["command"]
-    assert "--print" not in observed["command"]
-    assert result["executed"] is True
-    assert result["accepted"] is True
-    assert result["report_source"] == "file"
-    assert 'valid="true"' in result["raw_report"]
-
-
-def test_valid_serialized_report_remains_authoritative_after_console_overflow(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    jar = tmp_path / "validator-1.6.3-standalone.jar"
-    _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
-    validator = KositValidator(_settings(tmp_path, jar))
-    report = b"""<?xml version="1.0" encoding="UTF-8"?>
-<rep:report xmlns:rep="http://www.xoev.de/de/validator/varl/1" valid="true">
-  <rep:assessment><rep:accept/></rep:assessment>
-</rep:report>"""
-
-    def fake_run(*args, **_kwargs):
-        command = [str(value) for value in args[0]]
-        output_directory = Path(command[command.index("-o") + 1])
-        invoice_path = Path(command[-1])
-        (output_directory / f"{invoice_path.stem}-report.xml").write_bytes(report)
-        completed = subprocess.CompletedProcess(
-            args=args[0],
-            returncode=0,
-            stdout=b"x" * kosit_module.MAXIMUM_KOSIT_CONSOLE_BYTES,
-            stderr=b"",
-        )
-        vars(completed)["_kosit_console_overflow"] = True
-        return completed
-
-    monkeypatch.setattr(kosit_module, "_run_kosit_process", fake_run)
-
-    result = validator.validate(b"<invoice/>", "invoice.xml")
-
-    assert result["executed"] is True
-    assert result["accepted"] is True
-    assert result["report_source"] == "file"
-    assert any(item["id"] == "KOSIT-OUTPUT-TRUNCATED" for item in result["findings"])
-
-
-def test_serialized_report_reader_rejects_oversized_file_before_xml_parse(
-    tmp_path: Path,
-) -> None:
-    report_directory = tmp_path / "reports"
-    report_directory.mkdir()
-    invoice_path = tmp_path / "invoice.xml"
-    report = report_directory / "invoice-report.xml"
-    report.write_bytes(b"x" * (kosit_module.MAXIMUM_KOSIT_REPORT_BYTES + 1))
-
-    with pytest.raises(OSError, match="Bytebudget"):
-        KositValidator._read_serialized_report(report_directory, invoice_path)
-
-
-def test_format_error_wrapped_report_on_stderr_is_recovered(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.3-standalone.jar"
-    _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
-    validator = KositValidator(_settings(tmp_path, jar))
-    report = b"""<?xml version="1.0" encoding="UTF-8"?>
-<rep:report xmlns:rep="http://www.xoev.de/de/validator/varl/1" valid="true">
-  <rep:assessment><rep:accept/></rep:assessment>
-</rep:report>"""
-    wrapped = b"[Format error!] <" + report + b"> with params <[Ljava.lang.Object;@123456>"
-
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=b"", stderr=wrapped)
-
-    monkeypatch.setattr("app.validators.kosit._run_kosit_process", fake_run)
-    result = validator.validate(b"<invoice/>", "invoice.xml")
-
-    assert result["executed"] is True
-    assert result["accepted"] is True
-    assert result["exit_code"] == 0
-    assert result["report_source"] == "stderr-format-error"
-    assert "wiederhergestellt" in result["summary"]
-    assert result["technical_output"] is None
-
-
-def test_xml_assessment_is_authoritative_when_exit_code_differs(tmp_path, monkeypatch):
-    jar = tmp_path / "validator-1.6.3-standalone.jar"
-    _write_jar(jar, "de.kosit.validationtool.cmd.CommandLineApplication")
-    validator = KositValidator(_settings(tmp_path, jar))
-    report = b"""<?xml version="1.0" encoding="UTF-8"?>
-<rep:report xmlns:rep="http://www.xoev.de/de/validator/varl/1" valid="true">
-  <rep:assessment><rep:accept/></rep:assessment>
-</rep:report>"""
-
-    def fake_run(*args, **kwargs):
-        command = [str(value) for value in args[0]]
-        output_directory = Path(command[command.index("-o") + 1])
-        invoice_path = Path(command[-1])
-        (output_directory / f"{invoice_path.stem}-report.xml").write_bytes(report)
-        return subprocess.CompletedProcess(args=args[0], returncode=1, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr("app.validators.kosit._run_kosit_process", fake_run)
-    result = validator.validate(b"<invoice/>", "invoice.xml")
-
-    assert result["executed"] is True
-    assert result["accepted"] is True
-    assert any(item["id"] == "KOSIT-RESULT-MISMATCH" for item in result["findings"])

@@ -34,8 +34,9 @@ def test_health_endpoint():
     assert payload["version"] == main_module.__version__
     assert payload["analysis_schema_version"] == 2
     assert set(payload) == {"status", "version", "analysis_schema_version", "kosit"}
-    assert set(payload["kosit"]) == {"configured", "facturx_extended_configured", "components"}
+    assert set(payload["kosit"]) == {"configured", "xrechnung_configured", "facturx_extended_configured", "components"}
     assert isinstance(payload["kosit"]["configured"], bool)
+    assert isinstance(payload["kosit"]["xrechnung_configured"], bool)
     assert isinstance(payload["kosit"]["facturx_extended_configured"], bool)
     assert payload["kosit"]["components"]["facturx_extended"] == "1.09.2"
     assert payload["kosit"]["components"]["cen_en16931"] == "1.3.16"
@@ -63,6 +64,7 @@ def test_health_endpoint_does_not_expose_kosit_configuration_details(monkeypatch
         "analysis_schema_version": 2,
         "kosit": {
             "configured": False,
+            "xrechnung_configured": False,
             "facturx_extended_configured": False,
             "components": main_module.KOSIT_COMPONENT_VERSIONS,
         },

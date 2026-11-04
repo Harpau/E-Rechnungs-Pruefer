@@ -19,13 +19,13 @@ from app.profiles import (
             "urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0",
             ProfileFamily.XRECHNUNG,
             "XRechnung",
-            OfficialValidationCapability.BUNDLED,
+            OfficialValidationCapability.NOT_BUNDLED,
         ),
         (
             "urn:cen.eu:en16931:2017",
             ProfileFamily.EN16931,
             "EN 16931",
-            OfficialValidationCapability.BUNDLED,
+            OfficialValidationCapability.NOT_BUNDLED,
         ),
         (
             "urn:fdc:peppol.eu:2017:poacc:billing:3.0",
@@ -61,6 +61,17 @@ def test_known_profiles_expose_family_and_capabilities(
     assert result.label == label
     assert result.capabilities.internal_semantics is InternalSemanticCapability.SUPPORTED
     assert result.capabilities.official_validation is official
+    assert result.capabilities.official_rules_version is None
+
+
+def test_official_rules_are_unlocked_only_through_an_exact_rule_set() -> None:
+    plain = resolve_profile("urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0")
+    bound = plain.with_official_rules("XRechnung 3.0.2 / Validator-Konfiguration 2026-08-31")
+
+    assert plain.capabilities.official_validation is OfficialValidationCapability.NOT_BUNDLED
+    assert bound.capabilities.official_validation is OfficialValidationCapability.BUNDLED
+    assert bound.capabilities.official_rules_version == "XRechnung 3.0.2 / Validator-Konfiguration 2026-08-31"
+    assert bound.capabilities.document_type_policy == plain.capabilities.document_type_policy == "xrechnung-3.0.2"
 
 
 @pytest.mark.parametrize(

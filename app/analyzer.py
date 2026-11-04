@@ -222,7 +222,11 @@ def analyze_bytes(
         if not run_official_validation:
             summary = "Offizielle KoSIT-Prüfung wurde für diesen Aufruf nicht ausgeführt."
         elif profile_capability is OfficialValidationCapability.NOT_BUNDLED:
-            summary = "Für das erkannte Profil ist keine offizielle Prüfung im gebündelten KoSIT-Regelwerk enthalten."
+            summary = (
+                "Für die Profilkennung ist kein gebundenes Prüfszenario im gebündelten KoSIT-Regelwerk hinterlegt "
+                "(XRechnung 3.0.2, EN 16931, Factur-X 1.09.2 EXTENDED); ein ungebundener KoSIT-Lauf wird nicht "
+                "ausgeführt."
+            )
         elif profile_capability is OfficialValidationCapability.UNKNOWN:
             summary = "Für das Profil konnte kein unterstütztes offizielles KoSIT-Regelwerk sicher bestimmt werden."
         else:
@@ -235,6 +239,7 @@ def analyze_bytes(
             "summary": summary,
             "findings": [],
             "raw_report": None,
+            "scenario": None,
         }
 
     duration_ms = Decimal(str(round((time.perf_counter() - started) * 1000, 2)))
