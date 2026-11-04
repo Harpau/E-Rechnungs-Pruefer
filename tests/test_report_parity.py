@@ -472,3 +472,104 @@ def test_extended_rules_version_and_deviation_notice_are_presented_identically(m
     pdf_text = " ".join(" ".join(page.extract_text() for page in PdfReader(BytesIO(payload)).pages).split())
     assert "v1.4.0.03" in pdf_text and "a63e6b5" in pdf_text
     assert "BR-FXEXT-CO-10" in pdf_text and "KOSIT-RULE-NOTICE" in pdf_text
+
+
+def _xrechnung_acceptance(ruleset):
+    return {
+        "configured": True,
+        "problems": [],
+        "jar": None,
+        "jar_main_class": "x",
+        "scenarios": [],
+        "repositories": [],
+        "ruleset": ruleset.id,
+        "rules_version": ruleset.rules_version,
+        "executed": True,
+        "accepted": True,
+        "exit_code": 0,
+        "summary": (
+            f"KoSIT-Prüfung erfolgreich: Rechnung wurde nach {ruleset.label} akzeptiert. Bewertung im Bericht: accept. "
+            f"Prüfszenario: {ruleset.scenario_name}. Regelstand: {ruleset.rules_version} ({ruleset.publisher}), "
+            "KoSIT Validator als Prüfmaschine."
+        ),
+        "findings": [
+            {
+                "id": "BR-DE-TMP-32",
+                "severity": "info",
+                "title": "KoSIT-Prüfmeldung",
+                "message": "[BR-DE-TMP-32] Synthetischer Hinweis zum Liefer-/Leistungsdatum.",
+                "location": None,
+                "actual": None,
+                "expected": None,
+                "source": "KoSIT Validator",
+                "profile": ruleset.profile_id,
+                "version": ruleset.rules_version,
+            }
+        ],
+        "raw_report": "<rep:report/>",
+        "technical_output": None,
+        "report_source": "file",
+        "scenario": ruleset.scenario_name,
+    }
+
+
+def test_xrechnung_scenario_and_rules_version_are_presented_identically(monkeypatch):
+    import re
+    from io import BytesIO
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+    from pypdf import PdfReader
+
+    from app.main import app
+    from app.official_rulesets import XRECHNUNG_3_0_UBL_CREDITNOTE
+    from app.pdf_report import render_pdf_report
+    from app.validators.kosit import KositValidator
+
+    observed: dict[str, object] = {}
+
+    def fake_validate(_self, _xml, _filename, ruleset=None):
+        observed["ruleset"] = ruleset
+        return _xrechnung_acceptance(ruleset)
+
+    monkeypatch.setattr(KositValidator, "validate", fake_validate)
+    fixture = Path(__file__).resolve().parent / "fixtures" / "xrechnung-3.0-ubl-creditnote-valid.xml"
+    analysis = analyze_bytes(fixture.read_bytes(), fixture.name, "application/xml", run_official_validation=True)
+
+    assert observed["ruleset"] is XRECHNUNG_3_0_UBL_CREDITNOTE
+    official = analysis["assessment"]["official"]
+    assert official["status"] == "accepted"
+    assert official["scenario"] == "EN16931 XRechnung (UBL CreditNote)"
+    assert official["report_source"] == "file"
+    assert "Prüfszenario: EN16931 XRechnung (UBL CreditNote)." in official["summary"]
+    assert XRECHNUNG_3_0_UBL_CREDITNOTE.rules_version in official["summary"]
+    assert [item["rule"]["id"] for item in official["findings"]] == ["BR-DE-TMP-32"]
+    assert official["findings"][0]["rule"]["version"] == XRECHNUNG_3_0_UBL_CREDITNOTE.rules_version
+    assert analysis["capabilities"]["official_validation"] == "bundled"
+    assert analysis["assessment"]["processing"]["status"] == "complete"
+
+    presentation = build_report_presentation(analysis)
+    axes = {axis["key"]: axis for axis in presentation["axes"]}
+    assert axes["official"]["status"] == "accepted"
+    assert "EN16931 XRechnung (UBL CreditNote)" in axes["official"]["summary"]
+    facts = {fact["key"]: fact["value"] for fact in presentation["header_facts"]}
+    assert facts["official_validation"] == "Enthalten"
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/report",
+        files={"file": (fixture.name, fixture.read_bytes(), "application/xml")},
+        data={"official": "true"},
+    )
+    assert response.status_code == 200
+    html_text = " ".join(
+        re.sub(r"<[^>]+>", " ", re.sub(r"<style\b[^>]*>.*?</style>", "", response.text, flags=re.DOTALL)).split()
+    )
+    assert "Prüfszenario: EN16931 XRechnung (UBL CreditNote)." in html_text
+    assert XRECHNUNG_3_0_UBL_CREDITNOTE.rules_version in html_text
+
+    payload = render_pdf_report(analysis, generated_at="04.11.2026 12:00:00 CET", version="test")
+    pdf_text = " ".join(" ".join(page.extract_text() for page in PdfReader(BytesIO(payload)).pages).split())
+    assert "EN16931 XRechnung (UBL CreditNote)" in pdf_text
+    assert "Prüfszenario" in pdf_text
+    assert "Validator-Konfiguration 2026-08-31" in pdf_text
