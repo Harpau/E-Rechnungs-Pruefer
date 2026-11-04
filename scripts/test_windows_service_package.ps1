@@ -1228,7 +1228,8 @@ $Accepted = (& curl.exe --silent --show-error --fail --header "Authorization: Be
     "http://127.0.0.1:$Port/api/analyze") | ConvertFrom-Json
 if ($Accepted.schema_version -ne 2 -or
     -not $Accepted.assessment.official.executed -or
-    $Accepted.assessment.official.status -ne "accepted") {
+    $Accepted.assessment.official.status -ne "accepted" -or
+    $Accepted.assessment.official.scenario -ne "EN16931 (CII)") {
     throw "Realer KoSIT-Annahmefall fehlgeschlagen."
 }
 $Rejected = (& curl.exe --silent --show-error --fail --header "Authorization: Bearer $Token" `
@@ -1260,6 +1261,19 @@ if ($ExtendedRejected.schema_version -ne 2 -or
     $ExtendedRejected.assessment.official.status -ne "rejected" -or
     -not (@($ExtendedRejected.assessment.official.findings | ForEach-Object { $_.rule.id }) -contains "BR-FXEXT-CO-15")) {
     throw "Factur-X-EXTENDED-Ablehnungsfall im Dienstpaket fehlgeschlagen: $($ExtendedRejected.assessment.official.summary)"
+}
+
+# XRechnung 3.0: bound validation against the pinned validator configuration of the installed service package.
+$XRechnungExample = Join-Path $ProjectRoot "tests\fixtures\xrechnung-3.0-ubl-invoice-valid.xml"
+$XRechnungAccepted = (& curl.exe --silent --show-error --fail --header "Authorization: Bearer $Token" `
+    --form "file=@$XRechnungExample;type=application/xml" --form "official=true" `
+    "http://127.0.0.1:$Port/api/analyze") | ConvertFrom-Json
+if ($XRechnungAccepted.schema_version -ne 2 -or
+    -not $XRechnungAccepted.assessment.official.executed -or
+    $XRechnungAccepted.assessment.official.status -ne "accepted" -or
+    $XRechnungAccepted.assessment.official.scenario -ne "EN16931 XRechnung (UBL Invoice)" -or
+    $XRechnungAccepted.capabilities.official_validation -ne "bundled") {
+    throw "XRechnung-3.0-Annahmefall im Dienstpaket fehlgeschlagen: $($XRechnungAccepted.assessment.official.summary)"
 }
 
 $TokenBeforeRestart = $Token

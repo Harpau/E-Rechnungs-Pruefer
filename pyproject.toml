@@ -81,7 +81,7 @@ app = [
 addopts = "-q --strict-config --strict-markers"
 testpaths = ["tests"]
 markers = [
-  "kosit_integration: Integrationstests mit echtem KoSIT-Validator und gebundenen Factur-X-EXTENDED-Artefakten; laufen nur mit EINVOICE_KOSIT_INTEGRATION=1 und schlagen dann bei fehlenden Komponenten fehl",
+  "kosit_integration: Integrationstests mit echtem KoSIT-Validator und den gebundenen XRechnung-, EN-16931- und Factur-X-EXTENDED-Artefakten; laufen nur mit EINVOICE_KOSIT_INTEGRATION=1 und schlagen dann bei fehlenden Komponenten fehl",
 ]
 filterwarnings = [
   'error:^Using `httpx` with `starlette\.testclient` is deprecated; install `httpx2` instead\.$:starlette.exceptions.StarletteDeprecationWarning',
