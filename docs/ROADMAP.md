@@ -22,8 +22,6 @@ Diese Liste ist unverbindlich und priorisiert nachvollziehbare, getestete Erweit
   bisher nur ein Bericht ohne passendes Szenario abgefangen (Folgeaufgabe zur Entscheidung E5 der Extended-Planung)
 - Übernahme von Factur-X 1.10 / ZUGFeRD 2.6, sobald veröffentlicht: neuer Dateisatz in beiden Sperrdateien und in
   `app/official_rulesets.py`, Aktualisierung der Regeln mit bekannter Abweichung (`KOSIT-RULE-NOTICE`) und der Dokumentation
-- sichtbarer Hinweis in der Oberfläche, dass die Anwendung eine Anwendung der Norm EN 16931 ist (bisher nur in
-  README und `docs/VALIDATION.md`)
 - weitere anonymisierte Steuer- und Gutschriftregressionen
 - bessere UI-Filter für KoSIT- und interne Befunde
 
