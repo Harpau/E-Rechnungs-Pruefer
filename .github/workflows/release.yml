@@ -123,11 +123,13 @@ jobs:
           key: windows-components-${{ hashFiles('packaging/windows/components.lock.json') }}
       - name: Prepare locked Java and KoSIT components
         run: python scripts/prepare_windows_components.py
-      - name: Extended integration tests with the real KoSIT validator
+      - name: Integration tests with the real KoSIT validator (XRechnung, EN 16931, Factur-X EXTENDED)
         env:
           EINVOICE_KOSIT_INTEGRATION: "1"
           KOSIT_TIMEOUT_SECONDS: "180"
-        run: python -m pytest tests/test_kosit_facturx_extended_integration.py -m kosit_integration
+        run: >-
+          python -m pytest tests/test_kosit_xrechnung_integration.py
+          tests/test_kosit_facturx_extended_integration.py -m kosit_integration
       - name: Authenticate to Azure with OIDC
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         with:

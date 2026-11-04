@@ -200,6 +200,15 @@ Zulässige Statuswerte:
 `official=rejected` bedeutet keine fehlgeschlagene Verarbeitung. `internal=errors` ist keine offizielle
 Ablehnung. `processing=incomplete` darf nicht als abgeschlossenes Rechnungsergebnis behandelt werden.
 
+Additive Ergänzungen von `assessment.official` innerhalb von Schema 2:
+
+- `scenario` (Zeichenkette oder `null`): der Name des KoSIT-Szenarios, an das der Bericht gebunden wurde, zum
+  Beispiel `EN16931 XRechnung (UBL Invoice)`, `EN16931 (CII)` oder `Factur-X 1.09.2 EXTENDED (CII)`. Das Feld ist nur
+  bei `accepted` und `rejected` gesetzt; Clients dürfen es nicht voraussetzen.
+- `report_source` liefert nur noch `file` oder `null`. Die Werte `stdout`, `stderr` und `stderr-format-error` bleiben
+  im Schema deklariert, werden aber nicht mehr erzeugt, weil Berichte aus der Konsolenausgabe nicht an Szenario und
+  Dokument gebunden werden können.
+
 ## Strukturierte Befunde
 
 Ein Befund besitzt in Schema 2 unter anderem:

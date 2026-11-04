@@ -4,6 +4,52 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Offizielle Prüfung von XRechnung und EN 16931 mit gebundenem KoSIT-Bericht
+
+- Das Regelsatzregister `app/official_rulesets.py` enthält jetzt die elf Szenarien der KoSIT-Validator-Konfiguration
+  XRechnung 2026-08-31 (XRechnung 3.0.2, XRechnung Extension und XRechnung CVD jeweils für CII, UBL Invoice und UBL
+  CreditNote, soweit die Konfiguration das Szenario kennt, sowie EN 16931 für alle drei Wurzelelemente). Die Auswahl
+  liest neben `GuidelineSpecifiedDocumentContextParameter/ID` (CII) nun auch `cbc:CustomizationID` (UBL Invoice und
+  CreditNote) exakt und unnormalisiert aus dem Originalbaum; Leerraum, Kommentare, abweichende Schreibweise, mehrere
+  Kennungen oder eine Kennung am falschen Wurzelelement erhalten wie bei Factur-X EXTENDED die internen Hinweise
+  `PROFILE-002` beziehungsweise `PROFILE-003` und keine offizielle Prüfung.
+- Verhaltensänderung: Eine Profilkennung ohne gebundenes Szenario (zum Beispiel `xrechnung_2.3`, eine eigene CIUS oder
+  eine UBL-Gutschrift mit XRechnung-Extension-Kennung) ergibt `assessment.official.status = unsupported` ohne
+  KoSIT-Lauf; die Verarbeitung bleibt `complete`. Bisher wurde KoSIT ungebunden gestartet und das Ergebnis als
+  `indeterminate` mit unvollständiger Verarbeitung ausgewiesen. Die Profilfamilien XRechnung und EN 16931 allein
+  schalten keine gebündelte Prüfung mehr frei; nur die exakte Szenarioauswahl tut das.
+- Jeder KoSIT-Lauf ist jetzt gebunden. Der VARL-Bericht aus `rechnung-report.xml` wird für XRechnung und EN 16931
+  genauso wie für Factur-X EXTENDED an VARL-Namespace, Prüf-Engine, den erwarteten Szenarionamen, den SHA-256-Hash
+  der übergebenen XML-Bytes und genau eine ausdrückliche Annahme oder Ablehnung gebunden. Fehlendes oder abweichendes
+  Szenario (`rep:noScenarioMatched`, falscher Name) ergibt `indeterminate` mit `KOSIT-SCENARIO`, jeder andere
+  Bindungsfehler `indeterminate` mit `KOSIT-REPORT`; ein widersprüchlicher Rückgabecode bleibt die Warnung
+  `KOSIT-RESULT-MISMATCH`. Die Rückfälle auf das Attribut `valid`, textuelle Statuswerte, den Rückgabecode und auf
+  Berichte aus `stdout`, `stderr` oder dem `[Format error!]`-Wrapper sind entfernt. `report_source` liefert nur noch
+  `file` oder `null`; die Werte `stdout`, `stderr` und `stderr-format-error` bleiben im Schema deklariert, werden aber
+  nicht mehr erzeugt.
+- Vor jedem XRechnung- oder EN-16931-Lauf müssen die konfigurierte Szenariodatei und die 25 von den Szenarien
+  geladenen XSD-, Schematron- und Report-Stylesheets mit Größe und SHA-256 der gepinnten Konfiguration 2026-08-31
+  vorhanden sein; zulässig sind genau eine Szenariodatei und genau ein Ressourcenverzeichnis. Jede Abweichung ergibt
+  `unavailable` mit Klartextbefund `KOSIT-CONFIG`, ohne dass Java gestartet wird. Die Sperrdateien bleiben unverändert
+  (`schema_version` 2); die Hashes stehen im Register, die Integrationssuite prüft sie gegen die frisch installierte
+  Konfiguration.
+- Die Zusammenfassung einer offiziellen Prüfung nennt Prüfszenario, Regelstand und Herausgeber, zum Beispiel
+  `Prüfszenario: EN16931 XRechnung (UBL Invoice). Regelstand: XRechnung 3.0.2 / Validator-Konfiguration 2026-08-31 /
+  EN 16931 1.3.16 / XRechnung-Schematron 2.6.0 (KoSIT)`. `assessment.official` erhält das optionale Feld `scenario`
+  mit dem gebundenen Szenarionamen; der PDF-Bericht zeigt es als Zeile „Prüfszenario“. Analyseschema 2 bleibt stabil
+  (`docs/API_MIGRATION_V2.md`).
+- `/api/health` meldet zusätzlich `kosit.xrechnung_configured`: ob die gebundene XRechnung-Konfiguration vollständig
+  und unverändert eingerichtet ist. `kosit.configured` behält seine bisherige Bedeutung (JAR, Java, Szenariodatei und
+  Ressourcenverzeichnis vorhanden).
+- Neue synthetische Fixtures `tests/fixtures/xrechnung-3.0-*.xml` (CII-Rechnung, UBL-Rechnung, UBL-Gutschrift, eine
+  Ablehnung mit `BR-DE-6`), die Regressionssuite `tests/test_kosit_xrechnung.py` mit synthetischen Berichten für alle
+  elf Szenarien und sämtliche Bindungsfehler sowie die Integrationssuite `tests/test_kosit_xrechnung_integration.py`
+  (Marker `kosit_integration`) mit dem echten Validator: Register gegen die installierte `scenarios.xml`, Annahme für
+  XRechnung CII, UBL Invoice und UBL CreditNote sowie EN 16931, Extension- und CVD-Bindung, Schematron-Ablehnung mit
+  Regelkennung aus dem Attribut `code`, Hash im Bericht gleich Original, falsches und fehlendes Szenario, manipulierte
+  Konfiguration. CI und Release-Workflow führen beide Integrationssuiten aus; die Windows-Pakettests prüfen zusätzlich
+  einen gebundenen XRechnung-Annahmefall.
+
 ### Darstellung
 
 - Startseite, HTML-Bericht und PDF-Bericht zeigen in der Fußzeile den sichtbaren Hinweis „Diese Anwendung ist eine

@@ -16,10 +16,17 @@ Diese Liste ist unverbindlich und priorisiert nachvollziehbare, getestete Erweit
 - Sperrdateien mit Dateisatz-Komponenten, Installer und Windows-Vorbereitung mit Sicherung und Rücknahme
 - Integrationssuite mit echtem KoSIT-Validator in CI und in den installierten Windows-Pakettests
 
+## Nach 2.1.0 abgeschlossen (noch unveröffentlicht)
+
+- vollständige Szenario- und Hashbindung des KoSIT-Berichts auch für XRechnung 3.0.2 und EN 16931 (Folgeaufgabe zur
+  Entscheidung E5 der Extended-Planung): die elf Szenarien der Validator-Konfiguration 2026-08-31 stehen im
+  Regelsatzregister, die Auswahl liest CII-Guideline-ID und UBL-`CustomizationID` exakt, Szenariodatei und die 25
+  daraus geladenen Artefakte sind hashgebunden, Konsolen-Rückfälle entfallen, und Kennungen ohne Szenario lösen keinen
+  ungebundenen Lauf mehr aus; Integrationssuite `tests/test_kosit_xrechnung_integration.py` in CI und in den
+  Windows-Pakettests
+
 ## Kurzfristig
 
-- vollständige Szenario- und Hashbindung des KoSIT-Berichts auch für den XRechnung- und EN-16931-Pfad; dort wird
-  bisher nur ein Bericht ohne passendes Szenario abgefangen (Folgeaufgabe zur Entscheidung E5 der Extended-Planung)
 - Übernahme von Factur-X 1.10 / ZUGFeRD 2.6, sobald veröffentlicht: neuer Dateisatz in beiden Sperrdateien und in
   `app/official_rulesets.py`, Aktualisierung der Regeln mit bekannter Abweichung (`KOSIT-RULE-NOTICE`) und der Dokumentation
 - weitere anonymisierte Steuer- und Gutschriftregressionen

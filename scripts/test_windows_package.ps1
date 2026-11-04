@@ -528,6 +528,9 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     if (-not $health.kosit.configured) {
         throw "Das Windows-Paket enthält keine betriebsbereite KoSIT-Konfiguration."
     }
+    if (-not $health.kosit.xrechnung_configured) {
+        throw "Das Windows-Paket enthält keine gebundene XRechnung-Validator-Konfiguration."
+    }
     if (-not $health.kosit.facturx_extended_configured) {
         throw "Das Windows-Paket enthält kein vollständiges Factur-X-EXTENDED-Regelpaket."
     }
@@ -635,8 +638,29 @@ Verwenden Sie eine saubere, entbehrliche Windows-VM oder Testidentität. Bestehe
     $Official = $OfficialJson | ConvertFrom-Json
     if ($Official.schema_version -ne 2 -or
         -not $Official.assessment.official.executed -or
-        $Official.assessment.official.status -ne "accepted") {
+        $Official.assessment.official.status -ne "accepted" -or
+        $Official.assessment.official.scenario -ne "EN16931 (CII)") {
         throw "KoSIT wurde im installierten Paket nicht erfolgreich ausgeführt: $($Official.assessment.official.summary)"
+    }
+
+    # XRechnung 3.0: bound validation against the pinned validator configuration of the installed package.
+    $XRechnungExample = Join-Path $ProjectRoot "tests\fixtures\xrechnung-3.0-ubl-invoice-valid.xml"
+    $XRechnungJson = & curl.exe --silent --show-error --fail `
+        --cookie $CookieFile `
+        --header "X-Einvoice-UI-Revision: $UiRevision" `
+        --form "file=@$XRechnungExample;type=application/xml" `
+        --form "official=true" `
+        "http://127.0.0.1:$($runtime.port)/api/analyze"
+    if ($LASTEXITCODE -ne 0) {
+        throw "XRechnung-Prüfung über das installierte Paket ist fehlgeschlagen."
+    }
+    $XRechnung = $XRechnungJson | ConvertFrom-Json
+    if ($XRechnung.schema_version -ne 2 -or
+        -not $XRechnung.assessment.official.executed -or
+        $XRechnung.assessment.official.status -ne "accepted" -or
+        $XRechnung.assessment.official.scenario -ne "EN16931 XRechnung (UBL Invoice)" -or
+        $XRechnung.capabilities.official_validation -ne "bundled") {
+        throw "XRechnung 3.0 wurde im installierten Paket nicht gebunden geprüft: $($XRechnung.assessment.official.summary)"
     }
 
     # Factur-X EXTENDED: bound validation with the locked artefacts of the installed package.

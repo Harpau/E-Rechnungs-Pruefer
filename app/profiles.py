@@ -97,13 +97,14 @@ class ProfileResolution:
         )
 
 
-_BUNDLED_RULES = "CEN-EN16931-validation-1.3.16 / XRechnung-3.0.2"
-
-_SUPPORTED_BUNDLED = ProfileCapabilities(
+# Official validation is unlocked only through an exactly selected rule set of
+# ``app.official_rulesets`` (see ``ProfileResolution.with_official_rules``); a
+# recognised family alone never promises a bundled check.
+_SUPPORTED_EN16931 = ProfileCapabilities(
     internal_semantics=InternalSemanticCapability.SUPPORTED,
-    official_validation=OfficialValidationCapability.BUNDLED,
+    official_validation=OfficialValidationCapability.NOT_BUNDLED,
     document_type_policy="cen-en16931-1.3.16",
-    official_rules_version=_BUNDLED_RULES,
+    official_rules_version=None,
 )
 _SUPPORTED_NOT_BUNDLED = ProfileCapabilities(
     internal_semantics=InternalSemanticCapability.SUPPORTED,
@@ -125,16 +126,16 @@ _PROFILES: dict[ProfileFamily, ProfileInfo] = {
         issuance_mode=IssuanceMode.UNDETERMINED,
         capabilities=ProfileCapabilities(
             internal_semantics=InternalSemanticCapability.SUPPORTED,
-            official_validation=OfficialValidationCapability.BUNDLED,
+            official_validation=OfficialValidationCapability.NOT_BUNDLED,
             document_type_policy="xrechnung-3.0.2",
-            official_rules_version=_BUNDLED_RULES,
+            official_rules_version=None,
         ),
     ),
     ProfileFamily.EN16931: ProfileInfo(
         family=ProfileFamily.EN16931,
         label="EN 16931",
         issuance_mode=IssuanceMode.UNDETERMINED,
-        capabilities=_SUPPORTED_BUNDLED,
+        capabilities=_SUPPORTED_EN16931,
     ),
     ProfileFamily.PEPPOL_BILLING: ProfileInfo(
         family=ProfileFamily.PEPPOL_BILLING,

@@ -829,6 +829,7 @@ def _official_assessment(
         status = OfficialAssessmentStatus.INDETERMINATE
 
     report_source = official.get("report_source")
+    scenario = official.get("scenario")
     return (
         OfficialAssessment(
             status=status,
@@ -842,6 +843,7 @@ def _official_assessment(
                 if report_source in {item.value for item in OfficialReportSource}
                 else None
             ),
+            scenario=str(scenario)[:500] if scenario else None,
             raw_report=official.get("raw_report"),
             technical_output=official.get("technical_output"),
             findings=official_findings,

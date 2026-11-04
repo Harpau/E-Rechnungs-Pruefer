@@ -80,9 +80,11 @@ die CII-Liste enthält unverändert alle 62 Codes.
 
 Die Profilauflösung erkennt XRechnung, EN 16931, Peppol Billing, Peppol Self-Billing, Factur-X und ZUGFeRD.
 Unbekannte und fehlende Profile erhalten nur partielle interne Fähigkeiten. Die gebündelte offizielle Prüfung
-ist auf die erkannten EN-16931-/XRechnung-Fälle sowie auf das exakt erkannte Profil Factur-X EXTENDED begrenzt
-(Abschnitt „Factur-X EXTENDED“); ein erkanntes, aber nicht gebündeltes Profil führt bei angeforderter
-offizieller Prüfung zu `official.status = "unsupported"` und startet KoSIT nicht.
+wird ausschließlich durch die exakte Auswahl eines Regelsatzes aus `app/official_rulesets.py` freigeschaltet
+(Abschnitte „Gebundene KoSIT-Regelsätze“ und „Factur-X EXTENDED“); die Profilfamilie allein genügt nicht. Ein
+erkanntes Profil ohne gebundenes Szenario, etwa `xrechnung_2.3`, eine eigene CIUS oder eine UBL-Gutschrift mit
+XRechnung-Extension-Kennung, führt bei angeforderter offizieller Prüfung zu `official.status = "unsupported"` und
+startet KoSIT nicht.
 
 `roles` trennt:
 
@@ -191,29 +193,122 @@ Zähler und Befunde gehören jeweils nur zu ihrer Achse. Es existiert kein über
 
 ## KoSIT-Auswertung und Versionen
 
-Die Integration verwendet ein temporäres Ausgabeverzeichnis und liest primär `*-report.xml`. Der
-Konsolenparameter `--print` wird nicht verwendet. Als Rückfall kann ein vollständiger Bericht aus `stdout` oder
-`stderr` extrahiert werden, einschließlich des bekannten `[Format error!]`-Wrappers.
+Jeder KoSIT-Lauf ist an genau einen Regelsatz gebunden. Die Anwendung übergibt die unveränderten Original-XML-Bytes
+unter dem festen Namen `rechnung.xml`, verwendet ein temporäres Ausgabeverzeichnis und liest ausschließlich die von
+KoSIT geschriebene Berichtsdatei `rechnung-report.xml`. Der Konsolenparameter `--print` wird nicht verwendet;
+Berichte aus `stdout`, `stderr` oder dem `[Format error!]`-Wrapper werden nicht mehr ausgewertet, weil sie sich
+nicht an Szenario und Dokument binden lassen. Ohne gewählten Regelsatz wird kein Prozess gestartet.
+
+Der Bericht wird gebunden an:
+
+- Wurzel `rep:report` im Namespace `http://www.xoev.de/de/validator/varl/1` mit `rep:engine/rep:name`;
+- `rep:scenarioMatched/s:scenario/s:name` gleich dem im Regelsatz hinterlegten Szenarionamen;
+- `rep:documentIdentification/rep:documentHash` mit Algorithmus `SHA-256` und gültigem Base64, dessen Wert dem
+  SHA-256 der übergebenen Bytes entspricht;
+- genau ein `rep:assessment` mit genau einem Kind `rep:accept` oder `rep:reject`.
 
 Entscheidungsreihenfolge:
 
-1. `<rep:noScenarioMatched>` im Bericht → keine Rechnungsentscheidung, `indeterminate` mit dem
-   Verarbeitungsbefund `KOSIT-SCENARIO` (KoSIT lehnt ein Dokument ohne passendes Szenario ab, das sagt nichts
-   über die Rechnung aus);
-2. `<rep:assessment><rep:accept/></rep:assessment>` → `accepted`;
-3. `<rep:assessment><rep:reject/></rep:assessment>` → `rejected`;
-4. nur bei älteren oder angepassten Berichten ohne Assessment: Prozessrückgabecode als Rückfall;
-5. kein valider Bericht → keine offizielle Rechnungsentscheidung.
+1. Vorprüfung schlägt fehl (Java, JAR, Szenariodatei, Ressourcenverzeichnis, gebundene Artefakte) → `unavailable`
+   mit dem Verarbeitungsbefund `KOSIT-CONFIG`, KoSIT wird nicht gestartet;
+2. Start-, Laufzeit- oder Zeitüberschreitungsfehler → `indeterminate` mit `KOSIT-START`, `KOSIT-EXEC` oder
+   `KOSIT-TIMEOUT`;
+3. `<rep:noScenarioMatched>` im Bericht oder ein anderer Szenarioname als erwartet → keine Rechnungsentscheidung,
+   `indeterminate` mit `KOSIT-SCENARIO` (KoSIT lehnt ein Dokument ohne passendes Szenario ab, das sagt nichts
+   über die Rechnung aus; der Befund nennt gefundenen und erwarteten Namen);
+4. fehlender Bericht, falscher Namespace, fehlende Engine, fehlender, abweichender oder ungültig kodierter
+   Dokument-Hash, unbekannter Hash-Algorithmus, keine, mehrere oder widersprüchliche Bewertungen →
+   `indeterminate` mit `KOSIT-REPORT`;
+5. `<rep:assessment><rep:accept/></rep:assessment>` → `accepted`;
+6. `<rep:assessment><rep:reject/></rep:assessment>` → `rejected`.
 
-Widersprechen sich Bericht und Rückgabecode, bleibt die XML-Entscheidung maßgeblich; die Abweichung wird als
-technischer Verarbeitungsbefund ausgewiesen. Java-, JAR-, Konfigurations- und Timeoutfehler sind niemals eine
-KoSIT-Ablehnung.
+Weder das Attribut `valid` noch textuelle Statusangaben noch der Prozess-Rückgabecode ersetzen die Entscheidung.
+Widersprechen sich Bericht und Rückgabecode, bleibt die gebundene XML-Entscheidung maßgeblich; die Abweichung wird
+als Warnung `KOSIT-RESULT-MISMATCH` ausgewiesen. Java-, JAR-, Konfigurations- und Timeoutfehler sind niemals eine
+KoSIT-Ablehnung. Regelkennungen stammen aus dem Attribut `code` der `rep:message`-Elemente des angewendeten
+Szenarios; offizielle Befunde tragen Profilkennung und Regelstand in `rule.profile` und `rule.version`, die
+eingebettete XHTML-Darstellung des Berichts wird nicht ausgewertet.
+
+Die Zusammenfassung nennt Regelsatz, Bewertung, Prüfszenario, Regelstand und Herausgeber, zum Beispiel
+`KoSIT-Prüfung erfolgreich: Rechnung wurde nach XRechnung 3.0.2 (UBL Invoice) akzeptiert. Bewertung im Bericht:
+accept. Prüfszenario: EN16931 XRechnung (UBL Invoice). Regelstand: XRechnung 3.0.2 / Validator-Konfiguration
+2026-08-31 / EN 16931 1.3.16 / XRechnung-Schematron 2.6.0 (KoSIT), KoSIT Validator als Prüfmaschine.`
+`assessment.official.scenario` enthält den gebundenen Szenarionamen; Browser, HTML- und PDF-Bericht zeigen denselben
+Zusammenfassungstext, der PDF-Bericht zusätzlich die Zeile „Prüfszenario“.
 
 `packaging/kosit/components.lock.json` pinnt KoSIT Validator 1.6.3, XRechnung 3.0.2,
 Validator-Konfiguration 2026-08-31, CEN EN 16931 1.3.16 und XRechnung-Schematron 2.6.0 samt Artefakt-Hashes
 sowie die Factur-X-1.09.2-EXTENDED-Artefakte aus `fnfempe/France_RFE` v1.4.0.03 (Commit `a63e6b5`) je Datei mit
-Größe und SHA-256. `/api/health` nennt diese Versionen unter `kosit.components` und meldet in
-`kosit.facturx_extended_configured`, ob das Extended-Regelpaket vollständig und unverändert eingerichtet ist.
+Größe und SHA-256. `/api/health` nennt diese Versionen unter `kosit.components`, meldet in
+`kosit.xrechnung_configured`, ob die gebundene XRechnung-Konfiguration vollständig und unverändert eingerichtet ist,
+und in `kosit.facturx_extended_configured` dasselbe für das Extended-Regelpaket; `kosit.configured` sagt nur, dass
+JAR, Java, Szenariodatei und Ressourcenverzeichnis vorhanden sind.
+
+## Gebundene KoSIT-Regelsätze für XRechnung und EN 16931
+
+`app/official_rulesets.py` bindet die elf Szenarien der KoSIT-Validator-Konfiguration XRechnung 2026-08-31 an
+Wurzelelement, Namespace und rohe Profilkennung. Die Kennung wird vor jeder Normalisierung direkt aus dem
+Originalbaum gelesen: bei CII genau ein Element `GuidelineSpecifiedDocumentContextParameter/ID`, bei UBL genau ein
+Element `cbc:CustomizationID` unterhalb der Wurzel, jeweils ohne Kindknoten und mit exakt übereinstimmendem Text.
+Das ist bewusst strenger als die KoSIT-XPath-Ausdrücke `text() = '…'` und `. = '…'`, die eine Kennung mit
+Kommentar teilweise noch akzeptieren.
+
+| Wurzelelement | Kennung | Szenario | Regelsatz |
+|---|---|---|---|
+| `Invoice` (UBL) | `urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0` | `EN16931 XRechnung (UBL Invoice)` | `xrechnung-3.0.2-ubl-invoice` |
+| `Invoice` (UBL) | `…xrechnung_3.0#conformant#urn:xeinkauf.de:kosit:extension:xrechnung_3.0` | `EN16931 XRechnung Extension (UBL Invoice)` | `xrechnung-3.0.2-extension-ubl-invoice` |
+| `Invoice` (UBL) | `…xrechnung_3.0#compliant#urn:xeinkauf.de:kosit:xrechnung:cvd_0.9` | `EN16931 XRechnung CVD (UBL Invoice)` | `xrechnung-3.0.2-cvd-ubl-invoice` |
+| `CreditNote` (UBL) | `urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0` | `EN16931 XRechnung (UBL CreditNote)` | `xrechnung-3.0.2-ubl-creditnote` |
+| `CreditNote` (UBL) | `…xrechnung_3.0#compliant#urn:xeinkauf.de:kosit:xrechnung:cvd_0.9` | `EN16931 XRechnung CVD (UBL CreditNote)` | `xrechnung-3.0.2-cvd-ubl-creditnote` |
+| `CrossIndustryInvoice` (CII) | `urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0` | `EN16931 XRechnung (CII)` | `xrechnung-3.0.2-cii` |
+| `CrossIndustryInvoice` (CII) | `…xrechnung_3.0#conformant#urn:xeinkauf.de:kosit:extension:xrechnung_3.0` | `EN16931 XRechnung Extension (CII)` | `xrechnung-3.0.2-extension-cii` |
+| `CrossIndustryInvoice` (CII) | `…xrechnung_3.0#compliant#urn:xeinkauf.de:kosit:xrechnung:cvd_0.9` | `EN16931 XRechnung CVD (CII)` | `xrechnung-3.0.2-cvd-cii` |
+| `Invoice` (UBL) | `urn:cen.eu:en16931:2017` | `EN16931 (UBL Invoice)` | `en16931-ubl-invoice` |
+| `CreditNote` (UBL) | `urn:cen.eu:en16931:2017` | `EN16931 (UBL CreditNote)` | `en16931-ubl-creditnote` |
+| `CrossIndustryInvoice` (CII) | `urn:cen.eu:en16931:2017` | `EN16931 (CII)` | `en16931-cii` |
+
+Die Konfiguration kennt kein Szenario „XRechnung Extension (UBL CreditNote)“; eine UBL-Gutschrift mit der
+Extension-Kennung bleibt `unsupported`. Der Regelstand lautet für XRechnung-Szenarien
+`XRechnung 3.0.2 / Validator-Konfiguration 2026-08-31 / EN 16931 1.3.16 / XRechnung-Schematron 2.6.0`, für reine
+EN-16931-Szenarien `EN 16931 1.3.16 / Validator-Konfiguration 2026-08-31`; beide werden aus
+`app/component_versions.py` gebildet, Herausgeber ist KoSIT.
+
+| Dokument | Auswahl | Status | interner Befund |
+|---|---|---|---|
+| exakte Kennung am passenden Wurzelelement | Regelsatz | gebundene Prüfung | – |
+| Kennung mit Leerraum oder Zeilenumbruch | keine | `unsupported` | `PROFILE-002` |
+| Kennung durch Kommentar geteilt oder mit nachgestelltem Kommentar | keine | `unsupported` | `PROFILE-002` |
+| mehrere `CustomizationID` oder `GuidelineSpecifiedDocumentContextParameter` | keine | `unsupported` | `PROFILE-003` |
+| abweichende Schreibweise, `xrechnung_2.3`, `#conformant#` statt `#compliant#`, eigene CIUS | keine | `unsupported` | – |
+| UBL-Gutschrift mit Extension-Kennung, UBL-Datei mit Factur-X-Kennung | keine | `unsupported` | – |
+
+Die Peppol-Geschäftsprozesskennung (BT-23) beeinflusst die Auswahl nicht. Die tolerante Profilerkennung in
+`app/profiles.py` bleibt für Anzeige und Dokumenttypsemantik bestehen, schaltet aber keine offizielle Prüfung frei.
+
+### Vorprüfung der Konfiguration
+
+Alle elf Regelsätze verwenden die gemeinsame Konfiguration aus `KOSIT_SCENARIOS` und `KOSIT_REPOSITORIES`
+(Standard `vendor/kosit/xrechnung/`). Vor jedem Lauf müssen Java, das Standalone-JAR, genau eine Szenariodatei und
+genau ein Ressourcenverzeichnis vorhanden sein. Die Szenariodatei und die 25 Dateien, die die Szenarien direkt oder
+über `schemaLocation` und `xsl:import` laden (vier CII-XSD, 15 UBL-XSD für Invoice und CreditNote, die
+Schematron-Stylesheets EN 16931 und XRechnung für CII und UBL sowie `xrechnung-report.xsl` und
+`default-report.xsl`), müssen Größe und SHA-256 der gepinnten Konfiguration 2026-08-31 entsprechen. Die Hashes
+stehen in `app/official_rulesets.py`; die Sperrdatei pinnt weiterhin das ZIP als Ganzes, und die Integrationssuite
+prüft beide Angaben gegen eine frische Installation. Jede Abweichung ergibt `unavailable` mit `KOSIT-CONFIG`, ohne
+dass Java gestartet wird.
+
+Eine andere Szenariodatei über `KOSIT_SCENARIOS` oder ein anderes Ressourcenverzeichnis über `KOSIT_REPOSITORIES`
+schlägt deshalb bereits in der Vorprüfung fehl; eine fremde Konfiguration, die die Vorprüfung besteht, aber andere
+Szenarionamen liefert, ergibt `indeterminate` mit `KOSIT-SCENARIO`. Das Extended-Regelpaket bleibt davon
+unberührt und umgekehrt.
+
+| Situation | `assessment.official.status` | Verarbeitung |
+|---|---|---|
+| Kennung ohne gebundenes Szenario | `unsupported` | `complete`, sofern keine andere Begrenzung vorliegt |
+| Vorprüfung schlägt fehl (Java, JAR, Szenariodatei, Regeldateien, Hashes, Anzahl der Pfade) | `unavailable` | `incomplete` |
+| Start-, Laufzeit-, Timeout- oder Bindungsfehler nach bestandener Vorprüfung | `indeterminate` | `incomplete` |
+| gebundener Bericht nimmt an | `accepted` | `complete`, sofern keine andere Begrenzung vorliegt |
+| gebundener Bericht lehnt ab | `rejected` | `complete`, sofern keine andere Begrenzung vorliegt |
 
 ## Factur-X EXTENDED
 
@@ -225,9 +320,9 @@ Artefakte und trifft keine Aussage im Namen dieser Herausgeber.
 
 `app/official_rulesets.py` bindet genau die Kombination aus Wurzelelement `CrossIndustryInvoice`, CII-Namespace
 und der rohen Kennung `urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended` an den Regelsatz
-`facturx-extended-1.09.2`. Die Kennung wird vor jeder Normalisierung direkt aus dem Originalbaum gelesen: genau ein
-Element `GuidelineSpecifiedDocumentContextParameter/ID` ohne Kindknoten, dessen Text exakt übereinstimmt. Das ist
-bewusst strenger als das KoSIT-XPath `text() = '…'`, das eine Kennung mit nachgestelltem Kommentar noch akzeptiert.
+`facturx-extended-1.09.2`, nach denselben Regeln wie die XRechnung- und EN-16931-Regelsätze (Abschnitt
+„Gebundene KoSIT-Regelsätze“): genau ein Element `GuidelineSpecifiedDocumentContextParameter/ID` ohne Kindknoten,
+dessen Text exakt übereinstimmt.
 
 | Dokument | Auswahl | Status | interner Befund |
 |---|---|---|---|
@@ -259,20 +354,8 @@ Jede Abweichung ergibt `unavailable` mit dem Befund `KOSIT-CONFIG`. Der XRechnun
 fehlendes Extended-Paket beeinträchtigt EN-16931- und XRechnung-Prüfungen nicht.
 
 Der Lauf verwendet die eigenen Pfade `KOSIT_FACTURX_EXTENDED_SCENARIOS` und `KOSIT_FACTURX_EXTENDED_REPOSITORIES`
-(Standard `vendor/kosit/facturx-extended/`), übergibt die unveränderten Original-XML-Bytes unter dem festen Namen
-`rechnung.xml` und liest ausschließlich die Berichtsdatei `rechnung-report.xml`. Der Bericht wird gebunden an:
-
-- Wurzel `rep:report` im Namespace `http://www.xoev.de/de/validator/varl/1` mit `rep:engine/rep:name`;
-- `rep:scenarioMatched/s:scenario/s:name` gleich `Factur-X 1.09.2 EXTENDED (CII)`;
-- `rep:documentIdentification/rep:documentHash` mit Algorithmus `SHA-256` und gültigem Base64, dessen Wert dem
-  SHA-256 der übergebenen Bytes entspricht;
-- genau ein `rep:assessment` mit genau einem Kind `rep:accept` oder `rep:reject`.
-
-Fehlendes Szenario oder falscher Szenarioname ergeben `indeterminate` mit `KOSIT-SCENARIO`; alle anderen
-Bindungsfehler `indeterminate` mit `KOSIT-REPORT`. Weder das Attribut `valid` noch textuelle Statusangaben noch
-der Prozess-Rückgabecode ersetzen die Entscheidung; ein abweichender Rückgabecode bleibt die Warnung
-`KOSIT-RESULT-MISMATCH`. Regelkennungen stammen aus dem Attribut `code` der `rep:message`-Elemente; offizielle
-Befunde tragen Profilkennung und Regelstand in `rule.profile` und `rule.version`, Warnregeln der Artefakte wie
+(Standard `vendor/kosit/facturx-extended/`) und bindet den Bericht wie in „KoSIT-Auswertung und Versionen“
+beschrieben, mit dem erwarteten Szenarionamen `Factur-X 1.09.2 EXTENDED (CII)`. Warnregeln der Artefakte wie
 `PEPPOL-EN16931-R008` erscheinen als Warnungen.
 
 | Situation | `assessment.official.status` | Verarbeitung |

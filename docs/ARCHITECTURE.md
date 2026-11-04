@@ -125,8 +125,12 @@ der Code mit `Invoice` beziehungsweise `CreditNote` kompatibel ist. Die Version 
 `app/profiles.py` erkennt XRechnung, EN 16931, Peppol Billing, Peppol Self-Billing, Factur-X und ZUGFeRD und
 ordnet interne sowie offizielle Fähigkeiten zu. Unbekannte oder fehlende Profile bleiben als solche erhalten;
 sie erhalten keine erfundene Vollunterstützung. `app/official_rulesets.py` ergänzt ein Register exakter
-Regelsätze: Wurzelelement, Namespace und die rohe, unnormalisierte Profilkennung aus dem Originalbaum wählen
-derzeit den Regelsatz Factur-X 1.09.2 EXTENDED. Analyzer, KoSIT-Aufruf und Antwortaufbereitung verwenden dasselbe
+Regelsätze: Wurzelelement, Namespace und die rohe, unnormalisierte Profilkennung aus dem Originalbaum
+(CII `GuidelineSpecifiedDocumentContextParameter/ID`, UBL `cbc:CustomizationID`) wählen genau einen von zwölf
+Regelsätzen: die elf Szenarien der KoSIT-Validator-Konfiguration XRechnung 2026-08-31 (XRechnung 3.0.2 mit Extension
+und CVD sowie EN 16931, jeweils für CII, UBL Invoice und UBL CreditNote, soweit ein Szenario existiert) und Factur-X
+1.09.2 EXTENDED. Erst die exakte Auswahl schaltet die gebündelte offizielle Prüfung frei; eine Kennung ohne Szenario
+bleibt `unsupported` ohne KoSIT-Lauf. Analyzer, KoSIT-Aufruf und Antwortaufbereitung verwenden dasselbe
 Auswahlergebnis; ähnliche Kennungen erhalten interne Hinweise (`PROFILE-002`, `PROFILE-003`) und keine Prüfung.
 
 `app/document_semantics.py` trennt die Rollen des Dokumentaustauschs von der wirtschaftlichen
@@ -164,17 +168,25 @@ Ablehnung kein fehlgeschlagener Verarbeitungslauf. Ein gemeinsamer Status wird b
 
 ### KoSIT
 
-`app/validators/kosit.py` validiert die Konfiguration, startet Java in einem temporären Verzeichnis, liest die von KoSIT serialisierte VARL-Berichtdatei und übernimmt Fehlermeldungen. Eine valide `<rep:assessment>`-Entscheidung ist maßgeblich. Startfehler ohne auswertbaren Bericht sind kein Rechnungsurteil; ein Bericht mit `<rep:noScenarioMatched>` ist für alle Pfade `indeterminate` (`KOSIT-SCENARIO`).
-
-Für einen gewählten Regelsatz läuft KoSIT getrennt mit eigenen Szenario- und Ressourcenpfaden. Vorher werden alle
-gebundenen Artefakte mit Größe und SHA-256 geprüft (fail-closed, `unavailable`), danach wird der Bericht an
-VARL-Namespace, Engine, Szenarioname, SHA-256-Dokument-Hash und genau eine Entscheidung gebunden; jede Abweichung
-ist `indeterminate` (`KOSIT-SCENARIO`, `KOSIT-REPORT`). Befunde mit einer Regel bekannter Abweichung erhalten den
-Verarbeitungshinweis `KOSIT-RULE-NOTICE`. Einzelheiten stehen in `docs/VALIDATION.md`.
+`app/validators/kosit.py` validiert die Konfiguration, startet Java in einem temporären Verzeichnis und liest
+ausschließlich die von KoSIT serialisierte VARL-Berichtdatei `rechnung-report.xml`. Jeder Lauf ist an einen
+Regelsatz gebunden; ohne Regelsatz wird kein Prozess gestartet. Die elf XRechnung- und EN-16931-Regelsätze verwenden
+die gemeinsame Konfiguration (`KOSIT_SCENARIOS`, `KOSIT_REPOSITORIES`), Factur-X EXTENDED eigene Pfade. Vor dem Start
+werden die Szenariodatei und alle gebundenen Artefakte mit Größe und SHA-256 geprüft (fail-closed, `unavailable`,
+`KOSIT-CONFIG`); danach wird der Bericht an VARL-Namespace, Engine, den erwarteten Szenarionamen, den
+SHA-256-Dokument-Hash und genau eine ausdrückliche Entscheidung gebunden. Jede Abweichung, auch ein Bericht mit
+`<rep:noScenarioMatched>`, ist `indeterminate` (`KOSIT-SCENARIO`, `KOSIT-REPORT`); Konsolenausgaben, das Attribut
+`valid`, textuelle Statuswerte und der Rückgabecode entscheiden nie, ein abweichender Rückgabecode bleibt die Warnung
+`KOSIT-RESULT-MISMATCH`. Startfehler ohne Bericht sind kein Rechnungsurteil (`KOSIT-EXEC`). Befunde mit einer Regel
+bekannter Abweichung erhalten den Verarbeitungshinweis `KOSIT-RULE-NOTICE`. Einzelheiten stehen in
+`docs/VALIDATION.md`.
 
 Die für Installation und Windows-Paket zulässigen Artefakte stehen mit SHA-256 in
-`packaging/kosit/components.lock.json`. Der öffentliche Health-Endpunkt übernimmt nur die Versionsangaben aus
-`app/component_versions.py`, niemals lokale Installationspfade.
+`packaging/kosit/components.lock.json`. Die XRechnung-Konfiguration ist dort als Ganzes (ZIP) gepinnt; die daraus
+geladene Szenariodatei und die 25 von den Szenarien benötigten Dateien sind zusätzlich mit Größe und SHA-256 in
+`app/official_rulesets.py` gebunden, und die Integrationssuite prüft beide Angaben gegen eine frische Installation.
+Der öffentliche Health-Endpunkt übernimmt nur die Versionsangaben aus `app/component_versions.py`, niemals lokale
+Installationspfade.
 
 ### API und UI
 

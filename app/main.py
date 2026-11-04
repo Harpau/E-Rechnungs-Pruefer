@@ -27,7 +27,7 @@ from .desktop_security import (
     consume_api_token_environment,
     get_service_browser_sessions,
 )
-from .official_rulesets import FACTURX_EXTENDED
+from .official_rulesets import FACTURX_EXTENDED, XRECHNUNG_RULESETS
 from .pdf_report import render_pdf_report
 from .report_presentation import EN16931_STATEMENT, ReportPresentation, ReportScope, build_report_presentation
 from .settings import settings
@@ -331,6 +331,9 @@ async def index(request: Request):
 async def health() -> dict[str, Any]:
     validator = KositValidator(settings)
     kosit_state = validator.configuration_state()
+    # Every XRechnung and EN 16931 rule set binds the same scenario file and
+    # artefacts, so one of them describes the whole configuration.
+    xrechnung_state = validator.configuration_state(XRECHNUNG_RULESETS[0])
     extended_state = validator.configuration_state(FACTURX_EXTENDED)
     return {
         "status": "ok",
@@ -338,6 +341,7 @@ async def health() -> dict[str, Any]:
         "analysis_schema_version": ANALYSIS_SCHEMA_VERSION,
         "kosit": {
             "configured": bool(kosit_state["configured"]),
+            "xrechnung_configured": bool(xrechnung_state["configured"]),
             "facturx_extended_configured": bool(extended_state["configured"]),
             "components": KOSIT_COMPONENT_VERSIONS,
         },

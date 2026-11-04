@@ -489,6 +489,7 @@ def _prepare_analysis_for_pdf(
             "summary",
             "exit_code",
             "report_source",
+            "scenario",
             "counts",
         ),
         "processing": ("status", "summary", "counts"),
@@ -1570,6 +1571,7 @@ def _render_assessment(
                 ("Zusammenfassung", axis.get("summary")),
                 ("Prozess-Rückgabecode", axis.get("exit_code")),
                 ("Berichtsquelle", axis.get("report_source")),
+                ("Prüfszenario", axis.get("scenario")),
                 ("Meldungszahlen", _counts_text(axis.get("counts"))),
             ]
         else:
