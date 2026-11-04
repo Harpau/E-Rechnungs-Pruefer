@@ -15,6 +15,9 @@ OverallStatusKey = Literal["ok", "warning", "invalid"]
 
 _CONTRACT_PATH = Path(__file__).with_name("presentation_contract.json")
 _EMPTY_VALUE = "–"
+# Visible statement required for applications based on the EN 16931 publication;
+# shown identically on the start page, in the HTML report and in the PDF report.
+EN16931_STATEMENT = "Diese Anwendung ist eine Anwendung der Norm EN 16931 (DIN EN 16931-1, elektronische Rechnung)."
 
 
 class OverallStatusPresentation(TypedDict):
@@ -658,6 +661,7 @@ def build_report_presentation(
 
 
 __all__ = [
+    "EN16931_STATEMENT",
     "ReportPresentation",
     "ReportScope",
     "build_report_presentation",

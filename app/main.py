@@ -29,7 +29,7 @@ from .desktop_security import (
 )
 from .official_rulesets import FACTURX_EXTENDED
 from .pdf_report import render_pdf_report
-from .report_presentation import ReportPresentation, ReportScope, build_report_presentation
+from .report_presentation import EN16931_STATEMENT, ReportPresentation, ReportScope, build_report_presentation
 from .settings import settings
 from .source import extract_source
 from .ui_contract import UI_REVISION, UI_STATIC_PREFIX
@@ -320,6 +320,7 @@ async def index(request: Request):
             "max_upload_mb": settings.max_upload_bytes // (1024 * 1024),
             "kosit_configured": kosit_state["configured"],
             "kosit_problem": " ".join(kosit_state.get("problems") or []),
+            "en16931_statement": EN16931_STATEMENT,
         },
     )
     response.headers["Cache-Control"] = "no-store"
@@ -436,6 +437,7 @@ async def report(
                 "report_scope": scope,
                 "generated_at": datetime.now().astimezone().strftime("%d.%m.%Y %H:%M:%S %Z"),
                 "version": __version__,
+                "en16931_statement": EN16931_STATEMENT,
             },
             headers=response_headers,
         )

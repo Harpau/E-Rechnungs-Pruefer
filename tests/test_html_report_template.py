@@ -152,3 +152,28 @@ def test_html_report_wraps_long_tax_codes_but_not_rates_and_keeps_gap_together()
     assert "page-break-inside:avoid" in gap_rule
     assert "max-width:100%" in gap_rule
     assert "overflow-wrap:anywhere" in gap_rule
+
+
+def test_en16931_statement_is_visible_on_start_page_html_and_pdf(cii_path: Path) -> None:
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    from app.report_presentation import EN16931_STATEMENT
+
+    assert "EN 16931" in EN16931_STATEMENT
+
+    start_page = client.get("/")
+    assert start_page.status_code == 200
+    assert EN16931_STATEMENT in _visible_text(start_page.text)
+
+    assert EN16931_STATEMENT in _visible_text(_report(cii_path))
+
+    pdf = client.post(
+        "/api/report/pdf",
+        files={"file": (cii_path.name, cii_path.read_bytes(), "application/xml")},
+        data={"official": "false"},
+    )
+    assert pdf.status_code == 200
+    pdf_text = " ".join(" ".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf.content)).pages).split())
+    assert "Anwendung der Norm EN 16931" in pdf_text

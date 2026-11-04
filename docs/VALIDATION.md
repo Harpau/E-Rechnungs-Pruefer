@@ -217,8 +217,9 @@ Größe und SHA-256. `/api/health` nennt diese Versionen unter `kosit.components
 
 ## Factur-X EXTENDED
 
-Die Anwendung ist eine Anwendung der Norm EN 16931; die offizielle Prüfung von Factur-X EXTENDED verwendet die
-von FNFE-MPE und FeRD veröffentlichten technischen Artefakte und trifft keine Aussage im Namen dieser Herausgeber.
+Die Anwendung ist eine Anwendung der Norm EN 16931; Startseite, HTML- und PDF-Bericht zeigen diesen Hinweis in der
+Fußzeile. Die offizielle Prüfung von Factur-X EXTENDED verwendet die von FNFE-MPE und FeRD veröffentlichten technischen
+Artefakte und trifft keine Aussage im Namen dieser Herausgeber.
 
 ### Auswahl des Regelsatzes
 
