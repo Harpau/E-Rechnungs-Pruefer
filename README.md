@@ -26,8 +26,9 @@ Reine Sicht- oder Scan-PDFs ohne eingebettete strukturierte XML werden bewusst n
 - lesbare Darstellung von Kopf, Parteien, Positionen, Einheiten, Preisbasismengen, Steuern, Summen, Zahlung, Referenzen, Lieferung und Hinweisen
 - XML-Text- und Tabellenansichten sowie bytegetreuer Export der ursprünglichen XML-Bytes
 - interne Pflichtfeld-, Datums-, Format-, Rechen- und Plausibilitätsprüfungen
-- optionale KoSIT-Prüfung mit zuverlässiger Auswertung des VARL-Berichts, für EN 16931/XRechnung und für
-  Factur-X EXTENDED (Regelstand 1.09.2) mit einem an Szenario und Dokument gebundenen Bericht
+- optionale KoSIT-Prüfung für XRechnung 3.0.2 (einschließlich Extension und CVD), EN 16931 und Factur-X EXTENDED
+  (Regelstand 1.09.2), jeweils mit einem an Szenario und Dokument gebundenen VARL-Bericht und hashgebundenen
+  Regelartefakten
 - geschlossenes Analyseschema 2 mit getrennten Achsen für offizielle Konformität, interne Prüfung und
   technischen Verarbeitungsabschluss
 - versionierte Dokumenttypauflösung für 62 UNTDID-1001-Codes aus CEN EN 16931 1.3.16 sowie abgeleitete
@@ -222,7 +223,13 @@ Der Installer:
   einem Fehler zurück;
 - schreibt die lokale, von Git ausgeschlossene Datei `.env.kosit` atomar.
 
-Die Anwendung verwendet KoSIT ohne `-p/--print`, liest primär die erzeugte `*-report.xml` und wertet die ausdrückliche VARL-Entscheidung `<rep:accept/>` oder `<rep:reject/>` aus. Java-, JAR-, Konfigurations- und Timeoutfehler werden als „nicht ausgeführt“ und nicht als Rechnungsablehnung ausgewiesen.
+Die Anwendung verwendet KoSIT ohne `-p/--print`, liest ausschließlich die erzeugte `rechnung-report.xml` und wertet
+die ausdrückliche VARL-Entscheidung `<rep:accept/>` oder `<rep:reject/>` nur aus, wenn der Bericht das erwartete
+Szenario und den SHA-256-Hash der übergebenen XML nennt. Vor jedem Lauf müssen die Szenariodatei und die daraus
+geladenen Regelartefakte den gepinnten Größen und SHA-256-Werten entsprechen. Eine Profilkennung ohne gebundenes
+Szenario (etwa `xrechnung_2.3` oder eine eigene CIUS) wird als „nicht unterstützt“ ausgewiesen und startet KoSIT
+nicht. Java-, JAR-, Konfigurations- und Timeoutfehler werden als „nicht ausgeführt“ und nicht als
+Rechnungsablehnung ausgewiesen.
 
 Die Sperrdatei [`packaging/kosit/components.lock.json`](packaging/kosit/components.lock.json) legt derzeit
 KoSIT Validator **1.6.3** und die XRechnung-Validator-Konfiguration **2026-08-31** für XRechnung **3.0.2**
@@ -230,7 +237,8 @@ fest. Darin enthalten sind CEN-EN-16931-Regeln **1.3.16** und XRechnung-Schematr
 EXTENDED bindet sie die Artefakte des Release **1.09.2** (FNFE-MPE `France_RFE` v1.4.0.03, Commit `a63e6b5`,
 Apache License 2.0, bytegleich mit dem technischen Teil des FeRD-Pakets ZUGFeRD 2.5.2). Installer und
 Windows-Build prüfen die festgelegten SHA-256-Werte; `/api/health` veröffentlicht die Komponentenversionen ohne
-lokale Pfade und meldet, ob das Extended-Regelpaket vollständig eingerichtet ist.
+lokale Pfade und meldet, ob die XRechnung-Konfiguration und das Extended-Regelpaket vollständig und unverändert
+eingerichtet sind.
 
 Die Anwendung ist eine Anwendung der Norm EN 16931. Die offizielle Prüfung einer Factur-X-EXTENDED-Rechnung
 setzt eine exakte Profilkennung voraus, prüft ausschließlich die eingebettete XML und ist keine Aussage zur
@@ -339,8 +347,8 @@ Umgebungsvariablen können in `.env` oder `.env.kosit` stehen. Beide Dateien wer
 | `KOSIT_ENABLED` | `true` | KoSIT-Anbindung aktivieren |
 | `KOSIT_JAVA_BIN` | `java` | Java-Befehl |
 | `KOSIT_VALIDATOR_JAR` | automatisch | Pfad zum Standalone-JAR |
-| `KOSIT_SCENARIOS` | automatisch | Semikolon-getrennte Szenariodateien |
-| `KOSIT_REPOSITORIES` | automatisch | Semikolon-getrennte Ressourcenpfade |
+| `KOSIT_SCENARIOS` | automatisch | Szenariodatei der gepinnten XRechnung-Konfiguration; für gebundene Läufe genau eine Datei mit dem festgelegten Hash |
+| `KOSIT_REPOSITORIES` | automatisch | Ressourcenverzeichnis dieser Konfiguration; für gebundene Läufe genau ein Verzeichnis |
 | `KOSIT_TIMEOUT_SECONDS` | `60` | Zeitgrenze pro KoSIT-Aufruf |
 | `EINVOICE_API_TOKEN` | automatisch in den Windows-Laufzeiten | optional vorgegebenes URL-sicheres ASCII-API-Token mit mindestens 32 Zeichen |
 
