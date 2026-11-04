@@ -4,6 +4,13 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Darstellung
+
+- Startseite, HTML-Bericht und PDF-Bericht zeigen in der Fußzeile den sichtbaren Hinweis „Diese Anwendung ist eine
+  Anwendung der Norm EN 16931 (DIN EN 16931-1, elektronische Rechnung).“, wie die DIN-Nutzungsbedingungen der Norm es
+  für darauf aufbauende Anwendungen verlangen. Der Text stammt aus einer gemeinsamen Konstante in
+  `app/report_presentation.py`; ein Test prüft alle drei Ausgaben.
+
 ## 2.1.0 – 2026-11-04
 
 ### Offizielle Prüfung von Factur-X EXTENDED

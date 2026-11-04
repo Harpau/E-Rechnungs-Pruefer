@@ -29,7 +29,7 @@ from reportlab.platypus import (
 )
 from reportlab.platypus.doctemplate import LayoutError
 
-from app.report_presentation import ReportScope, build_report_presentation
+from app.report_presentation import EN16931_STATEMENT, ReportScope, build_report_presentation
 
 PDF_TECHNICAL_ROW_LIMIT = 2_000
 PDF_TECHNICAL_CHARACTER_LIMIT = 250_000
@@ -1990,6 +1990,7 @@ def render_pdf_report(
         canvas.setSubject("Lesbare Darstellung und Prüfung einer strukturierten elektronischen Rechnung")
         canvas.setFont(_FONT_REGULAR, 6.8)
         canvas.setFillColor(colors.HexColor("#5f7078"))
+        canvas.drawString(17 * mm, 11.5 * mm, EN16931_STATEMENT)
         canvas.drawString(
             17 * mm,
             8 * mm,
