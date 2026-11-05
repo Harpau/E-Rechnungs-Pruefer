@@ -147,12 +147,14 @@ oder unter Windows:
 
 Der Check umfasst Versionskonsistenz, Ruff, Mypy sowie Pytest mit Branch Coverage. Mit `python scripts/build_release.py` entstehen Wheel, Source Distribution, ein bereinigtes Repository-ZIP und SHA-256-Prüfsummen.
 
-Die Integrationssuite mit dem echten KoSIT-Validator und den gebundenen Factur-X-EXTENDED-Artefakten wird im
-normalen Lauf übersprungen. Nach `python scripts/install_kosit.py` lässt sie sich gezielt starten; mit gesetzter
-Variable schlägt sie bei fehlenden Komponenten fehl statt zu überspringen:
+Die Integrationssuiten mit dem echten KoSIT-Validator und den gebundenen XRechnung-, EN-16931- und
+Factur-X-EXTENDED-Artefakten werden im normalen Lauf übersprungen. Nach `python scripts/install_kosit.py` lassen
+sie sich gezielt starten; mit gesetzter Variable schlagen sie bei fehlenden Komponenten fehl statt zu überspringen:
 
 ```sh
-EINVOICE_KOSIT_INTEGRATION=1 .venv/bin/python -m pytest tests/test_kosit_facturx_extended_integration.py -m kosit_integration
+EINVOICE_KOSIT_INTEGRATION=1 .venv/bin/python -m pytest \
+  tests/test_kosit_xrechnung_integration.py tests/test_kosit_facturx_extended_integration.py \
+  -m kosit_integration
 ```
 
 Die Windows-x64-Installer werden nativ auf Windows beziehungsweise im Windows-Job von GitHub Actions gebaut. Sie
