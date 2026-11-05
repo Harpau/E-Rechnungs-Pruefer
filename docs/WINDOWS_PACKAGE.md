@@ -320,9 +320,11 @@ $InnoSetupCompiler = .\scripts\install_inno_setup.ps1
 `prepare_windows_components.py` lädt neben Java, Validator und XRechnung-Konfiguration auch die gebundenen
 Factur-X-1.09.2-EXTENDED-Artefakte nach `vendor\kosit\facturx-extended\` und tauscht `runtime\java` und
 `vendor\kosit` erst nach vollständiger Verifikation beider Bäume aus; ein Fehler stellt beide vorherigen Bäume
-wieder her. Vor dem Installerbau prüft der Workflow die Integrationssuite
-`tests\test_kosit_facturx_extended_integration.py` mit `EINVOICE_KOSIT_INTEGRATION=1` gegen genau diese Bäume;
-die installierten Pakettests verlangen anschließend einen Factur-X-EXTENDED-Annahme- und -Ablehnungsfall sowie
+wieder her. Vor dem Installerbau prüft der Workflow die Integrationssuiten
+`tests\test_kosit_xrechnung_integration.py` und `tests\test_kosit_facturx_extended_integration.py` mit
+`EINVOICE_KOSIT_INTEGRATION=1` gegen genau diese Bäume; die installierten Pakettests verlangen anschließend einen
+gebundenen XRechnung-Annahmefall mit dem Prüfszenario „EN16931 XRechnung (UBL Invoice)“, einen
+Factur-X-EXTENDED-Annahme- und -Ablehnungsfall sowie `kosit.xrechnung_configured` und
 `kosit.facturx_extended_configured` im Healthcheck.
 
 Für signierte GitHub-Builds gilt stattdessen der vollständige, gehashte Windows-x64-Lock
