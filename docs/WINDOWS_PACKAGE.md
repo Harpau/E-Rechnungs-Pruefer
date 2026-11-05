@@ -463,7 +463,8 @@ Windows 10 22H2 x64 im Home/Pro-Kanal wird nach Ende des regulären Microsoft-Su
 Best-Effort-Kompatibilität geprüft:
 
 1. signierte Desktop-Neuinstallation in einen Zielpfad, bei dem eine enthaltene KoSIT-XSD nachweislich mehr als
-   260 Zeichen erreicht, anschließend Start, eine CII-KoSIT-Prüfung und reguläre Deinstallation;
+   260 Zeichen erreicht, anschließend Start, Healthcheck mit `kosit.xrechnung_configured` und
+   `kosit.facturx_extended_configured` gleich `true`, eine CII-KoSIT-Prüfung und reguläre Deinstallation;
 2. nach Snapshot-Rückkehr signierte Dienst-Neuinstallation im Standardpfad, `Running`, Healthcheck,
    sichtbarer Öffnen-Client und reguläre Deinstallation.
 

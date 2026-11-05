@@ -268,7 +268,9 @@ Der Windows-10-Kompatibilitätslauf bleibt bewusst klein:
    nachweislich mehr als 260 Zeichen besitzt. Zielpfad und gemessene Länge werden protokolliert; die Datei muss
    lesbar und zu der Datei im veröffentlichten Binaries-ZIP hashidentisch sein.
 2. Die Desktopanwendung muss starten und genau eine synthetische CII-Beispielrechnung mit KoSIT erfolgreich
-   prüfen. Die reguläre Deinstallation muss anschließend auch den langen Installationspfad entfernen.
+   prüfen. Der Healthcheck muss dabei `kosit.xrechnung_configured` und `kosit.facturx_extended_configured` mit
+   `true` melden, weil die Vorprüfung auch die Regeldateien mit Pfaden über 260 Zeichen liest; beide Werte werden
+   protokolliert. Die reguläre Deinstallation muss anschließend auch den langen Installationspfad entfernen.
 3. Nach Rückkehr zum sauberen Snapshot wird ausschließlich der Produktions-Dienstinstaller im Standardpfad
    installiert. Es genügt der Nachweis `Running`, ein Healthcheck mit Zielversion, `status=ok` und
    betriebsbereitem KoSIT sowie das sichtbare Öffnen der Oberfläche über den Öffnen-Client; anschließend wird
