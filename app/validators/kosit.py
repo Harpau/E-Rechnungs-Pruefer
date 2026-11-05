@@ -4,6 +4,7 @@ import base64
 import binascii
 import ctypes
 import hashlib
+import ntpath
 import os
 import secrets
 import shutil
@@ -110,6 +111,30 @@ class _ReportBindingError(Exception):
         super().__init__(message)
         self.finding_id = finding_id
         self.message = message
+
+
+def _extended_windows_path(absolute: str) -> str:
+    r"""Return the extended-length form (``\\?\``) of an absolute Windows path.
+
+    Win32 opens a plain path of 260 characters or more only when the machine sets
+    ``LongPathsEnabled``; the extended form has no such limit. Java resolves long
+    paths itself, so only Python's own reads need it.
+    """
+
+    normalized = ntpath.normpath(absolute)
+    if normalized.startswith(("\\\\?\\", "\\\\.\\")):
+        return normalized
+    if normalized.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + normalized[2:]
+    return "\\\\?\\" + normalized
+
+
+def _long_path(path: Path) -> Path:
+    """Path through which this module reads installation files; unchanged outside Windows."""
+
+    if os.name != "nt":
+        return path
+    return Path(_extended_windows_path(os.path.abspath(path)))
 
 
 def _sha256_of_file(path: Path) -> str:
@@ -548,11 +573,12 @@ class KositValidator:
     def _artefact_problem(path: Path, expected: RulesetFile, kind: str) -> str | None:
         """Compare one artefact with its locked size and SHA-256; ``None`` means it matches."""
 
-        if not path.is_file():
+        readable = _long_path(path)
+        if not readable.is_file():
             return f"{kind} fehlt: {expected.target}"
         try:
-            size = path.stat().st_size
-            digest = _sha256_of_file(path) if size == expected.size else None
+            size = readable.stat().st_size
+            digest = _sha256_of_file(readable) if size == expected.size else None
         except OSError as exc:
             return f"{kind} {expected.target} ist nicht lesbar: {exc}"
         if size != expected.size:
@@ -576,7 +602,7 @@ class KositValidator:
                 problems.append(
                     f"Für {ruleset.label} ist genau eine Szenariodatei zulässig, konfiguriert sind {len(scenarios)}."
                 )
-            elif scenarios[0].is_file():
+            elif _long_path(scenarios[0]).is_file():
                 # A missing file was already reported by the generic check.
                 problem = cls._artefact_problem(scenarios[0], ruleset.scenario_file, "Szenariodatei")
                 if problem:
@@ -594,7 +620,7 @@ class KositValidator:
             problem = cls._artefact_problem(repository / item.target, item, "Regeldatei")
             if problem:
                 problems.append(problem)
-        if not (repository / ruleset.report_stylesheet).is_file():
+        if not _long_path(repository / ruleset.report_stylesheet).is_file():
             problems.append(f"Report-Stylesheet fehlt: {ruleset.report_stylesheet}")
         return problems
 
@@ -609,10 +635,10 @@ class KositValidator:
             problems.append("KoSIT-Anbindung ist deaktiviert.")
         if jar is None:
             problems.append("KOSIT_VALIDATOR_JAR ist nicht gesetzt.")
-        elif not jar.is_file():
+        elif not _long_path(jar).is_file():
             problems.append(f"Validator-JAR wurde nicht gefunden: {jar}")
         else:
-            main_class = self._jar_main_class(jar)
+            main_class = self._jar_main_class(_long_path(jar))
             if not main_class:
                 problems.append(
                     "Validator-JAR ist nicht mit 'java -jar' ausführbar, weil im Manifest die Main-Class fehlt. "
@@ -627,12 +653,12 @@ class KositValidator:
                 )
         else:
             for scenario in scenarios:
-                if not scenario.is_file():
+                if not _long_path(scenario).is_file():
                     problems.append(f"Szenariokonfiguration wurde nicht gefunden: {scenario}")
         if shutil.which(self.settings.kosit_java_bin) is None:
             problems.append(f"Java wurde nicht gefunden: {self.settings.kosit_java_bin}")
         for repository in repositories:
-            if not repository.exists():
+            if not _long_path(repository).exists():
                 problems.append(f"KoSIT-Ressourcenverzeichnis wurde nicht gefunden: {repository}")
         if ruleset is not None and scenarios:
             problems.extend(self._ruleset_file_problems(scenarios, repositories, ruleset))

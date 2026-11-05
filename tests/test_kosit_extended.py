@@ -377,6 +377,42 @@ def test_missing_extended_configuration_does_not_affect_the_shared_path(tmp_path
     assert shared["ruleset"] is None
 
 
+def test_extended_precheck_reads_files_through_the_long_path_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the Factur-X EXTENDED artefacts have the longest file names of the bundle; under Windows with
+    ``LongPathsEnabled=0`` they are only readable in the extended path form."""
+
+    actual = tmp_path / "erreichbar"
+    actual.mkdir()
+    reachable, repository = _settings(actual)
+    ruleset = _ruleset_for(repository)
+    configured = tmp_path / "nur-ueber-erweiterten-pfad"
+
+    def moved(item: Path) -> Path:
+        return configured / item.relative_to(actual)
+
+    assert reachable.kosit_validator_jar is not None
+    settings = replace(
+        reachable,
+        kosit_validator_jar=moved(reachable.kosit_validator_jar),
+        kosit_scenarios=tuple(moved(item) for item in reachable.kosit_scenarios),
+        kosit_repositories=tuple(moved(item) for item in reachable.kosit_repositories),
+        kosit_facturx_extended_scenarios=tuple(moved(item) for item in reachable.kosit_facturx_extended_scenarios),
+        kosit_facturx_extended_repositories=tuple(
+            moved(item) for item in reachable.kosit_facturx_extended_repositories
+        ),
+    )
+    monkeypatch.setattr(kosit_module, "_long_path", lambda item: actual / item.relative_to(configured))
+
+    state = KositValidator(settings).configuration_state(ruleset)
+
+    assert state["problems"] == []
+    assert state["configured"] is True
+    assert state["repositories"] == [str(moved(repository))]
+    assert state["scenarios"] == [str(moved(repository / "scenarios.xml"))]
+
+
 def test_validate_without_ruleset_never_starts_kosit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings, _repository = _settings(tmp_path, extended=False)
 

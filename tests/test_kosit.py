@@ -4,6 +4,8 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -485,6 +487,128 @@ def test_windows_kosit_process_is_started_without_console(tmp_path, monkeypatch)
         assert expected != 0
     assert kosit_module.WINDOWS_SUBPROCESS_CREATION_FLAGS == expected
     assert observed["creationflags"] == expected
+
+
+MAIN_CLASS = "de.kosit.validationtool.cmd.CommandLineApplication"
+
+
+def _relocated(settings: Settings, source: Path, target: Path) -> Settings:
+    """The same installation, but with every configured path below ``target`` instead of ``source``."""
+
+    def moved(item: Path) -> Path:
+        return target / item.relative_to(source)
+
+    assert settings.kosit_validator_jar is not None
+    return replace(
+        settings,
+        kosit_validator_jar=moved(settings.kosit_validator_jar),
+        kosit_scenarios=tuple(moved(item) for item in settings.kosit_scenarios),
+        kosit_repositories=tuple(moved(item) for item in settings.kosit_repositories),
+    )
+
+
+@pytest.mark.parametrize(
+    ("plain", "expected"),
+    [
+        ("C:\\Programme\\Pruefer\\regel.xsd", "\\\\?\\C:\\Programme\\Pruefer\\regel.xsd"),
+        ("C:/Programme/Pruefer/../Regeln/regel.xsd", "\\\\?\\C:\\Programme\\Regeln\\regel.xsd"),
+        ("\\\\server\\freigabe\\regel.xsd", "\\\\?\\UNC\\server\\freigabe\\regel.xsd"),
+        ("\\\\?\\C:\\Programme\\regel.xsd", "\\\\?\\C:\\Programme\\regel.xsd"),
+        ("\\\\?\\UNC\\server\\freigabe\\regel.xsd", "\\\\?\\UNC\\server\\freigabe\\regel.xsd"),
+        ("C:\\" + "p" * 300 + "\\regel.xsd", "\\\\?\\C:\\" + "p" * 300 + "\\regel.xsd"),
+    ],
+    ids=["drive", "normalised", "unc", "already-extended", "already-extended-unc", "longer-than-260"],
+)
+def test_extended_windows_path_lifts_the_path_limit_for_every_path_form(plain: str, expected: str) -> None:
+    assert kosit_module._extended_windows_path(plain) == expected
+
+
+def test_long_path_helper_changes_paths_only_on_windows(tmp_path: Path) -> None:
+    path = tmp_path / "regel.xsd"
+
+    result = kosit_module._long_path(path)
+
+    if os.name == "nt":
+        assert str(result) == kosit_module._extended_windows_path(os.path.abspath(path))
+        assert str(result).startswith("\\\\?\\")
+    else:
+        assert result == path
+
+
+def test_precheck_reads_every_installation_file_through_the_long_path_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: with ``LongPathsEnabled=0`` Windows opens paths of 260 characters or more only in the
+    extended form. The configured location here cannot be opened directly at all; only the helper reaches it."""
+
+    actual = tmp_path / "erreichbar"
+    actual.mkdir()
+    jar = actual / "validator-1.6.3-standalone.jar"
+    _write_jar(jar, MAIN_CLASS)
+    reachable = _settings(actual, jar)
+    bound = _bound_ruleset(reachable)
+    configured = tmp_path / "nur-ueber-erweiterten-pfad"
+    settings = _relocated(reachable, actual, configured)
+    seen: list[Path] = []
+
+    def redirect(item: Path) -> Path:
+        seen.append(item)
+        return actual / item.relative_to(configured)
+
+    monkeypatch.setattr(kosit_module, "_long_path", redirect)
+
+    state = KositValidator(settings).configuration_state(bound)
+
+    assert state["problems"] == []
+    assert state["configured"] is True
+    assert state["jar_main_class"] == MAIN_CLASS
+    # Java keeps receiving the plain configured paths; only Python's own reads use the helper.
+    assert state["jar"] == str(configured / jar.name)
+    assert state["scenarios"] == [str(configured / "scenarios.xml")]
+    assert state["repositories"] == [str(configured / "repository")]
+    repository = configured / "repository"
+    expected = {configured / jar.name, configured / "scenarios.xml", repository}
+    expected.update(repository / item.target for item in bound.files)
+    expected.add(repository / bound.report_stylesheet)
+    assert expected <= set(seen)
+    # Without a rule set the basic installation check uses the helper as well.
+    assert KositValidator(settings).configuration_state()["configured"] is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Die Pfadgrenze von 260 Zeichen gibt es nur unter Windows.")
+def test_precheck_reads_an_installation_beyond_the_windows_path_limit(tmp_path: Path) -> None:
+    """A real installation tree whose paths exceed 260 characters, as in the long-path acceptance scenario.
+
+    With ``EINVOICE_EXPECT_LONG_PATHS_DISABLED=1`` the test also requires that plain paths really fail in this
+    process, so that a run with ``LongPathsEnabled=0`` proves the defect and not only the remedy.
+    """
+
+    extended = kosit_module._extended_windows_path
+    short = tmp_path / "kurz"
+    short.mkdir()
+    jar = short / "validator-1.6.3-standalone.jar"
+    _write_jar(jar, MAIN_CLASS)
+    reachable = _settings(short, jar)
+    bound = _bound_ruleset(reachable)
+    long_root = tmp_path / ("p" * 120)
+    deep = long_root / ("q" * 120)
+    assert len(str(deep)) > 260
+    settings = _relocated(reachable, short, deep)
+    os.makedirs(extended(str(long_root)))
+    os.replace(extended(str(short)), extended(str(deep)))
+    try:
+        plain_scenario_visible = settings.kosit_scenarios[0].is_file()
+        state = KositValidator(settings).configuration_state(bound)
+    finally:
+        shutil.rmtree(extended(str(long_root)))
+
+    assert state["problems"] == []
+    assert state["configured"] is True
+    assert state["jar_main_class"] == MAIN_CLASS
+    if os.environ.get("EINVOICE_EXPECT_LONG_PATHS_DISABLED") == "1":
+        assert plain_scenario_visible is False, (
+            "Dieser Prozess öffnet lange Pfade direkt; LongPathsEnabled ist nicht 0."
+        )
 
 
 def test_installer_uses_locked_components_and_selects_only_standalone_jar(tmp_path):
