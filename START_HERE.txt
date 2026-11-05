@@ -1,4 +1,4 @@
-E-RECHNUNGS-VIEWER & PRUEFER 2.1.0
+E-RECHNUNGS-VIEWER & PRUEFER 2.2.0
 ====================================
 
 WAS DIE ANWENDUNG MACHT
@@ -11,14 +11,46 @@ werden nicht per OCR rekonstruiert.
 Die interne Pruefung ist eine transparente Vorpruefung. Sie ersetzt weder die
 optionale offizielle KoSIT-Pruefung noch Steuer- oder Rechtsberatung.
 
-NEU IN 2.1.0: OFFIZIELLE PRUEFUNG VON FACTUR-X EXTENDED
---------------------------------------------------------
+NEU IN 2.2.0: GEBUNDENE OFFIZIELLE PRUEFUNG VON XRECHNUNG UND EN 16931
+----------------------------------------------------------------------
+Die offizielle KoSIT-Pruefung von XRechnung 3.0.2 und EN 16931 ist jetzt wie
+die von Factur-X EXTENDED an genau ein Pruefszenario der Validator-
+Konfiguration 2026-08-31 und an den SHA-256-Hash der Rechnungs-XML gebunden.
+Die Auswahl liest die CII-Guideline-ID beziehungsweise die UBL-
+CustomizationID exakt. Zusammenfassung und PDF-Bericht nennen das
+Pruefszenario, zum Beispiel "EN16931 XRechnung (UBL Invoice)".
+
+Geaendertes Verhalten fuer Automatisierungen (Analyseschema 2 bleibt stabil):
+
+- Eine Profilkennung ohne gebundenes Szenario (zum Beispiel xrechnung_2.3
+  oder eine eigene CIUS) ergibt assessment.official.status "unsupported"
+  ohne KoSIT-Lauf; die Verarbeitung bleibt "complete". Bis 2.1.0 lautete das
+  Ergebnis "indeterminate" mit unvollstaendiger Verarbeitung.
+- Annahme und Ablehnung stammen nur noch aus der gebundenen Berichtsdatei.
+  Rueckfaelle auf das Attribut "valid", Textstatus, Rueckgabecode und
+  Konsolenberichte sind entfernt; report_source liefert "file" oder null.
+- Vor jedem Lauf werden die Szenariodatei und 25 Regeldateien mit Groesse
+  und SHA-256 geprueft. Eine Abweichung ergibt "unavailable" mit dem Befund
+  KOSIT-CONFIG; KoSIT wird dann nicht gestartet.
+- Neu sind das optionale Feld assessment.official.scenario und
+  kosit.xrechnung_configured in /api/health.
+
+Fehlerbehebung: Die Vorpruefung liest die Regeldateien unter Windows auch
+dann, wenn ein langer Installationspfad einzelne Dateien auf 260 Zeichen
+oder mehr bringt und LongPathsEnabled nicht gesetzt ist.
+
+Startseite, HTML- und PDF-Bericht nennen in der Fusszeile, dass die
+Anwendung eine Anwendung der Norm EN 16931 ist.
+
+Details: CHANGELOG.md und docs\VALIDATION.md
+
+OFFIZIELLE PRUEFUNG VON FACTUR-X EXTENDED (SEIT 2.1.0)
+------------------------------------------------------
 Eine CII-Rechnung mit exakt der Kennung
 urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended wird bei
 eingerichteten KoSIT-Komponenten offiziell gegen Factur-X 1.09.2 EXTENDED
 geprueft. Die Regelartefakte stammen von FNFE-MPE (France_RFE v1.4.0.03,
 Apache License 2.0); der Bericht ist an Szenario und Dokument-Hash gebunden.
-EN-16931- und XRechnung-Pruefungen bleiben unveraendert.
 
 Grenzen: Die Kennung nennt keine Spezifikationsversion, der Regelstand 1.09.2
 ist eine Festlegung des Pruefers. Der FNFE-Hotfix fix-FR04 wird nicht
@@ -108,8 +140,17 @@ Upgrade aus 2.0.x im Quellbetrieb: Eine vorhandene KoSIT-Installation mit
 aktualisieren. Erst damit entstehen die Extended-Artefakte und die Schluessel
 KOSIT_FACTURX_EXTENDED_SCENARIOS und KOSIT_FACTURX_EXTENDED_REPOSITORIES in
 .env.kosit; ohne sie bleibt der offizielle Status einer Factur-X-EXTENDED-
-Rechnung "nicht verfuegbar", waehrend EN-16931-/XRechnung-Pruefungen weiter
-laufen. /api/health meldet den Stand in kosit.facturx_extended_configured.
+Rechnung "nicht verfuegbar". /api/health meldet den Stand in
+kosit.facturx_extended_configured.
+
+Seit 2.2.0 gilt zusaetzlich: EN-16931- und XRechnung-Pruefungen laufen nur
+mit der unveraenderten XRechnung-Konfiguration 2026-08-31. Eine bis
+einschliesslich 2.0.3 eingerichtete Installation (Konfiguration 2026-01-31)
+und eine eigene Konfiguration ueber KOSIT_SCENARIOS oder KOSIT_REPOSITORIES
+ergeben "nicht verfuegbar" mit dem Befund KOSIT-CONFIG, bis der Befehl oben
+den gebundenen Stand einrichtet. Installationen aus 2.0.4, 2.0.5 und 2.1.0
+enthalten diese Konfiguration bereits. /api/health meldet den Stand in
+kosit.xrechnung_configured.
 
 Lokale KoSIT-Dateien und Konfigurationen werden nicht in Git oder Quell-/
 Repository-Release-ZIPs aufgenommen. Die Windows-Binaries enthalten dagegen

@@ -16,7 +16,7 @@ Diese Liste ist unverbindlich und priorisiert nachvollziehbare, getestete Erweit
 - Sperrdateien mit Dateisatz-Komponenten, Installer und Windows-Vorbereitung mit Sicherung und Rücknahme
 - Integrationssuite mit echtem KoSIT-Validator in CI und in den installierten Windows-Pakettests
 
-## Nach 2.1.0 abgeschlossen (noch unveröffentlicht)
+## Mit Version 2.2.0 abgeschlossen
 
 - vollständige Szenario- und Hashbindung des KoSIT-Berichts auch für XRechnung 3.0.2 und EN 16931 (Folgeaufgabe zur
   Entscheidung E5 der Extended-Planung): die elf Szenarien der Validator-Konfiguration 2026-08-31 stehen im
