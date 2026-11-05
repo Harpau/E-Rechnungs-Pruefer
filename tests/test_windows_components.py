@@ -595,6 +595,23 @@ def test_windows_package_test_callers_confirm_isolation() -> None:
         assert "Autostart" in documentation
 
 
+def test_long_path_precheck_stays_covered_by_ci_and_the_windows_10_acceptance() -> None:
+    ci = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    kosit_tests = (PROJECT_ROOT / "tests/test_kosit.py").read_text(encoding="utf-8")
+    release_docs = (PROJECT_ROOT / "docs/RELEASE.md").read_text(encoding="utf-8")
+    package_docs = (PROJECT_ROOT / "docs/WINDOWS_PACKAGE.md").read_text(encoding="utf-8")
+
+    # The Windows runner disables long paths for exactly the test that builds a tree beyond 260 characters.
+    assert "Set-ItemProperty -Path $key -Name LongPathsEnabled -Value 0 -Type DWord" in ci
+    assert '$env:EINVOICE_EXPECT_LONG_PATHS_DISABLED = "1"' in ci
+    assert 'python -m pytest tests/test_kosit.py -k "beyond_the_windows_path_limit"' in ci
+    assert "def test_precheck_reads_an_installation_beyond_the_windows_path_limit(" in kosit_tests
+    assert 'os.environ.get("EINVOICE_EXPECT_LONG_PATHS_DISABLED") == "1"' in kosit_tests
+    for documentation in (release_docs, package_docs):
+        assert "`kosit.xrechnung_configured`" in documentation
+        assert "`kosit.facturx_extended_configured`" in documentation
+
+
 @pytest.mark.skipif(
     sys.platform != "win32" or shutil.which("pwsh") is None,
     reason="Die echte Pakettest-Vorabprüfung benötigt PowerShell unter Windows.",

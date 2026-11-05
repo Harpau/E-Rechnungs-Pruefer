@@ -50,6 +50,22 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   Konfiguration. CI und Release-Workflow führen beide Integrationssuiten aus; die Windows-Pakettests prüfen zusätzlich
   einen gebundenen XRechnung-Annahmefall.
 
+### Windows-Installationen mit langen Pfaden
+
+- Fehlerbehebung: Die Vorprüfung der offiziellen Prüfung liest das Validator-JAR, die Szenariodatei und alle
+  gebundenen Regelartefakte unter Windows über erweiterte Pfade (`\\?\`). Bisher öffnete Python diese Dateien mit
+  einfachen Pfaden. Liegt ein Pfad bei 260 Zeichen oder mehr und ist `LongPathsEnabled` nicht gesetzt, öffnet Windows
+  ihn so nicht; die Vorprüfung meldete die Datei dann als fehlend (`unavailable` mit `KOSIT-CONFIG`,
+  `kosit.facturx_extended_configured` gleich `false`), obwohl KoSIT sie lesen kann. Betroffen waren nur ungewöhnlich
+  lange Installationsziele: seit 2.1.0 der Factur-X-EXTENDED-Dateisatz, mit der neuen Hashbindung der
+  XRechnung-Konfiguration ohne diese Korrektur auch XRechnung und EN 16931. Die Hashbindung selbst und die an Java
+  übergebenen Pfade bleiben unverändert.
+- Regressionstests in `tests/test_kosit.py` und `tests/test_kosit_extended.py` weisen nach, dass jeder Dateizugriff
+  der Vorprüfung über den erweiterten Pfad läuft. Der Windows-Lauf der CI prüft zusätzlich einen echten
+  Installationsbaum mit Pfaden über 260 Zeichen bei abgeschaltetem `LongPathsEnabled`. Der
+  Windows-10-Kompatibilitätslauf in `docs/RELEASE.md` verlangt jetzt, dass der Healthcheck im langen
+  Installationsziel beide gebundenen Konfigurationen als eingerichtet meldet.
+
 ### Darstellung
 
 - Startseite, HTML-Bericht und PDF-Bericht zeigen in der Fußzeile den sichtbaren Hinweis „Diese Anwendung ist eine

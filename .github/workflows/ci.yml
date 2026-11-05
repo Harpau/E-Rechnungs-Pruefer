@@ -101,6 +101,25 @@ jobs:
           tests/test_windows_install_transaction.py
           tests/test_windows_install_recovery.py tests/test_windows_install_reconcile.py
           tests/test_windows_open_client_transaction.py tests/test_windows_native_adapters.py
+      - name: KoSIT precheck with Windows long paths disabled
+        shell: pwsh
+        run: |
+          $key = "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"
+          $previous = (Get-ItemProperty -Path $key -Name LongPathsEnabled -ErrorAction SilentlyContinue).LongPathsEnabled
+          $code = 1
+          try {
+            Set-ItemProperty -Path $key -Name LongPathsEnabled -Value 0 -Type DWord
+            $env:EINVOICE_EXPECT_LONG_PATHS_DISABLED = "1"
+            python -m pytest tests/test_kosit.py -k "beyond_the_windows_path_limit" -rA
+            $code = $LASTEXITCODE
+          } finally {
+            if ($null -ne $previous) {
+              Set-ItemProperty -Path $key -Name LongPathsEnabled -Value $previous -Type DWord
+            } else {
+              Remove-ItemProperty -Path $key -Name LongPathsEnabled -ErrorAction SilentlyContinue
+            }
+          }
+          exit $code
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .cache/windows-components

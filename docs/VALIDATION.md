@@ -297,6 +297,11 @@ stehen in `app/official_rulesets.py`; die Sperrdatei pinnt weiterhin das ZIP als
 prüft beide Angaben gegen eine frische Installation. Jede Abweichung ergibt `unavailable` mit `KOSIT-CONFIG`, ohne
 dass Java gestartet wird.
 
+Unter Windows liest die Vorprüfung JAR, Szenariodatei und Regelartefakte über erweiterte Pfade (`\\?\`). Ein
+Installationsziel, in dem einzelne Dateien Pfade von 260 Zeichen oder mehr erhalten, wird dadurch auch ohne
+`LongPathsEnabled` vollständig geprüft; das gilt ebenso für das Extended-Regelpaket. KoSIT erhält weiterhin die
+einfachen Pfade.
+
 Eine andere Szenariodatei über `KOSIT_SCENARIOS` oder ein anderes Ressourcenverzeichnis über `KOSIT_REPOSITORIES`
 schlägt deshalb bereits in der Vorprüfung fehl; eine fremde Konfiguration, die die Vorprüfung besteht, aber andere
 Szenarionamen liefert, ergibt `indeterminate` mit `KOSIT-SCENARIO`. Das Extended-Regelpaket bleibt davon
