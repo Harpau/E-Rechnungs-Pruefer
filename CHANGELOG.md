@@ -6,6 +6,32 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## 2.2.0 – 2026-11-06
 
+### Geändertes Prüfverhalten: Hinweise für Automatisierungen und Upgrades
+
+Analyseschema 2 bleibt stabil; Feldnamen und Statuswerte sind unverändert. Geändert hat sich, wann welcher Status
+entsteht. Wer `assessment.official` oder den Header `X-Einvoice-Conformity-Status` automatisiert auswertet, sollte drei
+Punkte prüfen:
+
+- `unsupported` statt `indeterminate`: Eine Profilkennung ohne gebundenes Szenario (zum Beispiel `xrechnung_2.3` oder
+  eine eigene CIUS) ergibt jetzt `official = unsupported` bei `processing = complete`, ohne KoSIT-Lauf. Bis 2.1.0
+  lautete das Ergebnis `indeterminate` bei `processing = incomplete`. Nach `docs/AUTOMATION_INTEGRATION.md` ist das ein
+  abgeschlossenes, qualifiziertes Ergebnis (Bericht versenden, weitere Kandidaten prüfen) statt eines begrenzt zu
+  wiederholenden Laufs.
+- Entfernte Rückfälle: `accepted` und `rejected` entstehen nur noch aus der an Szenario und Dokument-Hash gebundenen
+  Berichtsdatei. Ein Lauf, dessen Ergebnis bisher aus dem Attribut `valid`, einem Textstatus, dem Rückgabecode oder
+  einem Konsolenbericht abgeleitet wurde, endet jetzt `indeterminate` mit `KOSIT-REPORT` oder `KOSIT-SCENARIO`.
+  `report_source` liefert nur noch `file` oder `null`.
+- Vorprüfung: Weichen Szenariodatei oder Regelartefakte von der gepinnten XRechnung-Konfiguration 2026-08-31 ab, lautet
+  das Ergebnis `unavailable` mit `KOSIT-CONFIG` bei `processing = incomplete`, und KoSIT wird nicht gestartet. Das
+  betrifft im Quellbetrieb eine eigene Konfiguration über `KOSIT_SCENARIOS` oder `KOSIT_REPOSITORIES` und eine bis
+  einschließlich 2.0.3 eingerichtete Installation (Konfiguration 2026-01-31); `python scripts/install_kosit.py --force`
+  richtet den gebundenen Stand ein. Die Windows-Pakete enthalten ihn bereits. `/api/health` meldet den Stand in
+  `kosit.xrechnung_configured`.
+
+Neu und additiv sind das optionale Feld `assessment.official.scenario` und `kosit.xrechnung_configured` in
+`/api/health`. Die Einzelheiten stehen in den folgenden Abschnitten, in `docs/VALIDATION.md` und in
+`docs/API_MIGRATION_V2.md`.
+
 ### Offizielle Prüfung von XRechnung und EN 16931 mit gebundenem KoSIT-Bericht
 
 - Das Regelsatzregister `app/official_rulesets.py` enthält jetzt die elf Szenarien der KoSIT-Validator-Konfiguration
