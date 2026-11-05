@@ -4,6 +4,8 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 2.2.0 – 2026-11-06
+
 ### Offizielle Prüfung von XRechnung und EN 16931 mit gebundenem KoSIT-Bericht
 
 - Das Regelsatzregister `app/official_rulesets.py` enthält jetzt die elf Szenarien der KoSIT-Validator-Konfiguration
