@@ -268,7 +268,7 @@ def test_windows_release_dependencies_are_exactly_pinned_and_hashed() -> None:
 
 
 def test_pypdf_runtime_and_windows_lock_require_patched_version() -> None:
-    minimum = Version("6.21.4")
+    minimum = Version("7.1.0")
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     requirement_files = [
         Requirement(value) for value in project["project"]["dependencies"] if Requirement(value).name.lower() == "pypdf"
@@ -281,8 +281,9 @@ def test_pypdf_runtime_and_windows_lock_require_patched_version() -> None:
 
     assert len(requirement_files) == 2
     assert all(minimum in requirement.specifier for requirement in requirement_files)
-    assert all(Version("6.21.3") not in requirement.specifier for requirement in requirement_files)
-    assert all(Version("7.0.0") not in requirement.specifier for requirement in requirement_files)
+    assert all(Version("7.0.1") not in requirement.specifier for requirement in requirement_files)
+    assert all(Version("6.21.4") not in requirement.specifier for requirement in requirement_files)
+    assert all(Version("8.0.0") not in requirement.specifier for requirement in requirement_files)
 
     lock = (PROJECT_ROOT / "packaging/windows/requirements-release.txt").read_text(encoding="utf-8")
     match = re.search(
@@ -292,7 +293,7 @@ def test_pypdf_runtime_and_windows_lock_require_patched_version() -> None:
     )
     assert match is not None
     assert Version(match.group("version")) >= minimum
-    assert match.group("digest") == "33e4fb41ca352810eb4e9838aa0d82d6888a5f8bf682f43e99cce5faa666255c"
+    assert match.group("digest") == "47cca6b24bdcf4c4d65b5f7b8b972535c61710a061261e737688777cfd9a7bfb"
 
 
 def test_windows_desktop_package_covers_ui_revision_contract() -> None:
