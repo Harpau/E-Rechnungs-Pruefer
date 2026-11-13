@@ -4,6 +4,36 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+### Umstellung auf pypdf 7 (Quell-, Container- und Windows-Installationen)
+
+- pypdf, das eingebettete Rechnungs-XML aus hochgeladenen PDF-Dateien liest und damit nicht vertrauenswürdige
+  Eingaben verarbeitet, ist von der Versionsreihe 6 auf die Reihe 7 umgestellt. Quell- und Containerinstallationen
+  verlangen jetzt `pypdf>=7.1.0,<8` statt `>=6.21.4,<7`; der Windows-Release-Lock legt pypdf 7.1.0 mit dem SHA-256
+  des auf PyPI veröffentlichten Wheels fest. Die Reihe 6 hat seit 6.21.4 (2026-10-28) kein Release mehr erhalten;
+  die Härtungen aus 7.0.0 und 7.0.1 sind dort nicht enthalten. Der Schutztest prüft Untergrenze, Ausschluss der
+  Reihe 6 und der nächsten Hauptversion 8, Lock-Version und Wheel-Digest.
+- Verhaltensänderung bei der Auswahl des Rechnungsanhangs: Anhangsnamen, die nach PDF 2.0 als UTF-8-Textstring mit
+  vorangestellter Byte-Order-Mark gespeichert sind, dekodiert pypdf seit 7.0.1 korrekt. Bisher erschien ein solcher
+  Name mit den Zeichen `ï»¿` am Anfang (zum Beispiel `ï»¿factur-x.xml`) und galt deshalb nicht als bekannter
+  Rechnungsname; enthielt die PDF weitere XML-Anhänge, konnte ein anderer Anhang als Rechnung ausgewählt werden.
+  Jetzt wird der Name unverfälscht angezeigt und behält den Vorrang bekannter Rechnungsnamen. Betroffen sind
+  `source.container.selected_attachment`, `source.invoice_xml.filename` und `source.attachments[].name`
+  ausschließlich bei solchen PDFs; ein neuer Regressionstest mit synthetischer PDF deckt den Fall ab.
+- pypdf 7.0.0 lehnt Objektströme ab, deren Offsets nicht streng aufsteigen. Eine derart konstruierte PDF endet wie
+  andere beschädigte PDFs kontrolliert mit dem bestehenden Eingabefehler, dass die PDF-Datei oder ihre
+  eingebetteten Dateien nicht gelesen werden konnten. Die weiteren Härtungen aus 7.0.0 und 7.0.1 (begrenzte
+  Dekodierarbeit für XFA-Formulare, strengere Bildgrößenlimits, zufällige statt aus dem Inhalt abgeleitete
+  Dateikennungen beim Schreiben) betreffen Funktionen, die die Anwendung nicht aufruft: Sie liest ausschließlich
+  eingebettete Dateien und die Seitenzahl. Zu diesen Härtungen sind keine CVE- oder GHSA-Kennungen veröffentlicht;
+  für pypdf 6.21.4 und 7.1.0 lagen am 2026-11-13 keine bekannten Sicherheitshinweise vor.
+- Die bisherigen Regressionstests mit synthetischen Hybrid-PDFs laufen unter pypdf 7.1.0 unverändert durch.
+  Kennwortgeschützte PDFs werden weiterhin abgelehnt, mit leerem Passwort verschlüsselte weiterhin verarbeitet,
+  und eine Sicht-PDF ohne eingebettete XML gilt weiterhin nicht als E-Rechnung. pypdf 7 entfernt lange
+  angekündigte Schnittstellen sowie die Unterstützung für Python 3.9 und für cryptography vor Version 43; die
+  Anwendung verwendet keine der entfernten Schnittstellen, setzt Python 3.11 voraus und bindet cryptography nicht
+  ein. pypdf 7.1.0 bringt unter CPython 3.11 und neuer keine eigenen Laufzeitabhängigkeiten mit; die übrigen
+  Einträge des Windows-Locks bleiben unverändert.
+
 ## 2.2.0 – 2026-11-06
 
 ### Geändertes Prüfverhalten: Hinweise für Automatisierungen und Upgrades

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from hashlib import sha256
+from io import BytesIO
 from typing import Any
 
 import pytest
+from pypdf import PdfWriter
+from pypdf.generic import ByteStringObject, NameObject
 
 import app.source as source_module
 from app.analyzer import analyze_bytes
@@ -137,6 +140,28 @@ def test_known_attachment_name_priority_is_case_insensitive(ubl_path, pdf_bytes_
     assert source.xml_filename == "FACTUR-X.XML"
     assert source.xml_bytes == preferred
     assert source.container["attachment_count"] == 3
+
+
+def test_utf8_encoded_preferred_attachment_name_keeps_priority(ubl_path):
+    # PDF 2.0 erlaubt Textstrings in UTF-8 mit vorangestelltem EF BB BF (ISO 32000-2, 7.9.2.2.1). pypdf dekodiert
+    # sie seit 7.0.1; davor erschien der Name als "ï»¿factur-x.xml" und verlor seine Priorität an "custom.xml".
+    preferred = ubl_path.read_bytes()
+    utf8_name = ByteStringObject(b"\xef\xbb\xbffactur-x.xml")
+    buffer = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=595, height=842)
+    writer.add_attachment("custom.xml", b"<synthetic-generic-invoice />")
+    embedded_file = writer.add_attachment("name-tree-key.xml", preferred)
+    embedded_file.pdf_object[NameObject("/F")] = utf8_name
+    embedded_file.pdf_object[NameObject("/UF")] = utf8_name
+    writer.write(buffer)
+
+    source = extract_source(buffer.getvalue(), "utf8-anhangsname.pdf", "application/pdf")
+
+    assert source.xml_filename == "factur-x.xml"
+    assert source.xml_bytes == preferred
+    assert source.container["selected_attachment"] == "factur-x.xml"
+    assert sorted(row["name"] for row in source.attachments) == ["custom.xml", "factur-x.xml"]
 
 
 def test_same_named_candidates_with_different_content_are_rejected(pdf_bytes_factory):

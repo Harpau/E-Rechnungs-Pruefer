@@ -42,7 +42,7 @@ Uploadgröße, XML-Strukturposten, technische Zeilenanzahl, technische Tabellenz
 begrenzt. Der XML-Preflight greift vor dem vollständigen Baumaufbau; die technische Pfadbildung arbeitet linear,
 und Namespacezeilen teilen sich dasselbe Zeilenbudget. Bei Hybrid-PDFs gilt `MAX_UPLOAD_BYTES` sowohl für die
 ausgewählte Rechnungs-XML als auch für die Summe der dekodierten Anhänge; zusätzlich werden höchstens 100
-eingebettete Dateien verarbeitet. Das Dekompressionslimit von pypdf 6 bildet eine weitere Obergrenze. Da solche
+eingebettete Dateien verarbeitet. Das Dekompressionslimit von pypdf 7 bildet eine weitere Obergrenze. Da solche
 Prüfungen nicht jede Speicherallokation vor dem ersten Parsercallback verhindern können, sind für den
 Netzwerkbetrieb weiterhin Prozess-, Speicher- und Parallelitätslimits notwendig.
 
