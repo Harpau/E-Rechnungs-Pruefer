@@ -31,6 +31,11 @@ updates:
       day: monday
     open-pull-requests-limit: 5
     labels: [dependencies, github-actions]
+    # init and analyze must run the same codeql-action version; bumped in
+    # separate PRs, the analyze step fails with a configuration version mismatch.
+    groups:
+      codeql-action:
+        patterns: ["github/codeql-action*"]
 
   - package-ecosystem: docker
     directory: "/"

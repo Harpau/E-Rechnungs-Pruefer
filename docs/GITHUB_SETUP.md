@@ -88,6 +88,8 @@ Für `main`:
 - Private Vulnerability Reporting aktivieren.
 - Secret Scanning und Push Protection aktivieren, sofern verfügbar.
 - Dependabot Alerts und Security Updates aktivieren.
+- Labels `dependencies`, `python`, `github-actions` und `docker` anlegen; `.github/dependabot.yml` weist sie den
+  Dependabot-Pull-Requests zu, und Dependabot kommentiert jeden Pull Request mit einem Fehler, solange sie fehlen.
 - Issues und Discussions nur aktivieren, wenn sie tatsächlich betreut werden.
 - keine echten Rechnungen als Issue-Anhang zulassen; auf `SUPPORT.md` verweisen.
 
