@@ -220,7 +220,7 @@ def test_manual_release_preview_uploads_internal_recovery_installer_separately()
         "mehr als 260 Zeichen",
         "Windows 11 x64",
         "vorherige Patchversion → Zielversion",
-        "Für 2.2.0 sind das",
+        "Für 2.2.1 sind das",
         "nur bei den jeweils genannten Auslösern",
         "ja/nein",
         "taggenauen Artefakte",

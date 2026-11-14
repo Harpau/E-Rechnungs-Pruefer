@@ -4,6 +4,8 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
+## 2.2.1 – 2026-11-14
+
 ### Umstellung auf pypdf 7 (Quell-, Container- und Windows-Installationen)
 
 - pypdf, das eingebettete Rechnungs-XML aus hochgeladenen PDF-Dateien liest und damit nicht vertrauenswürdige
@@ -33,6 +35,10 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
   Anwendung verwendet keine der entfernten Schnittstellen, setzt Python 3.11 voraus und bindet cryptography nicht
   ein. pypdf 7.1.0 bringt unter CPython 3.11 und neuer keine eigenen Laufzeitabhängigkeiten mit; die übrigen
   Einträge des Windows-Locks bleiben unverändert.
+- Aktualisierung im Quellbetrieb: `scripts/start.sh` und `scripts\start.bat` installieren Abhängigkeiten nur, wenn
+  ein Import fehlschlägt. Eine vorhandene `.venv` mit pypdf 6 bleibt deshalb unverändert, bis die Abhängigkeiten
+  dort einmalig mit `python -m pip install -r requirements.txt` neu installiert werden. Die Windows-Installer
+  enthalten pypdf 7.1.0; ein neu gebautes Container-Image installiert pypdf nach `requirements.txt`.
 
 ## 2.2.0 – 2026-11-06
 

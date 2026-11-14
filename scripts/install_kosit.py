@@ -38,7 +38,7 @@ REQUIRED_STANDARDS = (
     "facturx_extended",
     "facturx_extended_source",
 )
-USER_AGENT = "e-rechnung-pruefer-kosit-installer/2.2.0"
+USER_AGENT = "e-rechnung-pruefer-kosit-installer/2.2.1"
 
 
 class InstallError(RuntimeError):
