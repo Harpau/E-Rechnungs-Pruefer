@@ -1,4 +1,4 @@
-E-RECHNUNGS-VIEWER & PRUEFER 2.2.0
+E-RECHNUNGS-VIEWER & PRUEFER 2.2.1
 ====================================
 
 WAS DIE ANWENDUNG MACHT
@@ -10,6 +10,29 @@ werden nicht per OCR rekonstruiert.
 
 Die interne Pruefung ist eine transparente Vorpruefung. Sie ersetzt weder die
 optionale offizielle KoSIT-Pruefung noch Steuer- oder Rechtsberatung.
+
+NEU IN 2.2.1: PDF-BIBLIOTHEK PYPDF 7
+------------------------------------
+Hybrid-PDFs werden jetzt mit pypdf 7.1.0 gelesen (bisher Reihe 6). Die
+Windows-Installer enthalten diese Version; Quell- und Containerinstallationen
+verlangen pypdf ab 7.1.0 und unter 8.
+
+Geaendertes Verhalten: Ein Anhangsname, der nach PDF 2.0 als UTF-8-Text mit
+vorangestellter Byte-Order-Mark gespeichert ist, wird jetzt unverfaelscht
+gelesen. Bisher standen drei Fremdzeichen vor dem Namen, sodass zum Beispiel
+factur-x.xml nicht als bekannter Rechnungsname galt und bei mehreren
+XML-Anhaengen ein anderer Anhang als Rechnung ausgewaehlt werden konnte.
+
+Update im Quellbetrieb: Die Startskripte installieren Abhaengigkeiten nur,
+wenn ein Import fehlschlaegt. Eine vorhandene .venv behaelt deshalb pypdf 6,
+bis die Abhaengigkeiten dort einmalig neu installiert werden:
+
+   .venv\Scripts\python -m pip install -r requirements.txt
+
+Unter Linux oder macOS lautet der Pfad .venv/bin/python. Die Windows-
+Installer und ein neu gebautes Container-Image brauchen diesen Schritt nicht.
+
+Details: CHANGELOG.md
 
 NEU IN 2.2.0: GEBUNDENE OFFIZIELLE PRUEFUNG VON XRECHNUNG UND EN 16931
 ----------------------------------------------------------------------

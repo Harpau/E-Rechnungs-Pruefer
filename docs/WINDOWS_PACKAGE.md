@@ -472,7 +472,7 @@ Upgrades, Alt-Tabs, Formatmatrizen, Konfigurations-/Tokenerhalt, Modusausschluss
 Windows 10 nicht wiederholt. LTSC-Ausgaben sind durch den 22H2-Kompatibilitätslauf nicht abgedeckt.
 
 Auf Windows 11 x64 verbleiben nur das Desktop- und Dienst-Upgrade von der unmittelbar vorher veröffentlichten
-Patchversion derselben Release-Linie; für 2.2.0 dienen die signierten 2.1.0-Produktinstaller als Baseline. Der
+Patchversion derselben Release-Linie; für 2.2.1 dienen die signierten 2.2.0-Produktinstaller als Baseline. Der
 Desktopfall prüft ein warmes Alt-Tab, den kontrollierten `403 desktop_session_error`/`409 ui_version_mismatch`,
 die aktuelle Oberfläche in einem neuen Fenster und einen sichtbaren UBL-KoSIT-Lauf. Der Dienstfall vergleicht
 Konfiguration und API-Token hashgebunden und prüft danach Dienst, Healthcheck und Öffnen-Client.
