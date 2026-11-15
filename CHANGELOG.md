@@ -4,7 +4,7 @@ Alle wesentlichen Änderungen werden in diesem Dokument festgehalten. Das Projek
 
 ## Unveröffentlicht
 
-## 2.2.1 – 2026-11-14
+## 2.2.1 – 2026-11-16
 
 ### Umstellung auf pypdf 7 (Quell-, Container- und Windows-Installationen)
 
